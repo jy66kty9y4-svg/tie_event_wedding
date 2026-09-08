@@ -1,0 +1,231 @@
+{
+  "checkedAt": "2026-09-08T19:17:01.574Z",
+  "type": "static prototype only",
+  "screens": [
+    {
+      "width": 1440,
+      "screen": "today",
+      "page": 1440,
+      "viewport": 1440,
+      "sidebarRight": 240,
+      "sidebarHidden": false,
+      "pass": true
+    },
+    {
+      "width": 1440,
+      "screen": "overview",
+      "page": 1440,
+      "viewport": 1440,
+      "sidebarRight": 240,
+      "sidebarHidden": false,
+      "pass": true
+    },
+    {
+      "width": 1440,
+      "screen": "tasks",
+      "page": 1440,
+      "viewport": 1440,
+      "sidebarRight": 240,
+      "sidebarHidden": false,
+      "pass": true
+    },
+    {
+      "width": 1440,
+      "screen": "approvals",
+      "page": 1440,
+      "viewport": 1440,
+      "sidebarRight": 240,
+      "sidebarHidden": false,
+      "pass": true
+    },
+    {
+      "width": 1440,
+      "screen": "seating",
+      "page": 1440,
+      "viewport": 1440,
+      "sidebarRight": 240,
+      "sidebarHidden": false,
+      "pass": true
+    },
+    {
+      "width": 1440,
+      "screen": "calendar",
+      "page": 1440,
+      "viewport": 1440,
+      "sidebarRight": 240,
+      "sidebarHidden": false,
+      "pass": true
+    },
+    {
+      "width": 1440,
+      "screen": "guest",
+      "page": 1440,
+      "viewport": 1440,
+      "sidebarRight": 240,
+      "sidebarHidden": false,
+      "pass": true
+    },
+    {
+      "width": 1440,
+      "screen": "public",
+      "page": 1440,
+      "viewport": 1440,
+      "sidebarRight": 240,
+      "sidebarHidden": false,
+      "pass": true
+    },
+    {
+      "width": 390,
+      "screen": "today",
+      "page": 390,
+      "viewport": 390,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 390,
+      "screen": "overview",
+      "page": 390,
+      "viewport": 390,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 390,
+      "screen": "tasks",
+      "page": 390,
+      "viewport": 390,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 390,
+      "screen": "approvals",
+      "page": 390,
+      "viewport": 390,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 390,
+      "screen": "seating",
+      "page": 390,
+      "viewport": 390,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 390,
+      "screen": "calendar",
+      "page": 390,
+      "viewport": 390,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 390,
+      "screen": "guest",
+      "page": 390,
+      "viewport": 390,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 390,
+      "screen": "public",
+      "page": 390,
+      "viewport": 390,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 320,
+      "screen": "today",
+      "page": 320,
+      "viewport": 320,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 320,
+      "screen": "overview",
+      "page": 320,
+      "viewport": 320,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 320,
+      "screen": "tasks",
+      "page": 320,
+      "viewport": 320,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 320,
+      "screen": "approvals",
+      "page": 320,
+      "viewport": 320,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 320,
+      "screen": "seating",
+      "page": 320,
+      "viewport": 320,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 320,
+      "screen": "calendar",
+      "page": 320,
+      "viewport": 320,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 320,
+      "screen": "guest",
+      "page": 320,
+      "viewport": 320,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    },
+    {
+      "width": 320,
+      "screen": "public",
+      "page": 320,
+      "viewport": 320,
+      "sidebarRight": 0,
+      "sidebarHidden": true,
+      "pass": true
+    }
+  ],
+  "interactions": [
+    "desktop navigation",
+    "task search",
+    "approval option",
+    "seat selection",
+    "guest demo form",
+    "mobile menu"
+  ],
+  "errors": []
+}
