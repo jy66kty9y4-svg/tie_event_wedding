@@ -4,8 +4,12 @@ import { extname, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 import { openDatabase, Fault, assert } from './db.mjs';
-import { digest, token, userSession, rateLimit } from './auth.mjs';
+import { can, requireAccess, digest, token, userSession, rateLimit } from './auth.mjs';
 import { bootstrap, authenticate, register, publicInfo, snapshot, execute, upload, download } from './service.mjs';
+
+import { calendar, notifications, preferences, previewMeeting, processOutbox } from './v2/calendar/index.mjs';
+import { dashboard } from './v2/calendar/readiness.mjs';
+import { members, scoped } from './v2/common.mjs';
 
 const SESSION_COOKIE = 'tie_session';
 const CSRF_COOKIE = 'tie_csrf';
@@ -155,6 +159,18 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
           if (raw) db.prepare('DELETE FROM sessions WHERE digest=?').run(digest(raw));
           return sendJson(res, 200, { ok: true }, { 'Set-Cookie': cookie(SESSION_COOKIE, '', req, { httpOnly: true, clear: true }) });
         }
+        if(url.pathname.startsWith('/api/v2/')) {
+          const u=requireUser(db,req), q=Object.fromEntries(url.searchParams), path=url.pathname;
+          if(req.method==='GET') {
+            if(path==='/api/v2/dashboard')return sendJson(res,200,dashboard(db,u,q));
+            if(path==='/api/v2/calendar/events')return sendJson(res,200,calendar(db,u,q));
+            if(path==='/api/v2/notifications')return sendJson(res,200,notifications(db,u,q));
+            if(path==='/api/v2/notification-preferences')return sendJson(res,200,preferences(db,u));
+            if(path==='/api/v2/members')return sendJson(res,200,{items:members(db,u,q.projectId)});
+            if(path==='/api/v2/calendar/meeting'){const row=scoped(db,u,q.entityId,undefined,'meeting');requireAccess(db,u,'read',row.project_id,'calendar',row.id,null);return sendJson(res,200,row);}
+          }
+          if(req.method==='POST'&&path==='/api/v2/calendar/meeting-preview')return sendJson(res,200,previewMeeting(db,u,await readJson(req)));
+        }
         if (url.pathname === '/api/state' && req.method === 'GET') return sendJson(res, 200, snapshot(db, requireUser(db, req), url.searchParams.get('project') || null));
         if (url.pathname === '/api/offline' && req.method === 'GET') {
           const project = url.searchParams.get('project'); assert(project, 'Укажите проект');
@@ -183,7 +199,8 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
     }
   });
   server.db = db;
-  server.on('close', () => { try { db.close(); } catch { /* already closed */ } });
+  const outboxTimer=setInterval(()=>{try{processOutbox(db)}catch{/* Leave durable work queued for retry; no private payload logging. */}},30000);outboxTimer.unref();
+  server.on('close', () => { clearInterval(outboxTimer); try { db.close(); } catch { /* already closed */ } });
   return server;
 }
 

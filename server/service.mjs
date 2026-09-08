@@ -87,7 +87,7 @@ function filteredRow(db,u,r) {
 }
 function filteredProject(db,u,p) {
   const data={name:p.data.name,date:p.data.date,status:p.data.status};
-  for(const key of ['location','limit','offline','notes']) if(can(db,u,'read',p.id,'project',p.id,key)) data[key]=p.data[key];
+  for(const key of ['location','limit','offline','notes','timeZone','readinessPolicy','leadOrganizerUserId','staffIntervals']) if(can(db,u,'read',p.id,'project',p.id,key)) data[key]=p.data[key];
   return {...p,data};
 }
 function canHoldFunds(db,user,project) {
