@@ -308,14 +308,17 @@ function MovementForm({
 }
 function Applications({
   state,
-  onReview
+  onReview,
+  onRespond
 }) {
   const apps = arr(state.applications);
   return <><PageHeader eyebrow="Заявки" title="Входящие обращения" /><section className="panel">{apps.length ? <div className="data-list">{apps.map(item => {
           const d = dataOf(item);
-          return <article className="application-row" key={item.id}><div><span className={`status-badge ${d.status || 'review'}`}>{statuses[d.status] || 'На рассмотрении'}</span><h2>{d.name}</h2><p>{dateLabel(d.date)} · {d.contact}</p>{d.message && <p>{d.message}</p>}{d.reason && <p className="reason">Решение: {d.reason}</p>}</div>{['review', 'clarification'].includes(d.status || 'review') && <button className="button quiet" onClick={() => onReview(item)}>Рассмотреть</button>}</article>;
+          const needsResponse=['clarification','rejected'].includes(d.status);
+          return <article className="application-row" key={item.id}><div><span className={`status-badge ${d.status || 'review'}`}>{statuses[d.status] || 'На рассмотрении'}</span><h2>{d.name}</h2><p>{dateLabel(d.date)} · {d.contact}</p>{d.message && <p>{d.message}</p>}{d.reason && <p className="reason">Решение: {d.reason}</p>}</div>{onReview && ['review','clarification'].includes(d.status || 'review') && <button className="button quiet" onClick={() => onReview(item)}>Рассмотреть</button>}{!onReview && needsResponse && <button className="button" onClick={()=>onRespond(item)}>Уточнить заявку</button>}{!onReview && d.status==='review' && <span className="quiet-copy">Заявка принята и ожидает решения.</span>}{!onReview && d.status==='approved' && <span className="quiet-copy">Проект открыт в вашем кабинете.</span>}</article>;
         })}</div> : <Empty title="Новых заявок нет" text="Обращения с публичной страницы появятся здесь." />}</section></>;
 }
+function ApplicationResponseForm({ application, onClose, onSave }) { const d=dataOf(application); const [f,set]=useForm({name:d.name||'',date:d.date||'',contact:d.contact||'',message:d.message||''}); const [error,setError]=useState(''); return <Modal title="Уточнить заявку" onClose={onClose}><form className="form-stack" onSubmit={async e=>{e.preventDefault();try{await onSave(f);onClose();}catch(caught){setError(caught.message||'Не удалось отправить уточнение');}}}><p className="form-intro">Исправьте или дополните данные. Заявка вернётся на рассмотрение.</p><FormField label="Как к вам обращаться"><input required value={f.name} onChange={e=>set('name',e.target.value)}/></FormField><FormField label="Дата свадьбы"><input required type="date" value={f.date} onChange={e=>set('date',e.target.value)}/></FormField><FormField label="Почта или телефон"><input required value={f.contact} onChange={e=>set('contact',e.target.value)}/></FormField><FormField label="Что уточнили"><textarea value={f.message} onChange={e=>set('message',e.target.value)}/></FormField>{error&&<p className="form-error">{error}</p>}<FormActions onCancel={onClose} label="Отправить уточнение"/></form></Modal>; }
 function ReviewForm({
   application,
   onClose,
@@ -590,10 +593,11 @@ function App() {
     setMode('app');
     const scoped = arr(next.grants).filter(g => g.project_id || g.projectId).map(g => g.project_id || g.projectId);
     const agencyManagement = arr(next.grants).some(g => !g.project_id && !g.projectId);
-    if (scoped.length === 1 && !agencyManagement) {
-      const project = arr(next.projects).find(p => p.id === scoped[0]);
+    if ((scoped.length === 1 || arr(next.projects).length === 1) && !agencyManagement) {
+      const project = arr(next.projects).find(p => p.id === scoped[0]) || next.projects?.[0];
       if (project) await openProject(project);
     }
+    else if (arr(next.applications).length) setView('applications');
     if (nextModal === 'application') setModal({
       type: 'application'
     });
@@ -721,10 +725,7 @@ function App() {
       type: 'project',
       project: p
     })} />;
-    if (view === 'applications') return <Applications state={state} onReview={item => setModal({
-      type: 'review',
-      item
-    })} />;
+    if (view === 'applications') return <Applications state={state} onReview={arr(state.roles).length ? item => setModal({type:'review',item}) : null} onRespond={item=>setModal({type:'applicationResponse',item})}/>;
     if (view === 'catalog') return <Catalog state={state} onVendor={item => setModal({
       type: 'vendor',
       item
@@ -770,7 +771,7 @@ function App() {
       entityId: modal.item.id,
       version: modal.item.version,
       ...f
-    })} />} {modal?.type === 'vendor' && <VendorForm vendor={modal.item} onClose={() => setModal(null)} onSave={data => run(modal.item ? {
+    })} />} {modal?.type === 'applicationResponse' && <ApplicationResponseForm application={modal.item} onClose={()=>setModal(null)} onSave={data=>run({op:'application.respond',entityId:modal.item.id,version:modal.item.version,data})}/>} {modal?.type === 'vendor' && <VendorForm vendor={modal.item} onClose={() => setModal(null)} onSave={data => run(modal.item ? {
       op: 'entity.edit',
       projectId: modal.project ? projectId : null,
       entityId: modal.item.id,
