@@ -5,9 +5,14 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHttpServer } from '../server/http.mjs';
 
-const playwrightPath = '/Users/cabinpxrn/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs';
+const bundledPlaywrightPath = '/Users/cabinpxrn/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs';
 const chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const { chromium } = await import(pathToFileURL(playwrightPath));
+async function loadPlaywright() {
+  if (process.env.PLAYWRIGHT_MODULE_PATH) return import(pathToFileURL(resolve(process.env.PLAYWRIGHT_MODULE_PATH)));
+  try { return await import('playwright'); }
+  catch { return import(pathToFileURL(bundledPlaywrightPath)); }
+}
+const { chromium } = await loadPlaywright();
 const root = mkdtempSync(join(tmpdir(), 'tie-browser-'));
 const dist = join(root, 'dist');
 const profiles = Object.fromEntries(['admin-a', 'admin-b', 'contractor', 'outsider', 'switch'].map(name => [name, join(root, name)]));
