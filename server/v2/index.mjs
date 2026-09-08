@@ -1,7 +1,10 @@
-import {operations as guestOperations, configureGuestHooks} from './guest/index.mjs';
+import {operations as timingOperations} from '../v2/timing.mjs';
+import {operations as publishingOperations} from './publishing/index.mjs';
+import {operations as workflowOperations} from './workflow/index.mjs';
+import {operations as guestOperations, configureGuestHooks, redactGuestCommandResult} from './guest/index.mjs';
 import { operations as calendarOperations, queueChanges, queueGuestResponse } from './calendar/index.mjs';
 import { readinessOperations } from './calendar/readiness.mjs';
 configureGuestHooks({onRespond:queueGuestResponse});
-const raw={...guestOperations,...calendarOperations,...readinessOperations};
-export const operations=Object.fromEntries(Object.entries(raw).map(([op,descriptor])=>[op,{...descriptor,run(db,u,c){const before=db.prepare('SELECT coalesce(max(rowid),0) AS n FROM audit').get().n;const result=descriptor.run(db,u,c);queueChanges(db,u,before);return result;}}]));
-export const typedKinds=new Set(['task','approval','approvalRevision','comment','meeting','seatingPlan','seatingTable','microsite','micrositeRevision','publicCase','servicePackage','faq','publicRevision','notification']);
+const raw={...timingOperations,...publishingOperations,...workflowOperations,...guestOperations,...calendarOperations,...readinessOperations};
+export const operations=Object.fromEntries(Object.entries(raw).map(([op,descriptor])=>[op,{...descriptor,redactResult:result=>redactGuestCommandResult(op,result),run(db,u,c){const before=db.prepare('SELECT coalesce(max(rowid),0) AS n FROM audit').get().n;const result=descriptor.run(db,u,c);queueChanges(db,u,before);return result;}}]));
+export const typedKinds=new Set(['task','approval','approvalRevision','comment','meeting','seatingPlan','seatingTable','microsite','micrositeRevision','publicCase','servicePackage','faq','publicRevision','publicHome','notification']);

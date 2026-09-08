@@ -1,10 +1,10 @@
-const CACHE = 'tie-shell-v3';
-const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
+const CACHE = 'tie-shell-v5';
+const SHELL = ['/index.html', '/manifest.webmanifest', '/icon.svg'];
 
 function localAsset(value, base = self.location.origin) {
   try {
     const url = new URL(value, base);
-    return url.origin === self.location.origin && !url.pathname.startsWith('/api/') ? url.pathname + url.search : null;
+    return url.origin === self.location.origin && !url.pathname.startsWith('/api/') && !url.pathname.startsWith('/w/') ? url.pathname + url.search : null;
   } catch { return null; }
 }
 
@@ -45,10 +45,9 @@ self.addEventListener('install', event => {
     if (!index.ok) throw new Error(`Shell returned ${index.status}`);
     const html = await index.text();
     await cache.put('/index.html', new Response(html, { status: 200, headers: index.headers }));
-    await cache.put('/', new Response(html, { status: 200, headers: index.headers }));
     const assets = [...html.matchAll(/(?:src|href)=["']([^"']+)["']/g)].map(match => localAsset(match[1])).filter(Boolean);
-    const urls = [...new Set([...SHELL.slice(2), ...assets])];
-    const seen = new Set(['/index.html', '/']);
+    const urls = [...new Set([...SHELL.slice(1), ...assets])];
+    const seen = new Set(['/index.html']);
     for (const url of urls) await precache(cache, url, seen);
     await self.skipWaiting();
   })());
@@ -61,7 +60,7 @@ self.addEventListener('activate', event => {
 function cacheable(request, response) {
   if (request.method !== 'GET' || !response || !response.ok || response.type === 'opaque') return false;
   const url = new URL(request.url);
-  if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return false;
+  if (url.origin !== self.location.origin || url.pathname.startsWith('/api/') || url.pathname.startsWith('/w/')) return false;
   const control = response.headers.get('cache-control') || '';
   return !/no-store|private/i.test(control);
 }
@@ -69,17 +68,18 @@ function cacheable(request, response) {
 self.addEventListener('fetch', event => {
   const request = event.request;
   const url = new URL(request.url);
-  if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
+  if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/') || url.pathname.startsWith('/w/')) return;
+  if (request.mode === 'navigate' && !url.pathname.startsWith('/app') && !['/','/index.html'].includes(url.pathname)) return;
   event.respondWith((async () => {
     try {
       const response = await fetch(request);
-      if (cacheable(request, response)) {
+      if (cacheable(request, response) && !(request.mode === 'navigate' && url.pathname === '/')) {
         const cache = await caches.open(CACHE);
-        await cache.put(request.mode === 'navigate' ? '/' : request, response.clone());
+        await cache.put(request.mode === 'navigate' ? '/index.html' : request, response.clone());
       }
       return response;
     } catch (error) {
-      const cached = await caches.match(request.mode === 'navigate' ? '/' : request);
+      const cached = await caches.match(request.mode === 'navigate' ? '/index.html' : request);
       if (cached) return cached;
       throw error;
     }

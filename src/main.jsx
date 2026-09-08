@@ -1,3 +1,4 @@
+import {TimingSetup} from './v2/TimingSetup.jsx';
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api, command, discardCommand, getOfflineStatus, initClient, loadState, logout, prepareProject, retryCommand, subscribe, syncQueue } from './client.js';
@@ -11,8 +12,14 @@ import {SectionEditor,TableEditor,InvitationEditor,Payouts,ConflictEditor} from 
 import {GrantEditor,TemplateEditor,CategoryEditor} from './ui/ManagementForms.jsx';
 import {Dashboard,CalendarWorkspace,NotificationCenter,NotificationPreferences,ReadinessSettings,VerificationPanel} from './v2/calendar/Workspace.jsx';
 import {GuestWorkspace,SeatingWorkspace} from './v2/guest/Workspace.jsx';
+import {TaskWorkspace,ApprovalWorkspace,RescheduleDialog} from './v2/workflow/Workspace.jsx';
+import {MicrositeWorkspace,AgencyPublishingWorkspace} from './v2/publishing/Workspace.jsx';
 import {parseRoute,viewUrl} from './v2/routes.js';
 import './styles.css';
+const applicationDraftKey='tie:application-draft';
+function savedApplication(){try{return JSON.parse(sessionStorage.getItem(applicationDraftKey)||'{}')}catch{return {}}}
+const incomingSource=Object.fromEntries(['sourceCaseId','sourcePackageId'].map(key=>[key,new URLSearchParams(location.search).get(key)]).filter(([,value])=>value));
+if(Object.keys(incomingSource).length){try{sessionStorage.setItem(applicationDraftKey,JSON.stringify({...savedApplication(),...incomingSource}))}catch{}}
 const arr = value => Array.isArray(value) ? value : [];
 const dataOf = item => item?.data || item || {};
 const byKind = (state, kind) => arr(state?.entities || state?.global).filter(item => item.kind === kind && !item.deleted);
@@ -112,8 +119,10 @@ function ApplicationDialog({
     name: '',
     date: '',
     contact: '',
-    message: ''
+    message: '',...savedApplication()
   });
+  const requestId=useRef(crypto.randomUUID());
+  useEffect(()=>{try{sessionStorage.setItem(applicationDraftKey,JSON.stringify(f))}catch{}},[f]);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
   const submit = async event => {
@@ -122,12 +131,12 @@ function ApplicationDialog({
       await api('/api/command', {
         method: 'POST',
         body: JSON.stringify({
-          id: crypto.randomUUID(),
+          id: requestId.current,
           op: 'application.create',
           data: f
         })
       });
-      setSent(true);
+      sessionStorage.removeItem(applicationDraftKey);setSent(true);
       await onSent?.();
     } catch (err) {
       setError(err.message);
@@ -139,7 +148,7 @@ function ProjectForm({
   project,
   templates = [],
   onClose,
-  onSave
+  onSave, onReschedule
 }) {
   const [f, set] = useForm({
     ...initialProject,
@@ -162,7 +171,7 @@ function ProjectForm({
       setBusy(false);
     }
   };
-  return <Modal title={project ? 'Данные свадьбы' : 'Новая свадьба'} onClose={onClose}><SafeForm className="form-stack" onSubmit={submit}><FormField label="Название"><input autoFocus required placeholder="Алина и Максим" value={f.name} onChange={e => set('name', e.target.value)} /></FormField><div className="form-columns"><FormField label="Дата"><input required type="date" value={f.date} onChange={e => set('date', e.target.value)} /></FormField><FormField label="Лимит бюджета, ₽"><input type="number" min="0" step="0.01" value={f.limit} onChange={e => set('limit', e.target.value)} /></FormField></div><FormField label="Место"><input value={f.location} onChange={e => set('location', e.target.value)} /></FormField><FormField label="Заметка для команды"><textarea value={f.notes} onChange={e => set('notes', e.target.value)} /></FormField>{!project&&templates.length>0&&<FormField label="Шаблон"><select value={f.templateId||''} onChange={e=>set('templateId',e.target.value)}><option value="">Основной</option>{templates.map(t=><option value={t.id} key={t.id}>{t.data.name}</option>)}</select></FormField>}{project&&<><FormField label="Состояние проекта"><select value={f.status} onChange={e=>set('status',e.target.value)}>{['planning','confirmed','completed','archived'].map(k=><option value={k} key={k}>{statuses[k]||k}</option>)}</select></FormField><fieldset className="permission-grid"><legend>Доступно без сети после подготовки</legend>{Object.entries({payouts:'Предстоящие выплаты',budget:'Полная смета и журнал',vendors:'Подрядчики',files:'Список файлов'}).map(([key,label])=><label key={key}><input type="checkbox" checked={f.offline.includes(key)} onChange={e=>set('offline',e.target.checked?[...f.offline,key]:f.offline.filter(x=>x!==key))}/>{label}</label>)}</fieldset><p className="quiet-copy">Каждая рабочая таблица включается отдельно в её структуре. Файлы требуют сети для скачивания.</p></>}<FormActions onCancel={onClose} label={project ? 'Сохранить изменения' : 'Создать свадьбу'} busy={busy} /></SafeForm></Modal>;
+  return <Modal title={project ? 'Данные свадьбы' : 'Новая свадьба'} onClose={onClose}><SafeForm className="form-stack" onSubmit={submit}><FormField label="Название"><input autoFocus required placeholder="Алина и Максим" value={f.name} onChange={e => set('name', e.target.value)} /></FormField><div className="form-columns"><FormField label="Дата"><input required type="date" disabled={!!project} value={f.date} onChange={e => set('date', e.target.value)} />{project&&<button type="button" className="text-button" onClick={onReschedule}>Перенести дату или часовой пояс</button>}</FormField><FormField label="Лимит бюджета, ₽"><input type="number" min="0" step="0.01" value={f.limit} onChange={e => set('limit', e.target.value)} /></FormField></div><FormField label="Место"><input value={f.location} onChange={e => set('location', e.target.value)} /></FormField><FormField label="Заметка для команды"><textarea value={f.notes} onChange={e => set('notes', e.target.value)} /></FormField>{!project&&templates.length>0&&<FormField label="Шаблон"><select value={f.templateId||''} onChange={e=>set('templateId',e.target.value)}><option value="">Основной</option>{templates.map(t=><option value={t.id} key={t.id}>{t.data.name}</option>)}</select></FormField>}{project&&<><FormField label="Состояние проекта"><select value={f.status} onChange={e=>set('status',e.target.value)}>{['planning','confirmed','completed','archived'].map(k=><option value={k} key={k}>{statuses[k]||k}</option>)}</select></FormField><fieldset className="permission-grid"><legend>Доступно без сети после подготовки</legend>{Object.entries({payouts:'Предстоящие выплаты',budget:'Полная смета и журнал',vendors:'Подрядчики',files:'Список файлов'}).map(([key,label])=><label key={key}><input type="checkbox" checked={f.offline.includes(key)} onChange={e=>set('offline',e.target.checked?[...f.offline,key]:f.offline.filter(x=>x!==key))}/>{label}</label>)}</fieldset><p className="quiet-copy">Каждая рабочая таблица включается отдельно в её структуре. Файлы требуют сети для скачивания.</p></>}<FormActions onCancel={onClose} label={project ? 'Сохранить изменения' : 'Создать свадьбу'} busy={busy} /></SafeForm></Modal>;
 }
 function Projects({
   state,
@@ -482,7 +491,7 @@ function Workspace({
   const table = tab === 'table' ? tables.find(e => e.id === targetTableId) : tables.find(e => dataOf(e).key === tableKey || dataOf(e).name?.toLowerCase().includes(tab === 'timing' ? 'тайминг' : 'гост'));
   const rows = table ? entities.filter(e => e.parent_id === table.id && !e.deleted) : [];
   let content;
-  if (tab === 'payouts' || (state.offline && !state.financials && ['overview','estimate'].includes(tab))) content=<Payouts state={state} onPay={onMovement}/>;else if (tab === 'overview') content = <Overview state={state} onProjectEdit={onProjectEdit} openTab={key => setView(`project:${key}`)} onMovement={onMovement} />;else if (tab === 'estimate') content = <Finance state={state} onCategory={onCategory} onDeleteObligation={onDeleteObligation} onMovement={onMovement} onAddObligation={onAddObligation} onEditObligation={onEditObligation} onEditMovement={onEditMovement} onDeleteMovement={onDeleteMovement} />;else if (tab === 'catalog') content = <Catalog state={state} projectMode onVendor={onVendor} />;else if (tab === 'files') content = <Files state={state} onFile={onFile} />;else if (tab === 'history') content = <History state={state} onRestore={onRestore} />;else if (tab === 'tables') content = <><PageHeader eyebrow="Структура проекта" title="Все рабочие таблицы" action={<button className="button" onClick={onCreateTable}><Icon name="plus"/>Таблица</button>}/><TableLibrary tables={tables} sections={entities.filter(e=>e.kind==='section'&&!e.deleted)} setView={setView} onSection={onSection} onTable={(item,action)=>action==='delete'?onTable('delete',item):onTable('structure',item)}/></>;else content = <><PageHeader eyebrow="Рабочая таблица" title={dataOf(table).name || (tab === 'guests' ? 'Гости и рассадка' : 'Тайминг дня')} action={<button className="button quiet" onClick={onInvite}><Icon name="plus" />Пригласить участника</button>} /><TableWorkspace key={table?.id} relationRows={entities.filter(e=>e.kind==='row')} table={table} rows={rows} files={entities.filter(e=>e.kind==='file'&&!e.deleted)} audience={tab==='timing-pair'?'Пара':tab==='timing-team'?'Команда':null} canEdit={has(state,'edit',state.project.id)} canCreate={permitted(state,'create',table?.id,null,null)} canStructure={permitted(state,['edit','structure'],table?.id,table?.id,null)} canEditField={(row,col)=>permitted(state,'edit',table?.id,row.id,col.id)} canDeleteRow={row=>permitted(state,'delete',table?.id,row.id,null)} onEditRow={(row, data) => onTable('edit', row, data)} onAddRow={() => onTable('add', table)} onEditTable={() => onTable('structure', table)} onDeleteRow={row => onTable('delete', row)} onReorder={rowOrder=>onTable('reorder',table,rowOrder)} /></>;
+  if (tab === 'payouts' || (state.offline && !state.financials && ['overview','estimate'].includes(tab))) content=<Payouts state={state} onPay={onMovement}/>;else if(tab==='offline')content=<PageHeader eyebrow="Работа без сети" title="Данные на этом устройстве"/>;else if (tab === 'overview') content = <Overview state={state} onProjectEdit={onProjectEdit} openTab={key => setView(`project:${key}`)} onMovement={onMovement} />;else if (tab === 'estimate') content = <Finance state={state} onCategory={onCategory} onDeleteObligation={onDeleteObligation} onMovement={onMovement} onAddObligation={onAddObligation} onEditObligation={onEditObligation} onEditMovement={onEditMovement} onDeleteMovement={onDeleteMovement} />;else if (tab === 'catalog') content = <Catalog state={state} projectMode onVendor={onVendor} />;else if (tab === 'files') content = <Files state={state} onFile={onFile} />;else if (tab === 'history') content = <History state={state} onRestore={onRestore} />;else if (tab === 'tables') content = <><PageHeader eyebrow="Структура проекта" title="Все рабочие таблицы" action={<button className="button" onClick={onCreateTable}><Icon name="plus"/>Таблица</button>}/><TableLibrary tables={tables} sections={entities.filter(e=>e.kind==='section'&&!e.deleted)} setView={setView} onSection={onSection} onTable={(item,action)=>action==='delete'?onTable('delete',item):onTable('structure',item)}/></>;else content = <><PageHeader eyebrow="Рабочая таблица" title={dataOf(table).name || (tab === 'guests' ? 'Гости и рассадка' : 'Тайминг дня')} action={<button className="button quiet" onClick={onInvite}><Icon name="plus" />Пригласить участника</button>} />{tab.startsWith('timing')&&runV2&&!state.offline&&<details className="v2-timing-details"><summary>Настройка календаря и ответственных</summary><TimingSetup state={state} projectId={state.project.id} table={table} run={runV2}/></details>}<TableWorkspace members={state.assignableMembers||state.members||[]} key={table?.id} relationRows={entities.filter(e=>['row','seatingTable'].includes(e.kind))} table={table} rows={rows} files={entities.filter(e=>e.kind==='file'&&!e.deleted)} audience={tab==='timing-pair'?'Пара':tab==='timing-team'?'Команда':null} canEdit={has(state,'edit',state.project.id)} canCreate={permitted(state,'create',table?.id,null,null)} canStructure={permitted(state,['edit','structure'],table?.id,table?.id,null)} canEditField={(row,col)=>permitted(state,'edit',table?.id,row.id,col.id)} canDeleteRow={row=>permitted(state,'delete',table?.id,row.id,null)} onEditRow={(row, data) => onTable('edit', row, data)} onAddRow={() => onTable('add', table)} onEditTable={() => onTable('structure', table)} onDeleteRow={row => onTable('delete', row)} onReorder={rowOrder=>onTable('reorder',table,rowOrder)} /></>;
   return <>{content}{['files','catalog'].includes(tab)&&runV2&&<VerificationPanel state={state} projectId={state.project.id} run={runV2} type={tab==='files'?'file':'selection'}/>}<Offline project={state.project} status={offline} {...offlineActions} /></>;
 }
 function Files({
@@ -522,9 +531,10 @@ function App() {
   const setView=next=>{setViewState(next);const path=viewUrl(next,activeProject.current);if(location.pathname!==path)history.pushState(null,'',path+location.search);};
   const navigate=async path=>{const route=parseRoute(new URL(path,location.origin).pathname);if(!route)return;try{const next=await loadState(route.projectId);activeProject.current=route.projectId;setState(next);setSelected(next.project||null);setViewState(route.view);history.pushState(null,'',path);setOffline(await getOfflineStatus(route.projectId));}catch(error){flash(error.message,'error')}};
   useEffect(()=>{const pop=async()=>{const route=parseRoute(location.pathname);if(!route)return;try{const next=await loadState(route.projectId);activeProject.current=route.projectId;setSelected(next.project||null);setState(next);setViewState(route.view);setMode('app');}catch(error){if(error.status===401)setMode('public');else flash(error.message,'error')}};window.addEventListener('popstate',pop);return()=>window.removeEventListener('popstate',pop)},[]);
+  useEffect(()=>{const parts=view.split(':'),target=parts[2];if(!target)return;if(['estimate','payouts','catalog','files'].includes(parts[1])){const row=state?.entities?.find(r=>r.id===target);if(!row)return;if(row.kind==='obligation')setModal({type:'obligation',item:row});if(row.kind==='selection')setModal({type:'vendor',item:row,project:true});}},[view,state?.project?.id]);
   const acceptState = useCallback(async next => {
-    const requested=parseRoute(location.pathname);
-    if(requested?.projectId&&!next.project) {next=await loadState(requested.projectId);}
+    let requested=parseRoute(location.pathname);
+    if(requested?.projectId&&!next.project){try{if(Array.isArray(next.projects)&&!next.projects.some(p=>p.id===requested.projectId)){const error=new Error('Доступ к свадьбе отозван');error.status=403;throw error;}next=await loadState(requested.projectId)}catch(error){if(![403,404].includes(error.status))throw error;requested=null;history.replaceState(null,'','/app/applications');flash('Доступ к свадьбе отозван','error');}}
     let project=next.project;
     const staff=has(next,'projects');
     if(!project && !staff && arr(next.projects).length===1) project=next.projects[0];
@@ -535,7 +545,7 @@ function App() {
   },[]);
   useEffect(() => {
     let alive=true;
-    (async()=>{try{await initClient();let next=await loadState();const invite=new URLSearchParams(location.search).get('invite');if(invite&&navigator.onLine){try{await command({op:'invite.accept',token:invite});const url=new URL(location.href);url.searchParams.delete('invite');history.replaceState(null,'',url);next=await loadState();}catch(error){flash(error.message,'error');}}if(alive)await acceptState(next);}catch{try{const info=await api(`/api/public?agency=${encodeURIComponent(agencySlug())}`);if(alive)setPublicInfo(info);}catch{}if(alive)setMode('public');}})();
+    (async()=>{try{await initClient();let next=await loadState();const invite=new URLSearchParams(location.search).get('invite');if(invite&&navigator.onLine){try{await command({op:'invite.accept',token:invite});const url=new URL(location.href);url.searchParams.delete('invite');history.replaceState(null,'',url);next=await loadState();}catch(error){flash(error.message,'error');}}if(alive){await acceptState(next);if(Object.keys(incomingSource).length)setModal({type:'application'});}}catch{try{const info=await api(`/api/public?agency=${encodeURIComponent(agencySlug())}`);if(alive)setPublicInfo(info);}catch{}if(alive){setMode('public');if(Object.keys(incomingSource).length)setModal({type:'auth',mode:'login',next:'application'});}}})();
     const off=subscribe(async()=>{try{const next=await loadState(activeProject.current);if(alive){setState(next);setOffline(await getOfflineStatus(activeProject.current));}}catch(error){if(error.status===401&&alive){setState(null);setMode('public');}else if(error.status===403&&alive){activeProject.current=null;await acceptState(await loadState());}}});
     const timer=setInterval(async()=>{if(!navigator.onLine||document.visibilityState!=='visible')return;try{const next=await loadState(activeProject.current);if(alive){if(!activeProject.current&&!has(next,'projects')&&next.projects?.length===1)await acceptState(next);else setState(next);}}catch{}},15000);
     return()=>{alive=false;off();clearInterval(timer)};
@@ -579,7 +589,7 @@ function App() {
     const invitation=new URLSearchParams(location.search).get('invite');
     if(invitation){await command({op:'invite.accept',token:invitation});const url=new URL(location.href);url.searchParams.delete('invite');history.replaceState(null,'',url);}
     await acceptState(await loadState());
-    if(nextModal==='application')setModal({type:'application'});
+    if(nextModal==='application'||savedApplication().sourceCaseId||savedApplication().sourcePackageId)setModal({type:'application'});
   };
   if (mode === 'loading') return <div className="loading"><Mark /><span>Открываем tie</span></div>;
   if (mode === 'public') return <><PublicHome info={publicInfo} onAuth={type => setModal({
@@ -614,6 +624,18 @@ function App() {
       schemaVersion: item.version,
       data: {}
     }, projectId);
+    if(type==='edit'&&item.kind==='row'){
+      const table=entities.find(e=>e.id===item.parent_id),m=table?.data.semanticMap;
+      if(m?.rsvpStatus&&[m.rsvpStatus,m.seatingTable,m.seatIndex].filter(Boolean).some(key=>Object.hasOwn(payload,key))){
+        const data={...payload},seatChanged=[m.seatingTable,m.seatIndex].filter(Boolean).some(key=>Object.hasOwn(data,key));
+        if(Object.hasOwn(data,m.rsvpStatus))data[m.rsvpStatus]=Object.entries(m.rsvpValues||{}).find(([,value])=>value===data[m.rsvpStatus])?.[0]||data[m.rsvpStatus];
+        let target;if(seatChanged){data[m.seatingTable]=data[m.seatingTable]===undefined?item.data[m.seatingTable]:data[m.seatingTable];data[m.seatIndex]=data[m.seatIndex]===undefined?item.data[m.seatIndex]:data[m.seatIndex];if(!data[m.seatingTable])data[m.seatIndex]=null;target=entities.find(e=>e.id===data[m.seatingTable]);}
+        const confirmed=data[m.rsvpStatus]==='confirmed'||!Object.hasOwn(data,m.rsvpStatus)&&[m.rsvpValues?.confirmed,'confirmed'].includes(item.data[m.rsvpStatus]);
+        const confirmNonConfirmed=!!target&&!confirmed&&window.confirm('Гость ещё не подтвердил присутствие. Назначить ему место?');
+        if(target&&!confirmed&&!confirmNonConfirmed)return;
+        return run({op:'guest.row.edit',projectId,guestTableId:table.id,guestRowId:item.id,rowVersion:item.version,schemaVersion:table.version,data,tableVersion:target?.version,confirmNonConfirmed},projectId);
+      }
+    }
     if (type === 'edit') return run({
       op: 'entity.edit',
       projectId,
@@ -646,6 +668,10 @@ function App() {
   }, projectId);
   const moduleProps={state,projectId,run:(op,body)=>run({op,...body},body?.projectId===undefined?activeProject.current:body.projectId),refresh:()=>refresh(activeProject.current),navigate};
   const renderMain = () => {
+    if(view==='content')return <AgencyPublishingWorkspace {...moduleProps}/>;
+    if(view==='project:site')return <MicrositeWorkspace {...moduleProps}/>;
+    if(view==='tasks'||view.startsWith('project:tasks'))return <TaskWorkspace {...moduleProps} projectId={view==='tasks'?null:projectId} sourceId={view.split(':')[2]}/>;
+    if(view.startsWith('project:approvals'))return <ApprovalWorkspace {...moduleProps} sourceId={view.split(':')[2]}/>;
     if(view==='project:guests')return <GuestWorkspace {...moduleProps}/>;
     if(view==='project:seating')return <SeatingWorkspace {...moduleProps}/>;
     if(view==='today'||view==='project:overview'&&!state.offline)return <Dashboard {...moduleProps} projectId={view==='today'?null:projectId}/>;
@@ -655,7 +681,7 @@ function App() {
     if(view==='project:more')return <><PageHeader eyebrow="Наша свадьба" title="Ещё в проекте"/><div className="v2-more-grid">{[['site','Сайт свадьбы'],['tables','Все таблицы'],['files','Файлы'],['history','История'],['members','Участники'],['offline','Офлайн'],['calendar','Календарь'],['settings','Данные свадьбы']].map(([key,label])=><button key={key} onClick={()=>setView('project:'+key)}>{label} →</button>)}</div></>;
     if(view==='project:settings')return <ReadinessSettings {...moduleProps} onEditProject={()=>setModal({type:'project',project:state.project})}/>;
     if(view==='project:members')return <><PageHeader eyebrow="Участники проекта" title="Вместе над свадьбой"/><div className="panel">{state.assignableMembers?.map(u=><p key={u.id}>{u.name}</p>)}<button className="button" onClick={()=>setModal({type:'invite'})}>Пригласить участника</button></div></>;
-    if(view==='templates')return <Settings state={state} onSave={values=>run({op:'settings.save',version:state.agency.version,...values})} onTemplate={item=>setModal({type:'template',item})}/>;
+    if(view==='templates')return <><PageHeader eyebrow="Структура и подготовка" title="Шаблоны свадеб" action={<button className="button" onClick={()=>setModal({type:'template'})}>Новый шаблон</button>}/><div className="panel data-list">{byKind(state,'template').map(item=><button key={item.id} className="data-row" onClick={()=>setModal({type:'template',item})}>{item.data.name}<span>Изменить →</span></button>)}</div></>;
 
     if (workspace) return <Workspace runV2={moduleProps.run} state={state} view={view} setView={setView} onProjectEdit={() => setModal({
       type: 'project',
@@ -742,7 +768,7 @@ function App() {
       setState(null);
       setMode('public');
       setView('projects');
-    }}>{renderMain()}</AppShell><Notice notice={notice} onDismiss={() => setNotice(null)} />{modal?.type === 'application' && <ApplicationDialog onClose={()=>setModal(null)} onSent={async()=>{await refresh(null);setView('applications')}}/>}{modal?.type === 'project' && <ProjectForm project={modal.project} templates={byKind(state,'template')} onClose={() => setModal(null)} onSave={saveProject} />} {modal?.type === 'obligation' && <ObligationForm obligation={modal.item} categories={byKind(state,"category")} users={state.members||state.custodians||[]} onClose={() => setModal(null)} onSave={data => run(modal.item ? {
+    }}>{renderMain()}</AppShell><Notice notice={notice} onDismiss={() => setNotice(null)} />{modal?.type === 'application' && <ApplicationDialog onClose={()=>setModal(null)} onSent={async()=>{await refresh(null);setView('applications')}}/>}{modal?.type === 'project' && <ProjectForm project={modal.project} templates={byKind(state,'template')} onClose={() => setModal(null)} onSave={saveProject} onReschedule={()=>setModal({type:'reschedule'})} />} {modal?.type==='reschedule'&&<RescheduleDialog {...moduleProps} currentDate={state.project.data.date} currentTimeZone={state.project.data.timeZone} onDone={()=>refresh(projectId)} onClose={()=>setModal(null)}/>} {modal?.type === 'obligation' && <ObligationForm obligation={modal.item} categories={byKind(state,"category")} users={state.members||state.custodians||[]} onClose={() => setModal(null)} onSave={data => run(modal.item ? {
       op: 'entity.edit',
       projectId,
       entityId: modal.item.id,

@@ -1,3 +1,4 @@
+import {DEFAULT_TASK_BLUEPRINTS,DEFAULT_TASK_PHASES} from '../task-blueprints.js';
 import { useMemo, useState } from 'react';
 import { FormField, Modal } from './Modal.jsx';
 import { fieldTypes, permissionLabels } from '../shared.js';
@@ -108,6 +109,8 @@ export function TemplateEditor({
   onSave
 }) {
   const base = template ? dataOf(template) : defaults || {};
+  const [blueprints,setBlueprints]=useState(base.taskBlueprints||DEFAULT_TASK_BLUEPRINTS);
+  const [phases,setPhases]=useState(base.taskPhases||DEFAULT_TASK_PHASES);
   const [name, setName] = useState(base.name || 'Шаблон свадеб');
   const [sections, setSections] = useState(base.sections || []);
   const [tables, setTables] = useState(base.tables || []);
@@ -120,7 +123,7 @@ export function TemplateEditor({
     try {
       setError('');
       await onSave({
-        name,
+        name,taskBlueprints:blueprints,taskPhases:phases,
         sections: sections.map((s, i) => ({
           ...s,
           order: i
@@ -140,7 +143,7 @@ export function TemplateEditor({
   } : item));
   const move = (setter, index, step) => setter(items => { const target=index+step; if(target<0||target>=items.length)return items; const next=[...items]; [next[index],next[target]]=[next[target],next[index]]; return next; });
   const nativeOffline=[['payouts','Предстоящие выплаты'],['budget','Смета'],['vendors','Подрядчики'],['files','Файлы']];
-  return <Modal wide title={template ? 'Шаблон свадеб' : 'Новый шаблон'} onClose={onClose}><form className="form-stack" onSubmit={save}><FormField label="Название"><input required value={name} onChange={e => setName(e.target.value)} /></FormField><fieldset className="column-editor"><legend>Разделы</legend>{sections.map((section, i) => <div key={section.key}><input value={section.name} onChange={e => setSections(items => items.map((s, n) => n === i ? {
+  return <Modal wide title={template ? 'Шаблон свадеб' : 'Новый шаблон'} onClose={onClose}><form className="form-stack" onSubmit={save}><FormField label="Название"><input required value={name} onChange={e => setName(e.target.value)} /></FormField><fieldset className="column-editor"><legend>Этапы подготовки</legend>{phases.map((phase,i)=><div key={phase.key}><input aria-label="Название этапа" value={phase.name} onChange={e=>setPhases(items=>items.map((x,n)=>n===i?{...x,name:e.target.value}:x))}/><button type="button" onClick={()=>setPhases(items=>items.filter((_,n)=>n!==i))}>Удалить этап</button></div>)}<button type="button" onClick={()=>setPhases(items=>[...items,{key:crypto.randomUUID(),name:'Новый этап'}])}>Добавить этап</button></fieldset><fieldset className="column-editor"><legend>Задачи подготовки</legend>{blueprints.map((task,i)=><div className="template-table" key={task.key}><FormField label="Задача"><input required value={task.title} onChange={e=>setBlueprints(items=>items.map((x,n)=>n===i?{...x,title:e.target.value}:x))}/></FormField><div className="form-columns"><FormField label="Этап"><select value={task.phaseKey} onChange={e=>setBlueprints(items=>items.map((x,n)=>n===i?{...x,phaseKey:e.target.value}:x))}>{phases.map(p=><option key={p.key} value={p.key}>{p.name}</option>)}</select></FormField><FormField label="Дней относительно свадьбы"><input type="number" min="-1095" max="1095" value={task.offsetDays} onChange={e=>setBlueprints(items=>items.map((x,n)=>n===i?{...x,offsetDays:Number(e.target.value)}:x))}/></FormField><FormField label="Ответственный"><select value={task.assigneeRole||''} onChange={e=>setBlueprints(items=>items.map((x,n)=>n===i?{...x,assigneeRole:e.target.value||null}:x))}>{[['','Не назначен'],['leadOrganizer','Ведущий организатор'],['couple','Пара, если участник один'],['organizer','Организатор, если участник один'],['coordinator','Координатор, если участник один']].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></FormField></div><FormField label="Зависит от"><select multiple value={task.dependencyKeys||[]} onChange={e=>setBlueprints(items=>items.map((x,n)=>n===i?{...x,dependencyKeys:[...e.target.selectedOptions].map(o=>o.value)}:x))}>{blueprints.filter(x=>x.key!==task.key).map(x=><option key={x.key} value={x.key}>{x.title}</option>)}</select></FormField><button type="button" onClick={()=>setBlueprints(items=>items.filter((_,n)=>n!==i).map(x=>({...x,dependencyKeys:(x.dependencyKeys||[]).filter(k=>k!==task.key)})))}>Удалить задачу</button></div>)}<button type="button" onClick={()=>setBlueprints(items=>[...items,{key:crypto.randomUUID(),title:'Новая задача',phaseKey:phases[0]?.key||'general',offsetDays:0,order:items.length,dependencyKeys:[]}])}>Добавить задачу</button></fieldset><fieldset className="column-editor"><legend>Разделы</legend>{sections.map((section, i) => <div key={section.key}><input value={section.name} onChange={e => setSections(items => items.map((s, n) => n === i ? {
             ...s,
             name: e.target.value
           } : s))} /><small>{section.key}</small><button type="button" className="text-button" onClick={()=>move(setSections,i,-1)}>↑</button><button type="button" className="text-button" onClick={()=>move(setSections,i,1)}>↓</button><button type="button" className="icon-button" onClick={() => setSections(items => items.filter((_, n) => n !== i))}>×</button></div>)}<button type="button" className="text-button" onClick={() => setSections(items => [...items, {

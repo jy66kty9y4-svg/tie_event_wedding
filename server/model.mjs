@@ -1,3 +1,4 @@
+import {DEFAULT_TASK_BLUEPRINTS,DEFAULT_TASK_PHASES} from '../src/task-blueprints.js';
 import { assert, entity, entities, insert, uid } from './db.mjs';
 import { can, requireAccess } from './auth.mjs';
 import { compute, fieldTypes } from '../src/shared.js';
@@ -16,7 +17,7 @@ export function projectVisible(db,u,id) {
   if (u.protected || can(db,u,'read',id)) return true;
   return db.prepare('SELECT g.*,r.permissions FROM grants g JOIN roles r ON g.role_id=r.id WHERE g.agency_id=? AND r.agency_id=? AND g.user_id=? AND (g.project_id=? OR g.project_id IS NULL)').all(u.agency_id,u.agency_id,u.id,id).some(g=>JSON.parse(g.permissions).includes('read'));
 }
-export const initialTemplate = () => ({name:'Свадьба — основной',sections:[
+export const initialTemplate = () => ({name:'Свадьба — основной',taskBlueprints:structuredClone(DEFAULT_TASK_BLUEPRINTS),taskPhases:structuredClone(DEFAULT_TASK_PHASES),sections:[
   {key:'preparation',name:'Подготовка',order:0},{key:'day',name:'День свадьбы',order:1},{key:'people',name:'Гости и материалы',order:2}
 ], tables:[
   {key:'timing',name:'Тайминг',section:'day',offline:true,columns:[{id:'time',name:'Начало',type:'time'},{id:'end',name:'Окончание',type:'time'},{id:'title',name:'Событие',type:'text'},{id:'place',name:'Место',type:'text'},{id:'audience',name:'Для кого',type:'select',options:['Общее','Пара','Команда']},{id:'people',name:'Участники',type:'text'},{id:'responsible',name:'Ответственный',type:'text'},{id:'done',name:'Выполнено',type:'boolean'}]},
@@ -58,6 +59,7 @@ export function validateRow(db,u,table,values,changedKeys=Object.keys(values)) {
     if(c.type==='time') assert(typeof v==='string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(v),'Время: ЧЧ:ММ');
     if(c.type==='boolean') assert(typeof v==='boolean','Требуется флажок');
     if(c.type==='select') assert(c.options.includes(v),'Выберите вариант из списка');
+    if(c.type==='users') { assert(Array.isArray(v)&&v.length<=100&&new Set(v).size===v.length&&v.every(id=>typeof id==='string'),'Выберите участников проекта'); const available=new Set(db.prepare('SELECT * FROM users WHERE agency_id=? AND disabled=0').all(u.agency_id).filter(person=>projectVisible(db,person,table.project_id)).map(person=>person.id)); assert(v.every(id=>available.has(id)),'Участник больше не имеет доступа к проекту',409); }
     if(c.type==='url') safeUrl(v);
     if(c.type==='formula') assert(false,'Вычисляемая колонка не редактируется');
     if(c.type==='relation' || c.type==='file') { const target=getScoped(db,u,v,table.project_id,c.type==='file'?'file':c.targetKind==='seatingTable'?'seatingTable':'row'); assert(!target.deleted,'Связанная запись удалена'); requireAccess(db,u,c.type==='file'?['read','files']:['read'],table.project_id,sectionOf(target),target.id); }

@@ -1,20 +1,21 @@
+import {createPortal} from 'react-dom';
 import { useEffect, useRef, useState } from 'react';
 
 export function Modal({ title, children, onClose, wide = false }) {
-  const root=useRef(null),dirty=useRef(false),closeRef=useRef(onClose);closeRef.current=onClose;
+  const root=useRef(null),previousFocus=useRef(document.activeElement),dirty=useRef(false),closeRef=useRef(onClose);closeRef.current=onClose;
   const requestClose=()=>{if(!dirty.current||window.confirm('Закрыть без сохранения изменений?'))closeRef.current();};
   useEffect(()=>{
-    const previous=document.activeElement,host=root.current;
+    const previous=previousFocus.current,host=root.current,shell=document.querySelector('.app-shell'),wasInert=shell?.inert,overflow=document.body.style.overflow;if(shell)shell.inert=true;document.body.style.overflow='hidden';
     const focusable=()=>[...host.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex="0"]')].filter(e=>e.getClientRects().length);
     const first=host.querySelector('[autofocus]')||focusable()[0];first?.focus();
     const key=e=>{if(e.key==='Escape'){e.preventDefault();requestClose();}if(e.key==='Tab'){const all=focusable(),first=all[0],last=all.at(-1);if(!all.length){e.preventDefault();host.focus();}else if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}};
-    host.addEventListener('keydown',key);return()=>{host.removeEventListener('keydown',key);if(previous?.isConnected)previous.focus();};
+    host.addEventListener('keydown',key);return()=>{host.removeEventListener('keydown',key);if(shell)shell.inert=wasInert;document.body.style.overflow=overflow;if(previous?.isConnected)previous.focus();};
   },[]);
-  return <div className="modal-backdrop" role="presentation" onMouseDown={event=>event.currentTarget===event.target&&requestClose()}>
+  return createPortal(<div className="modal-backdrop" role="presentation" onMouseDown={event=>event.currentTarget===event.target&&requestClose()}>
     <section ref={root} tabIndex={-1} className={`modal ${wide?'modal-wide':''}`} role="dialog" aria-modal="true" aria-label={title} onChangeCapture={()=>{dirty.current=true}} onClickCapture={event=>{const button=event.target.closest('button');if(button&&button.textContent.trim()==='Отмена'&&dirty.current&&!window.confirm('Закрыть без сохранения изменений?')){event.preventDefault();event.stopPropagation();}}}>
       <header className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={requestClose} aria-label="Закрыть">×</button></header>{children}
     </section>
-  </div>;
+  </div>,document.body);
 }
 
 export function FormField({ label, hint, children }) {

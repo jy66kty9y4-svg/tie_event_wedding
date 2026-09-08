@@ -3,6 +3,8 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { migrate as migrateGuests } from './v2/guest/index.mjs';
+import { migrate as migratePublishing, migrateLegacyDrafts } from './v2/publishing/index.mjs';
+import { migrate as migrateWorkflow } from './v2/workflow/index.mjs';
 import { migrate as migrateCalendar } from './v2/calendar/index.mjs';
 
 export const uid = () => randomUUID();
@@ -54,6 +56,18 @@ export function openDatabase(path) {
     db.prepare("INSERT INTO migrations VALUES(4,datetime('now'))").run();
   });
   if(!db.prepare('SELECT version FROM migrations WHERE version=5').get()) transaction(db,()=>{migrateGuests(db);db.prepare("INSERT INTO migrations VALUES(5,datetime('now'))").run();});
+  if(!db.prepare('SELECT version FROM migrations WHERE version=6').get()) transaction(db,()=>{
+    migratePublishing(db);migrateWorkflow(db);
+    db.exec('CREATE TABLE IF NOT EXISTS legacy_public_imports(agency_id TEXT PRIMARY KEY, result TEXT NOT NULL, imported_at TEXT NOT NULL)');
+    for(const agency of db.prepare('SELECT id FROM agencies').all()) {
+      const u=db.prepare('SELECT * FROM users WHERE agency_id=? AND protected=1 AND disabled=0 LIMIT 1').get(agency.id);
+      if(u&&!db.prepare('SELECT agency_id FROM legacy_public_imports WHERE agency_id=?').get(agency.id)) {
+        const result=migrateLegacyDrafts(db,u);
+        db.prepare('INSERT INTO legacy_public_imports VALUES(?,?,?)').run(agency.id,JSON.stringify(result),now());
+      }
+    }
+    db.prepare("INSERT INTO migrations VALUES(6,datetime('now'))").run();
+  });
   return db;
 }
 export function transaction(db, fn) {

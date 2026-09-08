@@ -60,7 +60,7 @@ async function openPage(context, name) {
   watch(page, name);
   await page.goto(origin);
   await page.waitForLoadState('networkidle');
-  await page.getByText(/Подготовка, в которой|Все проекты|Входящие обращения/).first().waitFor();
+  await page.getByText(/Подготовка, в которой|Сегодня|Все проекты|Входящие обращения/).first().waitFor();
   return page;
 }
 
@@ -111,7 +111,7 @@ try {
   await loginUi(couplePage, 'couple-ui@example.test', 'couple-ui-password');
   await couplePage.getByRole('heading', { name: 'Couple UI Project', exact: true }).waitFor();
 
-  await couplePage.getByRole('navigation', { name: 'Основная навигация' }).getByRole('button', { name: 'Все таблицы', exact: true }).click();
+  await couplePage.goto(`${origin}/app/projects/${project.id}/more`); await couplePage.getByRole('button', { name: /Все таблицы/ }).click();
   await couplePage.getByRole('heading', { name: 'Все рабочие таблицы', exact: true }).waitFor();
   await couplePage.getByRole('button', { name: '+ Раздел', exact: true }).click();
   let dialog = couplePage.getByRole('dialog', { name: 'Новый раздел' });
@@ -146,7 +146,7 @@ try {
   const persistedRow = coupleState.entities.find(item => item.kind === 'row' && item.parent_id === customTable.id);
   assert.equal(persistedRow.data[moneyColumn.id], 12345);
 
-  await couplePage.getByRole('navigation', { name: 'Основная навигация' }).getByRole('button', { name: 'Смета', exact: true }).click();
+  await couplePage.goto(`${origin}/app/projects/${project.id}/finance/estimate`);
   await couplePage.getByRole('heading', { name: 'Смета и выплаты', exact: true }).waitFor();
   await couplePage.locator('.page-header').getByRole('button', { name: 'Статья', exact: true }).click();
   dialog = couplePage.getByRole('dialog', { name: 'Новая статья сметы' });
@@ -183,7 +183,7 @@ try {
   await couplePage.reload();
   await couplePage.waitForLoadState('networkidle');
   await openProjectFromList(couplePage, 'Couple UI Project');
-  await couplePage.getByRole('navigation', { name: 'Основная навигация' }).getByRole('button', { name: 'Смета', exact: true }).click();
+  await couplePage.goto(`${origin}/app/projects/${project.id}/finance/estimate`);
   await couplePage.getByText('Исправленный платёж UI', { exact: true }).waitFor();
 
   coupleState = await coupleApi.get(`/api/state?project=${project.id}`);
@@ -194,8 +194,8 @@ try {
   assert.equal(coupleState.financials.paid[photographer.id], 30075);
 
   await couplePage.setViewportSize({ width: 390, height: 844 });
-  await couplePage.locator('button.mobile-menu').click();
-  await couplePage.getByRole('navigation', { name: 'Основная навигация' }).getByRole('button', { name: 'Все таблицы', exact: true }).click();
+  await couplePage.goto(`${origin}/app/projects/${project.id}/more`);
+  await couplePage.getByRole('button', { name: /Все таблицы/ }).click();
   await openCustomTable(couplePage, 'Расходы дня UI');
   const mobileRow = couplePage.locator('tbody tr').first();
   await mobileRow.getByRole('button', { name: 'Изменить', exact: true }).click();
@@ -225,8 +225,8 @@ try {
   const adminContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const adminPage = await openPage(adminContext, 'admin');
   await loginUi(adminPage, 'admin-ui@example.test', 'admin-ui-password');
-  await adminPage.getByRole('heading', { name: 'Все проекты', exact: true }).waitFor();
-  await adminPage.getByRole('navigation', { name: 'Основная навигация' }).getByRole('button', { name: 'Заявки', exact: true }).click();
+  await adminPage.getByRole('button', { name: 'Сегодня', exact: true }).waitFor();
+  await adminPage.goto(`${origin}/app/applications`);
   let applicationRow = adminPage.locator('.application-row').filter({ hasText: 'Заявка UI' });
   await applicationRow.getByRole('button', { name: 'Рассмотреть', exact: true }).click();
   dialog = adminPage.getByRole('dialog', { name: 'Рассмотреть заявку' });
@@ -250,7 +250,7 @@ try {
 
   await adminPage.reload();
   await adminPage.waitForLoadState('networkidle');
-  await adminPage.getByRole('navigation', { name: 'Основная навигация' }).getByRole('button', { name: 'Заявки', exact: true }).click();
+  await adminPage.goto(`${origin}/app/applications`);
   applicationRow = adminPage.locator('.application-row').filter({ hasText: 'Заявка UI уточнена' });
   await applicationRow.getByRole('button', { name: 'Рассмотреть', exact: true }).click();
   dialog = adminPage.getByRole('dialog', { name: 'Рассмотреть заявку' });

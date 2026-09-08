@@ -1,6 +1,6 @@
 import { assert, transaction, entities } from '../db.mjs';
 import { can, requireAccess, digest } from '../auth.mjs';
-import { getScoped, projectVisible, date } from '../model.mjs';
+import { getScoped, projectVisible, date, sectionOf } from '../model.mjs';
 
 export function currentUser(db,user) {
  const u=db.prepare('SELECT * FROM users WHERE id=? AND agency_id=? AND disabled=0').get(user?.id,user?.agency_id);
@@ -10,18 +10,20 @@ export function currentUser(db,user) {
 export function executeModule(db,user,cmd,operations) {
  assert(cmd&&/^[a-zA-Z0-9_-]{8,100}$/.test(cmd.id||''),'Команда должна иметь уникальный ID');
  const operation=operations[cmd.op];assert(operation,'Неизвестное действие');
- return transaction(db,()=>{
+ try{return transaction(db,()=>{
   const u=currentUser(db,user);
   if(cmd.projectId) projectAccess(db,u,cmd.projectId);
   assert(!cmd.offline,'Это действие доступно только при подключении к сети',409);
   operation.authorize(db,u,cmd);
   const hash=digest(JSON.stringify(cmd)); const prior=db.prepare('SELECT * FROM commands WHERE id=? AND user_id=?').get(cmd.id,u.id);
-  if(prior){assert(prior.digest===hash,'ID команды уже использован',409);return JSON.parse(prior.result);}
-  const result=operation.run(db,u,cmd);
+  if(prior){assert(prior.digest===hash,'ID команды уже использован',409);return safeCommandResult(db,u,JSON.parse(prior.result));}
+  const result=safeCommandResult(db,u,operation.run(db,u,cmd));
   assert(result!==undefined&&!result?.then,'Команда должна вернуть синхронный результат');
-  db.prepare('INSERT INTO commands VALUES(?,?,?,?)').run(cmd.id,u.id,hash,JSON.stringify(result));return result;
- });
+  const saved=operation.redactResult?operation.redactResult(result):result;
+  db.prepare('INSERT INTO commands VALUES(?,?,?,?)').run(cmd.id,u.id,hash,JSON.stringify(saved));return result;
+ });}catch(error){if(error.details)error.details=safeCommandResult(db,user,error.details);throw error}
 }
+function safeCommandResult(db,u,value){if(!value||typeof value!=='object')return value;if(Array.isArray(value))return value.map(v=>safeCommandResult(db,u,v));if(value.kind&&value.id&&value.agency_id&&value.data&&typeof value.data==='object'){const project=value.kind==='project'?value.id:value.project_id,section=sectionOf(value);return {...value,data:Object.fromEntries(Object.entries(value.data).filter(([key])=>can(db,u,'read',project,section,value.id,key)))};}return Object.fromEntries(Object.entries(value).map(([key,v])=>[key,safeCommandResult(db,u,v)]));}
 export function projectAccess(db,u,id,action='read',section, row,fields) {
  const p=getScoped(db,u,id,undefined,'project');assert(!p.deleted&&projectVisible(db,u,id),'Проект недоступен',403);
  if(section) requireAccess(db,u,action,id,section,row,fields);return p;

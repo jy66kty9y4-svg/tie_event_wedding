@@ -1,3 +1,5 @@
+import {validateTimingSchemaMutation} from './v2/timing.mjs';
+import {guardProjectDateEdit} from './v2/workflow/index.mjs';
 import { assert, transaction, entity, entities, insert, change, version, uid, now, audit } from './db.mjs';
 import { token, digest, passwordHash, checkPassword, createSession, publicUser, defaults, grant, grants, can, requireAccess, rateLimit } from './auth.mjs';
 import { text, amount, date, safeUrl, getScoped, projectVisible, createProject, initialTemplate, validateColumns, validateRow, financials, validateLedger, sectionOf, accessRowId } from './model.mjs';
@@ -21,9 +23,10 @@ export function bootstrap(db,b) {
   });
 }
 function email(v) { const e=text(v,'Email',3,200).toLowerCase(); assert(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e),'Проверьте email'); return e; }
-function applicationData(data) {
+function applicationData(data,db,u) {
   assert(data&&typeof data==='object'&&!Array.isArray(data),'Проверьте заявку');
-  return {name:text(data.name),date:date(data.date,false),contact:text(data.contact,'Контакт',3,500),message:text(data.message,'Пожелания',1,4000)};
+  const source={};for(const [key,kind] of [['sourceCaseId','publicCase'],['sourcePackageId','servicePackage']])if(data[key]){const row=entity(db,data[key]);assert(row&&row.agency_id===u.agency_id&&!row.deleted&&row.kind===kind&&row.data.status==='published'&&row.data.publishedRevisionId,'Публикация больше недоступна. Уберите источник и отправьте обычную заявку.',409);source[key]=row.id;}
+  return {name:text(data.name),date:date(data.date,false),contact:text(data.contact,'Контакт',3,500),message:text(data.message,'Пожелания',1,4000),...source};
 }
 function settingsData(settings) {
   assert(settings&&typeof settings==='object'&&!Array.isArray(settings),'Проверьте настройки');
@@ -164,7 +167,7 @@ export function snapshot(db,u,project=null,offline=false) {
     const projectPeople=db.prepare('SELECT * FROM users WHERE agency_id=? AND disabled=0 ORDER BY name').all(u.agency_id).filter(person=>projectVisible(db,person,project));
     const custodians=projectPeople.filter(person=>canHoldFunds(db,person,project)).map(({id,name})=>({id,name}));
     result.custodians=mayUseFinance?custodians:[];
-    if(!offline) result.assignableMembers=assignableMembers(db,u,project);
+    if(!offline){result.assignableMembers=assignableMembers(db,u,project);result.templates=can(db,u,['read','templates'])?entities(db,u.agency_id,null,'template').filter(t=>can(db,u,'read',null,'template',t.id,null)):[];}
     if(mayInvite) {
       result.members=projectPeople.map(({id,name,email})=>({id,name,email}));
       const allRoles=db.prepare('SELECT id,name,permissions,key FROM roles WHERE agency_id=? AND protected=0 ORDER BY name').all(u.agency_id);
@@ -238,6 +241,9 @@ function validateData(db,u,kind,data,p,parent,current=null) {
     if(current?.data.obligationId) d.obligationId=current.data.obligationId; else delete d.obligationId;
   }
   if(kind==='template') {
+    if(d.taskPhases!==undefined){assert(Array.isArray(d.taskPhases)&&d.taskPhases.length<=40,'Не более 40 этапов');const keys=new Set();for(const phase of d.taskPhases){text(phase.key,'Ключ этапа',1,80);text(phase.name,'Название этапа',1,120);assert(!keys.has(phase.key),'Ключ этапа повторяется');keys.add(phase.key);}}
+    if(d.taskBlueprints!==undefined){assert(Array.isArray(d.taskBlueprints)&&d.taskBlueprints.length<=300,'Не более 300 задач шаблона');const keys=new Set(d.taskBlueprints.map(x=>x.key));assert(keys.size===d.taskBlueprints.length,'Ключ задачи повторяется');for(const task of d.taskBlueprints){text(task.key,'Ключ задачи',1,80);text(task.title,'Название задачи');assert(Number.isInteger(task.offsetDays)&&Math.abs(task.offsetDays)<=1095,'Смещение срока: от -1095 до 1095');assert(!d.taskPhases?.length||d.taskPhases.some(p=>p.key===task.phaseKey),'Этап задачи отсутствует');assert(Array.isArray(task.dependencyKeys||[])&&(task.dependencyKeys||[]).every(k=>keys.has(k)&&k!==task.key),'Проверьте зависимости задач');}const visit=(key,path=new Set())=>{assert(!path.has(key),'Зависимости шаблона образуют цикл');const next=new Set([...path,key]);for(const dependency of d.taskBlueprints.find(x=>x.key===key)?.dependencyKeys||[])visit(dependency,next)};for(const key of keys)visit(key);}
+
     d.offline=Array.isArray(d.offline)?d.offline:[];
     d.categories=Array.isArray(d.categories)?d.categories:[];
     assert(Array.isArray(d.sections)&&d.sections.length<=30&&Array.isArray(d.tables)&&d.tables.length<=50,'Проверьте разделы и таблицы шаблона');
@@ -268,11 +274,11 @@ export function execute(db,user,cmd) {
     if(op==='project.create') { requireAccess(db,u,'projects'); const template=cmd.templateId?getScoped(db,u,cmd.templateId,null,'template'):null; result=createProject(db,u,cmd.data,template); }
     else if(op==='application.create') {
       assert(!entities(db,u.agency_id,null,'application').some(a=>a.data.userId===u.id&&['review','clarification','approved'].includes(a.data.status)),'У вас уже есть заявка',409);
-      result=insert(db,u,'application',{userId:u.id,...applicationData(cmd.data),status:'review',reason:'',projectId:null});
+      result=insert(db,u,'application',{userId:u.id,...applicationData(cmd.data,db,u),status:'review',reason:'',projectId:null});
     } else if(op==='application.respond') {
       const a=getScoped(db,u,cmd.entityId,null,'application'); assert(a.data.userId===u.id,'Можно изменить только свою заявку',403); version(a,cmd.version);
       assert(['clarification','rejected'].includes(a.data.status),'Эта заявка сейчас не ожидает исправления',409);
-      result=change(db,u,a,{...a.data,...applicationData(cmd.data),status:'review',reason:'',projectId:null},false,'respond');
+      result=change(db,u,a,{...a.data,...applicationData(cmd.data,db,u),status:'review',reason:'',projectId:null},false,'respond');
     } else if(op==='application.review') {
       requireAccess(db,u,'applications'); const a=getScoped(db,u,cmd.entityId,null,'application');
       if(a.data.status==='approved'&&cmd.status==='approved') result=a;
@@ -381,6 +387,7 @@ function mutateEntity(db,u,c) {
   }
   if(c.op==='entity.delete') {
     if(kind==='row'){const table=entity(db,old.parent_id),m=table?.data.semanticMap;if(m?.seatingTable&&old.data[m.seatingTable]){requireAccess(db,u,'edit',p,table.id,old.id,[m.seatingTable,m.seatIndex]);return change(db,u,old,{...old.data,[m.seatingTable]:'',[m.seatIndex]:''},true,'delete_unassign');}}
+    if(kind==='file'){const linked=entities(db,u.agency_id,p,'approvalRevision',true).some(rev=>(rev.data.options||[]).some(o=>[...(o.fileIds||[]),...(o.imageIds||[])].includes(old.id)));assert(!linked,'Файл включён в историю согласования и должен сохраняться',409);}
     if(kind==='obligation') {
       assert(!entities(db,u.agency_id,p,'movement').some(m=>m.data.obligationId===old.id),'У статьи есть выплаты. Сначала исправьте или отмените их.',409);
       assert(!entities(db,u.agency_id,p,'selection').some(m=>m.data.obligationId===old.id),'Статья связана с выбранным подрядчиком. Сначала снимите выбор.',409);
@@ -406,12 +413,14 @@ function mutateEntity(db,u,c) {
     if(!old&&m){for(const field of [m.seatingTable,m.seatIndex].filter(Boolean))assert(!data[field],'Назначьте место через рассадку',409);const value=data[m.rsvpStatus];assert(!value||[m.rsvpValues?.unanswered,'unanswered','Приглашён','Не отправлено'].includes(value),'Создайте гостя без ответа и измените RSVP отдельным действием',409);}
     else validateGuestRowMutation(table,old,data,changed);
   }
-  if(kind==='table'&&old){const guard=validateGuestSchemaMutation(old,{...old,data});assert(guard.ok,'Сначала переподключите или отключите смысловые поля гостей',409,guard);}
+  if(kind==='table'&&old){const timingGuard=validateTimingSchemaMutation(old,{...old,data});assert(timingGuard.ok,'Сначала переподключите поля календаря в настройке тайминга',409,timingGuard);const guard=validateGuestSchemaMutation(old,{...old,data});assert(guard.ok,'Сначала переподключите или отключите смысловые поля гостей',409,guard);}
   if(old){const protectedFields=kind==='project'?['readinessPolicy','leadOrganizerUserId','staffIntervals']:kind==='file'?['documentKind','verificationStatus','verifiedBy','verifiedAt','verificationNote']:kind==='selection'?['bookingRequired','bookingStatus','bookingVerifiedBy','bookingVerifiedAt','bookingEvidenceFileId','bookingEvidenceNote']:[];for(const field of protectedFields)assert(JSON.stringify(data[field])===JSON.stringify(old.data[field]),'Для изменения отметок проверки используйте специальное действие',409);}
+  if(kind==='project'&&old){guardProjectDateEdit(db,u,{...c,op:'entity.edit',data});}
   if(kind==='row'&&old) {
     const table=getScoped(db,u,old.parent_id,p,'table'); validateRow(db,u,table,data,Object.keys(c.data||{}));
   } else data=validateData(db,u,kind,data,p,old?.parent_id||c.parentId,old);
   let result=old?change(db,u,old,data,false,c.op==='entity.restore'?'restore':'edit'):insert(db,u,kind,data,p,c.parentId||null);
+  if(kind==='row'&&entity(db,old?.parent_id||c.parentId)?.data.key==='timing')for(const site of entities(db,u.agency_id,p,'microsite'))if(site.data.status==='published'&&!site.data.dirty)change(db,u,site,{...site.data,dirty:true},false,'timingChanged');
   if(kind==='selection') {
     // Project prices are snapshots. General catalog updates never propagate here.
     const existing=data.obligationId?getScoped(db,u,data.obligationId,p,'obligation'):null;

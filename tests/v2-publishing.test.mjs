@@ -74,7 +74,17 @@ test('SSR uses configured canonical only and sitemap contains published agency p
   assert.match(html, /rel="canonical" href="https:\/\/weddings\.example\/stories"/);
   const publishedStory = getPublishedContent(db, user.agency_id, 'case', 'istoriya');
   const storyHtml = renderAgencyHtml({ agencyName: 'tie', page: 'story', item: publishedStory, domain: 'weddings.example' });
-  assert.match(storyHtml, /<meta name="description" content="Текст">/); assert.match(storyHtml, /https:\/\/weddings\.example\/stories\/istoriya/);
+  assert.match(storyHtml, /<meta name="description" content="Текст">/); assert.match(storyHtml, /https:\/\/weddings\.example\/stories\/istoriya/); assert.match(storyHtml, /Кабинет/);
+});
+
+test('sitemap lists only routes with published content while retaining the reachable legacy root', () => {
+  const { db, user } = fixture();
+  command(db,user,'publicContent.configureDomain',{data:{configuredDomain:'weddings.example'}});
+  let xml=sitemapXml(db,user.agency_id); assert.match(xml,/https:\/\/weddings\.example\//); assert.doesNotMatch(xml,/\/stories|\/services|\/faq/);
+  let service=command(db,user,'publicContent.saveDraft',{data:{kind:'package',draft:{title:'Координация',slug:'coordination',summary:'Описание'}}});
+  xml=sitemapXml(db,user.agency_id); assert.doesNotMatch(xml,/\/services/);
+  service=command(db,user,'publicContent.publish',{entityId:service.id,version:service.version,data:{kind:'package'}});
+  xml=sitemapXml(db,user.agency_id); assert.match(xml,/https:\/\/weddings\.example\/services/); assert.doesNotMatch(xml,/\/stories|\/faq/);
 });
 
 test('public raster assets are private until their owning revision is published', async () => {

@@ -1,6 +1,6 @@
 {
   "name": "tie-event",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -15,7 +15,9 @@
     "demo": "node scripts/demo.mjs",
     "test:ui": "node scripts/ui-test.mjs",
     "test:management": "node scripts/management-ui-test.mjs",
-    "test:offline-ui": "node scripts/offline-ui-test.mjs"
+    "test:offline-ui": "node scripts/offline-ui-test.mjs",
+    "test:v2-browser": "node scripts/v2-browser-test.mjs",
+    "test:v2-entry": "node scripts/v2-entry-test.mjs"
   },
   "dependencies": {
     "react": "19.2.6",
