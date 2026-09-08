@@ -63,6 +63,7 @@ test('registration stays private until one idempotent approval and invitations j
   assert.equal(snapshot(db,second).projects[0].id,approved.data.projectId);
   command(db,second,'invite.accept',{token:invitation.token});
   assert.equal(db.prepare('SELECT count(*) AS n FROM grants WHERE user_id=? AND project_id=?').get(second.id,approved.data.projectId).n,1);
+  assert.equal(snapshot(db,second,approved.data.projectId).custodians.some(person=>person.id===second.id),false);
   const stranger=registered(db,'stranger@example.test');
   fails(()=>command(db,stranger,'invite.accept',{token:invitation.token}),403);
 });
@@ -174,7 +175,7 @@ test('row-limited finance allows its obligation payment but denies aggregate and
   const ob=command(db,admin,'entity.create',{projectId:p.id,kind:'obligation',data:{title:'Музыка',priceKind:'amount',agreed:50000,planned:null,dueDate:'',fee:false}});
   const user=registered(db,'finance@example.test');
   const view=role(db,admin,'Просмотр проекта',['read']);
-  const finance=role(db,admin,'Одна выплата',['finance']);
+  const finance=role(db,admin,'Одна выплата',['read','create','finance']);
   const movementFields=['type','amount','date','description','source','from','obligationId'];
   assign(db,admin,user,[
     {roleId:view.id,projectId:p.id,restrictions:{}},
@@ -222,4 +223,103 @@ test('formula language evaluates arithmetic only',()=>{
   assert.equal(compute('{missing}+1',{}),null);
   assert.throws(()=>compute('globalThis.process.exit()',{}));
   assert.throws(()=>validateColumns([{id:'constructor',name:'Опасная',type:'number'}]));
+});
+
+test('one assignment must cover every edited field while schema deletion stays reversible',()=>{
+  const {db,admin}=fixture();
+  const p=project(db,admin),original=rowTable(db,admin,p.id);
+  const table=command(db,admin,'entity.edit',{projectId:p.id,entityId:original.id,version:original.version,data:{columns:[...original.data.columns,{id:'private',name:'Внутреннее',type:'text'}]}});
+  let row=addRow(db,admin,p.id,table,{title:'Церемония',private:'Сохранить при восстановлении'});
+  const scoped=registered(db,'split-fields@example.test');
+  const titleEditor=role(db,admin,'Название строки',['read','edit']);
+  const privateEditor=role(db,admin,'Внутреннее поле',['read','edit']);
+  const fieldDeleter=role(db,admin,'Удаление поля',['read','delete']);
+  assign(db,admin,scoped,[
+    {roleId:titleEditor.id,projectId:p.id,restrictions:{sections:[table.id],rows:[row.id],fields:['title']}},
+    {roleId:privateEditor.id,projectId:p.id,restrictions:{sections:[table.id],rows:[row.id],fields:['private']}},
+    {roleId:fieldDeleter.id,projectId:p.id,restrictions:{sections:[table.id],rows:[row.id],fields:['title']}}
+  ]);
+  fails(()=>command(db,scoped,'entity.edit',{projectId:p.id,entityId:row.id,version:row.version,schemaVersion:table.version,data:{title:'Ужин',private:'Другое'}}),403);
+  row=command(db,scoped,'entity.edit',{projectId:p.id,entityId:row.id,version:row.version,schemaVersion:table.version,data:{title:'Ужин'}});
+  fails(()=>command(db,scoped,'entity.delete',{projectId:p.id,entityId:row.id,version:row.version,schemaVersion:table.version}),403);
+
+  const splitCreator=registered(db,'split-create@example.test');
+  const titleCreator=role(db,admin,'Создание названия',['read','create']);
+  const privateCreator=role(db,admin,'Создание внутреннего',['read','create']);
+  assign(db,admin,splitCreator,[
+    {roleId:titleCreator.id,projectId:p.id,restrictions:{sections:[table.id],fields:['title']}},
+    {roleId:privateCreator.id,projectId:p.id,restrictions:{sections:[table.id],fields:['private']}}
+  ]);
+  fails(()=>addRow(db,splitCreator,p.id,table,{title:'Новая',private:'Скрытая'}),403);
+
+  const withoutPrivate=command(db,admin,'entity.edit',{projectId:p.id,entityId:table.id,version:table.version,data:{columns:table.data.columns.filter(column=>column.id!=='private'),rowOrder:[row.id],confirmStructure:true}});
+  assert.deepEqual(snapshot(db,admin,p.id).entities.find(item=>item.id===row.id).data,{title:'Ужин'});
+  const restoredSchema=command(db,admin,'entity.edit',{projectId:p.id,entityId:table.id,version:withoutPrivate.version,data:{columns:table.data.columns,rowOrder:[row.id]}});
+  assert.equal(snapshot(db,admin,p.id).entities.find(item=>item.id===row.id).data.private,'Сохранить при восстановлении');
+  fails(()=>command(db,admin,'entity.edit',{projectId:p.id,entityId:table.id,version:restoredSchema.version,data:{rowOrder:[uid()]}}),409);
+});
+
+test('applicants can answer clarification and pending invitations respect revocation',()=>{
+  const {db,admin}=fixture();
+  const applicant=registered(db,'clarify@example.test','Дарья');
+  let application=command(db,applicant,'application.create',{data:{name:'Дарья и Лев',date:'2027-10-02',contact:'@daria',message:'Первая версия'}});
+  application=command(db,admin,'application.review',{entityId:application.id,version:application.version,status:'clarification',reason:'Уточните площадку'});
+  const stranger=registered(db,'cannot-respond@example.test');
+  fails(()=>command(db,stranger,'application.respond',{entityId:application.id,version:application.version,data:{name:'Чужая правка',date:'2027-10-02',contact:'x@example.test',message:'Нет'}}),403);
+  application=command(db,applicant,'application.respond',{entityId:application.id,version:application.version,data:{name:'Дарья и Лев',date:'2027-10-02',contact:'@daria',message:'Площадка — веранда'}});
+  assert.equal(application.data.status,'review'); assert.equal(application.data.reason,'');
+
+  const organizer=registered(db,'inviter@example.test','Организатор');
+  const organizerRole=db.prepare("SELECT id FROM roles WHERE agency_id=? AND name='Организатор'").get(admin.agency_id);
+  assign(db,admin,organizer,[{roleId:organizerRole.id,projectId:null,restrictions:{}}]);
+  const p=project(db,admin);
+  const revoked=command(db,organizer,'invite.create',{projectId:p.id,email:'revoked-invite@example.test'});
+  command(db,organizer,'invite.revoke',{invitationId:revoked.id});
+  fails(()=>register(db,{slug:'tie',email:'revoked-invite@example.test',name:'Получатель',password:'strong-pass-3',invitation:revoked.token}),403);
+  const stale=command(db,organizer,'invite.create',{projectId:p.id,email:'stale-invite@example.test'});
+  assign(db,admin,organizer,[]);
+  fails(()=>register(db,{slug:'tie',email:'stale-invite@example.test',name:'Получатель',password:'strong-pass-3',invitation:stale.token}),403);
+});
+
+test('finance corrections, deletion and custodian options preserve exact balances',()=>{
+  const {db,admin}=fixture();
+  const p=project(db,admin);
+  let obligation=command(db,admin,'entity.create',{projectId:p.id,kind:'obligation',data:{title:'Фотограф',priceKind:'amount',agreed:100000,planned:null,dueDate:'',fee:false}});
+  command(db,admin,'movement.save',{projectId:p.id,data:{type:'deposit',amount:100000,date:'2027-01-01',description:'Средства пары',source:'custody',to:admin.id}});
+  let payment=command(db,admin,'movement.save',{projectId:p.id,obligationVersion:obligation.version,data:{type:'payment',amount:40000,date:'2027-01-02',description:'Аванс',source:'custody',from:admin.id,obligationId:obligation.id}});
+  payment=command(db,admin,'movement.save',{projectId:p.id,entityId:payment.id,version:payment.version,obligationVersion:entity(db,obligation.id).version,data:{...payment.data,amount:25000}});
+  command(db,admin,'movement.delete',{projectId:p.id,entityId:payment.id,version:payment.version});
+  const projectState=snapshot(db,admin,p.id);
+  assert.equal(projectState.financials.totalPaid,0); assert.equal(projectState.financials.custody,100000);
+  assert.deepEqual(projectState.custodians,[{id:admin.id,name:admin.name}]);
+  const outsider=registered(db,'not-custodian@example.test');
+  fails(()=>command(db,admin,'movement.save',{projectId:p.id,data:{type:'deposit',amount:100,date:'2027-01-03',description:'Неверный держатель',source:'custody',to:outsider.id}}));
+
+  command(db,admin,'movement.save',{data:{type:'income',amount:12345,date:'2027-01-01',description:'Доход',source:'direct'}});
+  command(db,admin,'movement.save',{data:{type:'expense',amount:2345,date:'2027-01-02',description:'Расход',source:'direct'}});
+  const agencyFinance=snapshot(db,admin).financials;
+  assert.equal(agencyFinance.income,12345); assert.equal(agencyFinance.expense,2345); assert.equal(agencyFinance.own,10000);
+});
+
+test('selected vendor deletion and restoration keep its estimate obligation consistent',()=>{
+  const {db,admin}=fixture();
+  const p=project(db,admin);
+  let selection=command(db,admin,'entity.create',{projectId:p.id,kind:'selection',data:{title:'Ведущий',price:70000,selected:true,terms:'Весь вечер',dueDate:'2027-07-01'}});
+  const obligationId=selection.data.obligationId;
+  selection=command(db,admin,'entity.delete',{projectId:p.id,entityId:selection.id,version:selection.version,confirm:true});
+  assert.equal(entity(db,obligationId).deleted,true);
+  selection=command(db,admin,'entity.restore',{projectId:p.id,entityId:selection.id,version:selection.version});
+  assert.equal(selection.deleted,false); assert.equal(entity(db,obligationId).deleted,false);
+  assert.equal(snapshot(db,admin,p.id).financials.agreed,70000);
+});
+
+test('settings are normalized without mutating the command payload',()=>{
+  const {db,admin}=fixture();
+  const agency=db.prepare('SELECT * FROM agencies WHERE id=?').get(admin.agency_id);
+  const settings={tagline:'  Вместе  ',description:'  Спокойная организация  ',contact:'  hello@example.test  ',services:['  Координация  '],portfolio:[{title:'  Летняя свадьба  ',image:'https://example.test/photo.jpg',description:'  В саду  ',private:'drop'}],private:'drop'};
+  const before=structuredClone(settings);
+  const result=command(db,admin,'settings.save',{version:agency.version,name:'  Новое имя  ',settings});
+  assert.deepEqual(settings,before);
+  assert.deepEqual(result.settings,{tagline:'Вместе',description:'Спокойная организация',contact:'hello@example.test',services:['Координация'],portfolio:[{title:'Летняя свадьба',image:'https://example.test/photo.jpg',description:'В саду'}]});
+  fails(()=>command(db,admin,'settings.save',{version:agency.version+1,name:'Имя',settings:{...before,services:[{}]}}));
 });

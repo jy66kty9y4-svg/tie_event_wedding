@@ -18,7 +18,7 @@ export function userSession(db, raw) {
 export function createSession(db, user) { const raw = token(); db.prepare('INSERT INTO sessions VALUES(?,?,?)').run(digest(raw),user.id,Date.now()+7*86400000); return raw; }
 export function publicUser(user) { const { password, ...safe } = user; return safe; }
 export function grants(db, user) {
-  return db.prepare('SELECT g.*,r.permissions,r.name AS role_name FROM grants g JOIN roles r ON g.role_id=r.id WHERE g.user_id=? AND g.agency_id=? AND r.agency_id=?').all(user.id,user.agency_id,user.agency_id).map(g=>({...g,permissions:JSON.parse(g.permissions),restrictions:JSON.parse(g.restrictions)}));
+  return db.prepare('SELECT g.*,r.permissions,r.name AS role_name,r.key AS role_key FROM grants g JOIN roles r ON g.role_id=r.id WHERE g.user_id=? AND g.agency_id=? AND r.agency_id=?').all(user.id,user.agency_id,user.agency_id).map(g=>({...g,permissions:JSON.parse(g.permissions),restrictions:JSON.parse(g.restrictions)}));
 }
 export function can(db, user, action, project = null, section = undefined, row = undefined, field = undefined) {
   if (!user || user.disabled) return false;
@@ -45,8 +45,8 @@ export function can(db, user, action, project = null, section = undefined, row =
 }
 export function requireAccess(db,u,action,p=null,s=undefined,r=undefined,f=undefined) { assert(can(db,u,action,p,s,r,f),'Недостаточно прав',403); }
 export function defaults(db, agency) {
-  const roles = [ ['Администратор',permissions,true], ['Организатор',permissions.filter(x=>!['access','settings'].includes(x)),false], ['Участник пары',projectPermissions,false], ['Координатор',['read','edit','finance','files'],false], ['Подрядчик',['read','edit'],false] ];
-  return roles.map(([name,p,protectedRole]) => { const id=uid(); db.prepare('INSERT INTO roles(id,agency_id,name,permissions,protected) VALUES(?,?,?,?,?)').run(id,agency,name,JSON.stringify(p),Number(protectedRole)); return {id,name}; });
+  const roles = [ ['admin','Администратор',permissions,true], ['organizer','Организатор',permissions.filter(x=>!['access','settings'].includes(x)),false], ['couple','Участник пары',projectPermissions,false], ['coordinator','Координатор',['read','create','edit','delete','finance','files'],false], ['contractor','Подрядчик',['read','edit'],false] ];
+  return roles.map(([key,name,p,protectedRole]) => { const id=uid(); db.prepare('INSERT INTO roles(id,agency_id,name,permissions,protected,key) VALUES(?,?,?,?,?,?)').run(id,agency,name,JSON.stringify(p),Number(protectedRole),key); return {id,name,key}; });
 }
 export function grant(db, u, role, project = null, restrictions = {}) { db.prepare('INSERT INTO grants VALUES(?,?,?,?,?,?)').run(uid(),u.agency_id,u.id,role,project,JSON.stringify(restrictions)); }
 export function rateLimit(db, key, limit = 10) {

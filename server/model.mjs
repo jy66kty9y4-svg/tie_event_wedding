@@ -14,7 +14,7 @@ export function accessRowId(row) { return row.kind==='movement' && row.data.obli
 export function projectVisible(db,u,id) {
   const p=entity(db,id); if (!p || p.agency_id!==u.agency_id || p.deleted) return false;
   if (u.protected || can(db,u,'read',id)) return true;
-  return db.prepare('SELECT g.*,r.permissions FROM grants g JOIN roles r ON g.role_id=r.id WHERE g.agency_id=? AND g.user_id=? AND (g.project_id=? OR g.project_id IS NULL)').all(u.agency_id,u.id,id).some(g=>JSON.parse(g.permissions).includes('read'));
+  return db.prepare('SELECT g.*,r.permissions FROM grants g JOIN roles r ON g.role_id=r.id WHERE g.agency_id=? AND r.agency_id=? AND g.user_id=? AND (g.project_id=? OR g.project_id IS NULL)').all(u.agency_id,u.agency_id,u.id,id).some(g=>JSON.parse(g.permissions).includes('read'));
 }
 export const initialTemplate = () => ({name:'Свадьба — основной',sections:[
   {key:'preparation',name:'Подготовка',order:0},{key:'day',name:'День свадьбы',order:1},{key:'people',name:'Гости и материалы',order:2}
@@ -28,9 +28,9 @@ export function createProject(db,u,data,template=null) {
   const tpl=template?.data || entities(db,u.agency_id,null,'template')[0]?.data || initialTemplate();
   const templateOffline=Array.isArray(tpl.offline)?tpl.offline:[];
   const nativeOffline=templateOffline.filter(key=>['payouts','budget','vendors','files'].includes(key));
-  const p=insert(db,u,'project',{name:text(data.name),date:date(data.date),location:data.location||'',status:'planning',limit:amount(data.limit??null,true),offline:nativeOffline,notes:data.notes||''});
+  const p=insert(db,u,'project',{name:text(data.name),date:date(data.date,false),location:data.location?text(data.location,'Место',1,1000):'',status:'planning',limit:amount(data.limit??null,true),offline:nativeOffline,notes:data.notes?text(data.notes,'Заметка',1,8000):''});
   const sections={}; for(const s of tpl.sections) sections[s.key]=insert(db,u,'section',{name:s.name,order:s.order,archived:false},p.id).id;
-  for(const t of tpl.tables) insert(db,u,'table',{name:t.name,key:t.key,sectionId:sections[t.section]||Object.values(sections)[0],order:tpl.tables.indexOf(t),archived:false,offline:!!t.offline||templateOffline.includes(t.key),columns:structuredClone(t.columns)},p.id);
+  for(const t of tpl.tables) insert(db,u,'table',{name:t.name,key:t.key,sectionId:sections[t.section]||Object.values(sections)[0],order:tpl.tables.indexOf(t),archived:false,offline:!!t.offline||templateOffline.includes(t.key),columns:structuredClone(t.columns),rowOrder:[]},p.id);
   for(const name of tpl.categories||[]) insert(db,u,'category',{name,scope:'wedding',archived:false},p.id);
   // Clone structure only. No source rows, files, guests or paid movements.
   return p;
@@ -59,23 +59,23 @@ export function validateRow(db,u,table,values,changedKeys=Object.keys(values)) {
     if(c.type==='select') assert(c.options.includes(v),'Выберите вариант из списка');
     if(c.type==='url') safeUrl(v);
     if(c.type==='formula') assert(false,'Вычисляемая колонка не редактируется');
-    if(c.type==='relation' || c.type==='file') { const target=getScoped(db,u,v,table.project_id,c.type==='file'?'file':'row'); assert(!target.deleted,'Связанная запись удалена'); requireAccess(db,u,'read',table.project_id,sectionOf(target),target.id); }
+    if(c.type==='relation' || c.type==='file') { const target=getScoped(db,u,v,table.project_id,c.type==='file'?'file':'row'); assert(!target.deleted,'Связанная запись удалена'); requireAccess(db,u,c.type==='file'?['read','files']:['read'],table.project_id,sectionOf(target),target.id); }
   }
 }
 export function financials(rows) {
   const obs=rows.filter(r=>r.kind==='obligation'&&!r.deleted), moves=rows.filter(r=>r.kind==='movement'&&!r.deleted);
-  const paid={}, holders={}, byCategory={}; let agreed=0,planned=0,unknown=0,own=0;
+  const paid={}, holders={}, byCategory={}; let agreed=0,planned=0,unknown=0,income=0,expense=0;
   for(const r of moves) {
     const m=r.data, a=m.amount;
     if(['payment','fee'].includes(m.type)) paid[m.obligationId]=(paid[m.obligationId]||0)+a;
     if(m.type==='deposit') holders[m.to]=(holders[m.to]||0)+a;
     if(['payment','fee','refund'].includes(m.type)&&m.source==='custody') holders[m.from]=(holders[m.from]||0)-a;
     if(m.type==='transfer') { holders[m.from]=(holders[m.from]||0)-a; holders[m.to]=(holders[m.to]||0)+a; }
-    if(['fee','income'].includes(m.type)) own+=a; if(m.type==='expense') own-=a;
+    if(['fee','income'].includes(m.type)) income+=a; if(m.type==='expense') expense+=a;
   }
   for(const o of obs) { const d=o.data; if(d.priceKind==='unknown') unknown++; agreed+=d.priceKind==='amount'?d.agreed:0; planned+=d.planned||0; byCategory[d.categoryId]=(byCategory[d.categoryId]||0)+(d.agreed||0); }
   const totalPaid=Object.values(paid).reduce((a,b)=>a+b,0);
-  return {agreed,planned,unknown,paid,totalPaid,due:agreed-totalPaid,holders,custody:Object.values(holders).reduce((a,b)=>a+b,0),own,byCategory};
+  return {agreed,planned,unknown,paid,totalPaid,due:agreed-totalPaid,holders,custody:Object.values(holders).reduce((a,b)=>a+b,0),income,expense,own:income-expense,byCategory};
 }
 export function validateLedger(rows) {
   const f=financials(rows);

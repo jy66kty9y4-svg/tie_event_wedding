@@ -17,18 +17,26 @@ export function openDatabase(path) {
     CREATE TABLE IF NOT EXISTS agencies(id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL, settings TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, agency_id TEXT NOT NULL REFERENCES agencies(id), email TEXT NOT NULL COLLATE NOCASE, name TEXT NOT NULL, password TEXT NOT NULL, protected INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1, UNIQUE(agency_id,email));
     CREATE TABLE IF NOT EXISTS sessions(digest TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS roles(id TEXT PRIMARY KEY, agency_id TEXT NOT NULL REFERENCES agencies(id), name TEXT NOT NULL, permissions TEXT NOT NULL, protected INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS roles(id TEXT PRIMARY KEY, agency_id TEXT NOT NULL REFERENCES agencies(id), name TEXT NOT NULL, permissions TEXT NOT NULL, protected INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1, key TEXT);
     CREATE TABLE IF NOT EXISTS grants(id TEXT PRIMARY KEY, agency_id TEXT NOT NULL REFERENCES agencies(id), user_id TEXT NOT NULL REFERENCES users(id), role_id TEXT NOT NULL REFERENCES roles(id), project_id TEXT, restrictions TEXT NOT NULL DEFAULT '{}');
     CREATE TABLE IF NOT EXISTS entities(id TEXT PRIMARY KEY, agency_id TEXT NOT NULL REFERENCES agencies(id), project_id TEXT, kind TEXT NOT NULL, parent_id TEXT, data TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS entities_scope ON entities(agency_id,project_id,kind,deleted);
     CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY, agency_id TEXT NOT NULL, project_id TEXT, actor_id TEXT NOT NULL, entity_id TEXT NOT NULL, kind TEXT NOT NULL, action TEXT NOT NULL, before_json TEXT, after_json TEXT, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS audit_scope ON audit(agency_id,project_id,created_at);
     CREATE TABLE IF NOT EXISTS commands(id TEXT NOT NULL, user_id TEXT NOT NULL, digest TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(id,user_id));
-    CREATE TABLE IF NOT EXISTS invitations(digest TEXT PRIMARY KEY, agency_id TEXT NOT NULL REFERENCES agencies(id), project_id TEXT NOT NULL, email TEXT NOT NULL, role_id TEXT NOT NULL REFERENCES roles(id), expires INTEGER NOT NULL, used_by TEXT, restrictions TEXT NOT NULL DEFAULT '{}');
+    CREATE TABLE IF NOT EXISTS invitations(digest TEXT PRIMARY KEY, agency_id TEXT NOT NULL REFERENCES agencies(id), project_id TEXT NOT NULL, email TEXT NOT NULL, role_id TEXT NOT NULL REFERENCES roles(id), expires INTEGER NOT NULL, used_by TEXT, restrictions TEXT NOT NULL DEFAULT '{}', created_by TEXT REFERENCES users(id), revoked INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS blobs(id TEXT PRIMARY KEY REFERENCES entities(id), content BLOB NOT NULL);
     CREATE TABLE IF NOT EXISTS attempts(key TEXT PRIMARY KEY, count INTEGER NOT NULL, until_ms INTEGER NOT NULL);
     INSERT OR IGNORE INTO migrations VALUES(1,datetime('now'));
   `);
+  const invitationColumns = new Set(db.prepare('PRAGMA table_info(invitations)').all().map(column => column.name));
+  if (!invitationColumns.has('created_by')) db.exec('ALTER TABLE invitations ADD COLUMN created_by TEXT REFERENCES users(id)');
+  if (!invitationColumns.has('revoked')) db.exec('ALTER TABLE invitations ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0');
+  db.prepare("INSERT OR IGNORE INTO migrations VALUES(2,datetime('now'))").run();
+  const roleColumns = new Set(db.prepare('PRAGMA table_info(roles)').all().map(column => column.name));
+  if (!roleColumns.has('key')) db.exec('ALTER TABLE roles ADD COLUMN key TEXT');
+  for (const [key,name] of [['admin','Администратор'],['organizer','Организатор'],['couple','Участник пары'],['coordinator','Координатор'],['contractor','Подрядчик']]) db.prepare('UPDATE roles SET key=? WHERE key IS NULL AND name=?').run(key,name);
+  db.prepare("INSERT OR IGNORE INTO migrations VALUES(3,datetime('now'))").run();
   return db;
 }
 export function transaction(db, fn) {
