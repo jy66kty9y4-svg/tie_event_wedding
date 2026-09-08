@@ -2,35 +2,29 @@ import { useMemo, useState } from 'react';
 import { cents, compute, fieldTypes, money } from '../shared.js';
 import { Icon } from './Mark.jsx';
 
-function inputFor(column, value, onChange) {
-  if (column.type === 'boolean') return <input type="checkbox" checked={Boolean(value)} onChange={event => onChange(event.target.checked)}/>;
-  if (column.type === 'select') return <select value={value || ''} onChange={event => onChange(event.target.value)}><option value="">—</option>{(column.options || []).map(option => <option key={option} value={option}>{option}</option>)}</select>;
+const ordered = (rows, order) => {
+  const index = new Map((Array.isArray(order) ? order : []).map((id, i) => [id, i]));
+  return [...rows].sort((a, b) => (index.get(a.id) ?? 1e9) - (index.get(b.id) ?? 1e9));
+};
+function inputFor(column, value, onChange, rows, files) {
+  if (column.type === 'boolean') return <input aria-label={column.name} type="checkbox" checked={Boolean(value)} onChange={event => onChange(event.target.checked)}/>;
+  if (column.type === 'select') return <select aria-label={column.name} value={value ?? ''} onChange={event => onChange(event.target.value)}><option value="">—</option>{(column.options || []).map(option => <option key={option} value={option}>{option}</option>)}</select>;
+  if (column.type === 'relation' || column.type === 'file') { const choices = column.type === 'file' ? files : rows; return <select aria-label={column.name} value={value ?? ''} onChange={event => onChange(event.target.value)}><option value="">—</option>{choices.map(item => <option key={item.id} value={item.id}>{item.data?.name || item.data?.title || item.id}</option>)}</select>; }
   const type = column.type === 'money' || column.type === 'number' ? 'number' : column.type === 'date' ? 'date' : column.type === 'time' ? 'time' : column.type === 'url' ? 'url' : 'text';
-  return <input type={type} value={value ?? ''} step={column.type === 'money' ? '0.01' : undefined} onChange={event => onChange(event.target.value)}/>;
+  return <input aria-label={column.name} type={type} value={value ?? ''} step={column.type === 'money' ? '0.01' : undefined} onChange={event => onChange(event.target.value)}/>;
 }
 
-export function TableWorkspace({ table, rows = [], canEdit, onEditRow, onAddRow, onEditTable, onDeleteRow }) {
-  const [filter, setFilter] = useState('');
-  const [editing, setEditing] = useState(null);
-  const [draft, setDraft] = useState({});
-  const columns = table?.data?.columns || table?.columns || [];
-  const data = table?.data || table || {};
-  const shown = useMemo(() => rows.filter(row => JSON.stringify(row.data || {}).toLowerCase().includes(filter.toLowerCase())), [rows, filter]);
-  if (!table) return <section className="empty-panel"><h2>Эта таблица ещё не создана</h2><p>Добавьте таблицу или восстановите её из шаблона проекта.</p>{canEdit && <button className="button" onClick={onEditTable}>Настроить структуру</button>}</section>;
-  const begin = row => { setDraft({ ...(row.data || {}) }); setEditing(row.id); };
-  const normalize = (column, value) => {
-    if (value === '') return null;
-    if (column.type === 'money') return cents(value);
-    if (column.type === 'number') return Number(value);
-    return value;
-  };
-  const save = row => {
-    try { const next = Object.fromEntries(columns.filter(c => c.type !== 'formula').map(c => [c.id, normalize(c, draft[c.id]) ])); onEditRow(row, next); setEditing(null); }
-    catch (error) { window.alert(error.message); }
-  };
-  return <section className="table-workspace"><div className="table-tools"><label className="search"><Icon name="search"/><input value={filter} onChange={event => setFilter(event.target.value)} placeholder="Найти в таблице"/></label><div>{canEdit && <button className="button quiet" onClick={onEditTable}>Колонки и вид</button>}{canEdit && <button className="button" onClick={onAddRow}><Icon name="plus"/>Строка</button>}</div></div>
-    <div className="table-scroll"><table><thead><tr>{columns.map(column => <th key={column.id}>{column.name}<small>{fieldTypes[column.type] || column.type}</small></th>)}{canEdit && <th aria-label="Действия"/>}</tr></thead><tbody>{shown.map(row => <tr key={row.id}>{columns.map(column => { const val = row.data?.[column.id]; const computed = column.type === 'formula' ? compute(column.formula || '', row.data || {}) : val; const editValue = column.type === 'money' && draft[column.id] != null ? String(draft[column.id] / 100) : draft[column.id]; return <td key={column.id} data-label={column.name}>{editing === row.id && column.type !== 'formula' ? inputFor(column, editValue, v => setDraft(current => ({ ...current, [column.id]: v }))) : column.type === 'money' && val !== '' && val != null ? money(Number(val)) : column.type === 'formula' ? String(computed ?? '—') : column.type === 'boolean' ? (val ? 'Да' : '—') : val ?? '—'}</td>; })}{canEdit && <td className="row-actions">{editing === row.id ? <button className="text-button" onClick={() => save(row)}>Сохранить</button> : <button className="text-button" onClick={() => begin(row)}>Изменить</button>}<button className="text-button danger-text" onClick={() => onDeleteRow(row)}>Удалить</button></td>}</tr>)}</tbody></table></div>
-    {!shown.length && <div className="table-empty">Нет строк по этому запросу{canEdit && <button className="text-button" onClick={onAddRow}>Добавить первую</button>}</div>}
-    {data.offline && <p className="offline-hint"><Icon name="offline"/>Эта таблица доступна после подготовки офлайн-проекта.</p>}
+export function TableWorkspace({ table, rows = [], files = [], canEdit, onEditRow, onAddRow, onEditTable, onDeleteRow, onReorder, audience }) {
+  const [filter, setFilter] = useState(''); const [sort, setSort] = useState(''); const [editing, setEditing] = useState(null); const [draft, setDraft] = useState({}); const [error, setError] = useState('');
+  const columns = table?.data?.columns || table?.columns || []; const data = table?.data || table || {};
+  const shown = useMemo(() => ordered(rows, data.rowOrder).filter(row => !audience || row.data?.audience === 'Общее' || row.data?.audience === audience).filter(row => JSON.stringify(row.data || {}).toLowerCase().includes(filter.toLowerCase())).sort((a,b) => sort ? String(a.data?.[sort] ?? '').localeCompare(String(b.data?.[sort] ?? ''), 'ru') : 0), [rows, data.rowOrder, audience, filter, sort]);
+  if (!table) return <section className="empty-panel"><h2>Эта таблица ещё не создана</h2><p>Создайте рабочую таблицу в разделе «Все таблицы».</p></section>;
+  const begin = row => { setDraft({ ...(row.data || {}) }); setEditing(row.id); setError(''); };
+  const normalize = (column, value) => value === '' ? null : column.type === 'money' ? cents(value) : column.type === 'number' ? Number(value) : value;
+  const save = async row => { try { const next = Object.fromEntries(columns.filter(c => c.type !== 'formula').map(c => [c.id, normalize(c, draft[c.id])])); await onEditRow(row, next); setEditing(null); setError(''); } catch (caught) { setError(caught.message || 'Не удалось сохранить строку'); } };
+  const move = async (row, step) => { const ids = ordered(rows, data.rowOrder).map(item => item.id), at = ids.indexOf(row.id), to = at + step; if (to < 0 || to >= ids.length) return; [ids[at], ids[to]] = [ids[to], ids[at]]; await onReorder?.(ids); };
+  return <section className="table-workspace"><div className="table-tools"><label className="search"><Icon name="search"/><input value={filter} onChange={event => setFilter(event.target.value)} placeholder="Найти в таблице"/></label><div><label className="sort-control">Сортировка <select value={sort} onChange={event => setSort(event.target.value)}><option value="">По порядку</option>{columns.filter(c => c.type !== 'formula').map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>{canEdit && <button className="button quiet" onClick={onEditTable}>Структура</button>}{canEdit && <button className="button" onClick={onAddRow}><Icon name="plus"/>Строка</button>}</div></div>{audience && <p className="quiet-copy">Общие события и события для: {audience}.</p>}{error && <p className="form-error table-error">{error}</p>}
+    <div className="table-scroll"><table><thead><tr>{columns.map(column => <th key={column.id}>{column.name}<small>{fieldTypes[column.type] || column.type}</small></th>)}{canEdit && <th aria-label="Действия"/>}</tr></thead><tbody>{shown.map(row => <tr key={row.id}>{columns.map(column => { const val = row.data?.[column.id], computed = column.type === 'formula' ? compute(column.formula || '', row.data || {}) : val; const editValue = column.type === 'money' && draft[column.id] != null ? String(Number(draft[column.id]) / 100) : draft[column.id]; return <td key={column.id} data-label={column.name}>{editing === row.id && column.type !== 'formula' ? inputFor(column, editValue, v => setDraft(current => ({ ...current, [column.id]: v })), rows, files) : column.type === 'money' && val !== '' && val != null ? money(Number(val)) : column.type === 'formula' ? String(computed ?? '—') : column.type === 'boolean' ? (val ? 'Да' : '—') : val ?? '—'}</td>; })}{canEdit && <td className="row-actions">{editing === row.id ? <><button className="text-button" onClick={() => save(row)}>Сохранить</button><button className="text-button" onClick={() => { setEditing(null); setError(''); }}>Отмена</button></> : <><button className="text-button" onClick={() => begin(row)}>Изменить</button><button className="text-button" onClick={() => move(row,-1)}>↑</button><button className="text-button" onClick={() => move(row,1)}>↓</button><button className="text-button danger-text" onClick={() => onDeleteRow(row)}>Архив</button></>}</td>}</tr>)}</tbody></table></div>
+    {!shown.length && <div className="table-empty">Нет строк по этому запросу{canEdit && <button className="text-button" onClick={onAddRow}>Добавить первую</button>}</div>}{data.offline && <p className="offline-hint"><Icon name="offline"/>Эта таблица доступна после подготовки офлайн-проекта.</p>}
   </section>;
 }
