@@ -1,24 +1,29 @@
+import { useState } from 'react';
 import { Mark, Icon } from './Mark.jsx';
 
 const projectItems = [
-  ['overview', 'Обзор'], ['estimate', 'Смета и выплаты'], ['catalog', 'Подрядчики'], ['timing', 'Тайминг'], ['guests', 'Гости и рассадка'], ['tables', 'Все таблицы'], ['files', 'Файлы'], ['history', 'История']
+  ['overview', 'Обзор'], ['estimate', 'Смета'], ['payouts', 'Предстоящие выплаты'], ['catalog', 'Подрядчики'], ['timing-pair', 'Тайминг пары'], ['timing-team', 'Тайминг команды'], ['guests', 'Гости и рассадка'], ['tables', 'Все таблицы'], ['files', 'Файлы'], ['history', 'История']
 ];
 const agencyItems = [
   ['projects', 'Свадьбы'], ['applications', 'Заявки'], ['catalog', 'Каталог'], ['agency', 'Бюджет агентства'], ['access', 'Доступ и роли'], ['settings', 'Настройки']
 ];
 
 export function AppShell({ state, view, setView, selectedProject, onProject, onLogout, onMenu, children }) {
+  const [menuOpen,setMenuOpen]=useState(false);
   const user = state?.user || {};
   const isProject = view.startsWith('project:');
-  const items = isProject ? projectItems : agencyItems;
-  const projects = state?.projects || [];
+  const globalPermissions=new Set((state?.grants||[]).filter(g=>g.project_id==null).flatMap(g=>g.permissions||[]));
+  const isAdmin=!!user.protected;
+  const allowedAgency={projects:'projects',applications:'applications',catalog:'catalog',agency:'agencyFinance',access:'access',settings:'settings'};
+  const items = isProject ? projectItems : agencyItems.filter(([id])=>id==='applications'||isAdmin||globalPermissions.has(allowedAgency[id]));
+  const projects = (state?.projects || []).filter(project=>isAdmin || (state?.grants||[]).some(g=>g.project_id===project.id));
   const selected = selectedProject || state?.project;
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="sidebar-top"><button className="brand brand-button" onClick={() => setView('projects')}><Mark compact/><span>{state?.agency?.name || 'tie'}</span></button><button className="mobile-menu icon-button" onClick={onMenu}><Icon name="menu"/></button></div>
+      <div className="sidebar-top"><button className="brand brand-button" onClick={() => setView(isProject?'project:overview':isAdmin||globalPermissions.has('projects')?'projects':'applications')}><Mark compact/><span>{state?.agency?.name || 'tie'}</span></button><button className="mobile-menu icon-button" aria-label="Открыть навигацию" aria-expanded={menuOpen} onClick={() => {setMenuOpen(v=>!v);onMenu?.();}}><Icon name="menu"/></button></div>
       <div className="identity"><div className="avatar">{(user.name || user.email || '?').slice(0, 1).toUpperCase()}</div><div><strong>{user.name || user.email || 'Участник'}</strong><small>{state?.agency?.name || 'Свадебное пространство'}</small></div></div>
-      {isProject && <button className="project-switch" onClick={() => setView('projects')}><span>Свадьба</span><strong>{selected?.data?.name || selected?.name || 'Проект'}</strong><Icon name="arrow"/></button>}
-      <nav aria-label="Основная навигация">{items.map(([id, label]) => <button key={id} className={view === id || view === `project:${id}` ? 'active' : ''} onClick={() => setView(isProject ? `project:${id}` : id)}><Icon name={id}/><span>{label}</span></button>)}</nav>
+      {isProject && <button className="project-switch" onClick={() => isAdmin||globalPermissions.has('projects') ? setView('projects') : setView('applications')}><span>Свадьба</span><strong>{selected?.data?.name || selected?.name || 'Проект'}</strong><Icon name="arrow"/></button>}
+      <nav className={menuOpen?'mobile-open':''} aria-label="Основная навигация">{items.map(([id, label]) => <button key={id} className={view === id || view === `project:${id}` ? 'active' : ''} onClick={() => {setView(isProject ? `project:${id}` : id);setMenuOpen(false);}}><Icon name={id}/><span>{label}</span></button>)}<button className="mobile-nav-logout" onClick={onLogout}><Icon name="logout"/><span>Выйти</span></button></nav>
       {!isProject && projects.length > 0 && <div className="sidebar-projects"><small>Быстрый переход</small>{projects.slice(0, 4).map(project => <button key={project.id} onClick={() => onProject(project)}><span className="project-dot"/><span>{project.data?.name || project.name}</span></button>)}</div>}
       <div className="sidebar-bottom"><button onClick={onLogout}><Icon name="logout"/>Выйти</button></div>
     </aside>

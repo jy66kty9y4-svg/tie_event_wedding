@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export function Modal({ title, children, onClose, wide = false }) {
   const close = useRef(null);
@@ -20,5 +20,11 @@ export function FormField({ label, hint, children }) {
 }
 
 export function ConfirmDialog({ title = 'Подтвердите действие', children, confirm = 'Подтвердить', danger = false, onConfirm, onClose }) {
-  return <Modal title={title} onClose={onClose}><div className="dialog-body">{children}<div className="dialog-actions"><button className="button quiet" onClick={onClose}>Отмена</button><button className={`button ${danger ? 'danger' : ''}`} onClick={onConfirm}>{confirm}</button></div></div></Modal>;
+  const [error,setError]=useState(''),[busy,setBusy]=useState(false);
+  return <Modal title={title} onClose={onClose}><div className="dialog-body">{children}{error&&<p className="form-error">{error}</p>}<div className="dialog-actions"><button className="button quiet" onClick={onClose}>Отмена</button><button disabled={busy} className={`button ${danger ? 'danger' : ''}`} onClick={async()=>{setBusy(true);try{await onConfirm()}catch(e){setError(e.message)}finally{setBusy(false)}}}>{busy?'Сохраняем…':confirm}</button></div></div></Modal>;
+}
+
+export function SafeForm({onSubmit,children,...props}){
+  const [error,setError]=useState(''),[busy,setBusy]=useState(false);
+  return <form {...props} aria-busy={busy} onSubmit={async event=>{event.preventDefault();if(busy)return;setBusy(true);setError('');try{await onSubmit(event)}catch(error){setError(error.message||'Не удалось сохранить')}finally{setBusy(false)}}}>{children}{error&&<p className="form-error" role="alert">{error}</p>}</form>;
 }

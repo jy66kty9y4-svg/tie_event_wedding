@@ -34,4 +34,6 @@ Project data editing uses entity.edit with entityId=projectId and projectId=proj
 
 Project snapshots also expose `custodians:[{id,name}]`, `members`, and `inviteRoles`. Use custodians for money holders; a couple account cannot become a staff cash holder. Tables may set `data.rowOrder:[rowId,...]`; schema removals preserve values for restoration and validate formula references.
 
+Movement data additionally accepts optional `counterparty` (1–500 characters) and `method` (1–100 characters); omit empty optional values. `fileId` points to an authorized confirmation. `from`/`to` remain staff holder IDs. Agency finance adds `incomeByCategory` and `expenseByCategory`; estimate `byCategory` remains separate. History includes `current_version` and `current_deleted` for safe restoration. Empty online sections are visible only when directly authorized.
+
 Do not put original XLSX personal details, credentials or source databases in artifacts. Demo uses separate data/demo.sqlite, clean default data/tie.sqlite. Tests use in-memory databases and invented people.

@@ -1,0 +1,57 @@
+import {useState} from 'react';
+import {Modal, FormField} from './Modal.jsx';
+import {money, dateLabel} from '../shared.js';
+
+const actions=(close,label='Сохранить')=><div className="dialog-actions"><button type="button" className="button quiet" onClick={close}>Отмена</button><button className="button">{label}</button></div>;
+
+export function SectionEditor({section,onClose,onSave}){
+  const [data,set]=useState({name:'',order:0,archived:false,...section?.data});const [error,setError]=useState('');
+  return <Modal title={section?'Раздел проекта':'Новый раздел'} onClose={onClose}><form className="form-stack" onSubmit={async e=>{e.preventDefault();try{await onSave(data);onClose()}catch(e){setError(e.message)}}}>
+    <FormField label="Название"><input required value={data.name} onChange={e=>set({...data,name:e.target.value})}/></FormField>
+    <FormField label="Порядок раздела"><input type="number" value={data.order} onChange={e=>set({...data,order:Number(e.target.value)})}/></FormField>
+    <label className="check-field"><input type="checkbox" checked={data.archived} onChange={e=>set({...data,archived:e.target.checked})}/>В архиве</label>
+    {error&&<p className="form-error">{error}</p>}{actions(onClose)}
+  </form></Modal>;
+}
+
+export function TableEditor({table,sections=[],rowCount=0,onClose,onSave}){
+ const [data,set]=useState({name:'',key:`table_${crypto.randomUUID().slice(0,8)}`,sectionId:sections[0]?.id||'',order:0,archived:false,offline:false,columns:[{id:'title',name:'Название',type:'text'}],...table?.data});
+ const [error,setError]=useState('');const [confirmed,confirm]=useState(false);
+ const change=(key,value)=>set({...data,[key]:value});
+ const column=(index,key,value)=>change('columns',data.columns.map((c,i)=>i===index?{...c,[key]:value}:c));
+ const move=(index,step)=>{const next=[...data.columns];if(!next[index+step])return;[next[index],next[index+step]]=[next[index+step],next[index]];change('columns',next)};
+ const affected=(table?.data.columns||[]).filter(c=>!data.columns.some(n=>n.id===c.id&&n.type===c.type));
+ return <Modal wide title="Таблица и колонки" onClose={onClose}><form className="form-stack" onSubmit={async e=>{e.preventDefault();try{await onSave({...data,confirmStructure:confirmed});onClose()}catch(e){setError(e.message)}}}>
+ <div className="form-columns"><FormField label="Название"><input required value={data.name} onChange={e=>change('name',e.target.value)}/></FormField><FormField label="Раздел"><select required value={data.sectionId} onChange={e=>change('sectionId',e.target.value)}><option value="">Выберите раздел</option>{sections.map(s=><option key={s.id} value={s.id}>{s.data.name}</option>)}</select></FormField></div>
+ <FormField label="Порядок таблицы"><input type="number" value={data.order} onChange={e=>change('order',Number(e.target.value))}/></FormField>
+ <div className="button-group"><label className="check-field"><input type="checkbox" checked={data.offline} onChange={e=>change('offline',e.target.checked)}/>Работа со строками без сети</label><label className="check-field"><input type="checkbox" checked={data.archived} onChange={e=>change('archived',e.target.checked)}/>В архиве</label></div>
+ <fieldset className="column-editor"><legend>Колонки</legend>{data.columns.map((c,i)=><div key={c.id}>
+ <input aria-label={`Название колонки ${i+1}`} required value={c.name} onChange={e=>column(i,'name',e.target.value)}/><select aria-label={`Тип колонки ${i+1}`} value={c.type} onChange={e=>{column(i,'type',e.target.value);if(e.target.value==='select')change('columns',data.columns.map((x,n)=>n===i?{...x,type:'select',options:x.options||[]}:x))}}>{Object.entries({text:'Текст',number:'Число',money:'Деньги',date:'Дата',time:'Время',boolean:'Флажок',select:'Варианты',url:'Ссылка',file:'Файл',relation:'Связь',formula:'Вычисление'}).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select>
+ {c.type==='select'&&<input aria-label="Варианты через запятую" value={(c.options||[]).join(', ')} onChange={e=>column(i,'options',e.target.value.split(',').map(s=>s.trim()).filter(Boolean))}/>}
+ {c.type==='formula'&&<input aria-label="Формула" placeholder="{amount} * {count}" value={c.formula||''} onChange={e=>column(i,'formula',e.target.value)}/>}
+ <button type="button" className="icon-button" aria-label={`Колонку ${i+1} влево`} onClick={()=>move(i,-1)}>←</button><button type="button" className="icon-button" aria-label={`Колонку ${i+1} вправо`} onClick={()=>move(i,1)}>→</button><button type="button" className="icon-button" aria-label={`Удалить колонку ${i+1}`} onClick={()=>change('columns',data.columns.filter((_,n)=>n!==i))}>×</button>
+ </div>)}<button type="button" className="text-button" onClick={()=>change('columns',[...data.columns,{id:`col_${crypto.randomUUID().slice(0,8)}`,name:'Новая колонка',type:'text'}])}>+ Колонка</button></fieldset>
+ {data.columns.some(c=>c.type==='formula')&&<p className="quiet-copy">Ссылки для формул: {data.columns.filter(c=>c.type!=='formula').map(c=>`${c.name}: {${c.id}}`).join('; ')}. Доступны + − * / и скобки. Пустое значение не считается нулём.</p>}
+ {!!affected.length&&<div className="form-error"><p>Изменятся колонки: {affected.map(c=>c.name).join(', ')}. В таблице {rowCount} строк. Значения и прежняя структура сохранятся в истории для восстановления.</p><label className="check-field"><input required type="checkbox" checked={confirmed} onChange={e=>confirm(e.target.checked)}/>Подтверждаю изменение структуры</label></div>}
+ {error&&<p className="form-error">{error}</p>}{actions(onClose)}</form></Modal>;
+}
+
+export function InvitationEditor({state,onClose,onSave,onRevoke}){
+ const [email,setEmail]=useState('');const [roleId,setRole]=useState('');const [result,setResult]=useState(null);const [error,setError]=useState('');const [revoked,revoke]=useState(false);
+ const url=result?`${location.origin}/?agency=${encodeURIComponent(state.agency.slug||'tie')}&invite=${encodeURIComponent(result.token)}`:'';
+ return <Modal title="Пригласить участника" onClose={onClose}>{result?<div className="form-stack"><p>Приглашение для {email}. Получатель создаст отдельный аккаунт или войдёт с этой почтой.</p><FormField label="Ссылка приглашения"><input readOnly value={url} onFocus={e=>e.target.select()}/></FormField><p>Действует до {new Date(result.expiresAt).toLocaleString('ru-RU')}.</p><div className="button-group"><button className="button quiet" onClick={()=>navigator.clipboard.writeText(url).catch(()=>setError('Выделите и скопируйте ссылку из поля.'))}>Скопировать</button><button className="text-button danger-text" disabled={revoked} onClick={async()=>{try{await onRevoke(result.id);revoke(true)}catch(e){setError(e.message)}}}>{revoked?'Приглашение отозвано':'Отозвать'}</button></div><button className="button" onClick={onClose}>Готово</button>{error&&<p className="form-error">{error}</p>}</div>:<form className="form-stack" onSubmit={async e=>{e.preventDefault();try{setResult(await onSave({email,roleId:roleId||undefined}))}catch(e){setError(e.message)}}}><FormField label="Почта"><input required type="email" value={email} onChange={e=>setEmail(e.target.value)}/></FormField><FormField label="Роль"><select value={roleId} onChange={e=>setRole(e.target.value)}><option value="">Участник пары</option>{(state.inviteRoles||state.roles||[]).map(r=><option value={r.id} key={r.id}>{r.name}</option>)}</select></FormField>{error&&<p className="form-error">{error}</p>}{actions(onClose,'Создать приглашение')}</form>}</Modal>;
+}
+
+export function Payouts({state,onPay}){
+ const [query,search]=useState('');const [all,setAll]=useState(false);
+ const items=(state.entities||[]).filter(e=>e.kind==='obligation'&&!e.deleted).map(e=>({...e,paid:e.data.paid??state.financials?.paid?.[e.id]??0,due:e.data.due??Math.max(0,(e.data.agreed||0)-(state.financials?.paid?.[e.id]||0))})).filter(e=>(all||e.due>0)&&JSON.stringify(e.data).toLowerCase().includes(query.toLowerCase())).sort((a,b)=>(a.data.dueDate||'9999').localeCompare(b.data.dueDate||'9999'));
+ return <><header className="page-header"><div><p className="eyebrow">День свадьбы</p><h1>Предстоящие выплаты</h1><p className="subtitle">Отдельный реестр договорённостей и оставшихся сумм.</p></div></header><div className="filters"><label className="search"><input placeholder="Найти выплату" value={query} onChange={e=>search(e.target.value)}/></label><label className="check-field"><input type="checkbox" checked={all} onChange={e=>setAll(e.target.checked)}/>Показать оплаченные</label></div><section className="panel"><div className="data-list">{items.map(e=><article key={e.id} className="data-row static"><div><strong>{e.data.title}</strong><small>{e.data.dueDate?dateLabel(e.data.dueDate):'По договорённости'} · {e.data.condition||'Условие не указано'}</small><small>Ответственный: {(state.members||state.custodians||[]).find(u=>u.id===e.data.responsible)?.name||'Не назначен'}</small></div><div><strong>{e.data.priceKind==='unknown'?'Цена уточняется':money(e.due)}</strong><small>Уже оплачено {money(e.paid)}</small></div>{e.due>0&&<button className="button quiet" onClick={()=>onPay(e)}>Оплатить</button>}</article>)}</div>{!items.length&&<p className="quiet-copy">Предстоящих выплат нет. Добавьте обязательство в смете.</p>}</section></>;
+}
+
+export function ConflictEditor({conflict,state,onClose,onSave}){
+ const c=conflict.command;const current=(state.entities||[]).find(e=>e.id===(c.entityId||c.data?.obligationId))||conflict.details?.current;
+ const table=(state.entities||[]).find(e=>e.id===current?.parent_id)||conflict.details?.table;
+ const columns=table?.data.columns||[];const [draft,setDraft]=useState({...c.data});const [error,setError]=useState('');
+ const row=c.op==='entity.edit';const removed=row?Object.keys(draft).filter(k=>!columns.some(col=>col.id===k)):[];
+ return <Modal wide title="Сравнить изменения" onClose={onClose}><form className="form-stack" onSubmit={async e=>{e.preventDefault();try{if(!current)throw new Error('Текущая запись недоступна. Верните доступ или сохраните правку отдельно.');await onSave(row?{version:current.version,schemaVersion:table?.version,data:Object.fromEntries(Object.entries(draft).filter(([k])=>columns.some(col=>col.id===k)))}:{obligationVersion:current.version,data:draft});onClose()}catch(e){setError(e.message)}}}><p>{conflict.error}</p><div className="split-grid"><section><h3>Ваша правка</h3>{Object.entries(draft).map(([key,value])=><p key={key}><strong>{columns.find(c=>c.id===key)?.name||key}: </strong>{String(value??'—')}</p>)}</section><section><h3>Сейчас на сервере</h3>{current?Object.entries(current.data).map(([key,value])=><p key={key}><strong>{columns.find(c=>c.id===key)?.name||key}: </strong>{typeof value==='object'?JSON.stringify(value):String(value??'—')}</p>):<p>Запись недоступна.</p>}</section></div>{!row&&<FormField label="Новая сумма выплаты, ₽"><input type="number" min="0.01" step="0.01" value={Number(draft.amount)/100} onChange={e=>setDraft({...draft,amount:Math.round(Number(e.target.value)*100)})}/></FormField>}{removed.length>0&&<p className="form-error">Удалённые колонки исключатся при повторе: {removed.join(', ')}. Исходная правка показана выше.</p>}<label className="check-field"><input required type="checkbox"/>Я сравнил данные и подтверждаю повтор своей правки с текущими версиями.</label>{error&&<p className="form-error">{error}</p>}{actions(onClose,'Подготовить повтор')}</form></Modal>;
+}

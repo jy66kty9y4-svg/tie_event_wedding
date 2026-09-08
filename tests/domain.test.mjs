@@ -313,6 +313,23 @@ test('selected vendor deletion and restoration keep its estimate obligation cons
   assert.equal(snapshot(db,admin,p.id).financials.agreed,70000);
 });
 
+test('editing a linked obligation updates the selection atomically and requires vendor access',()=>{
+  const {db,admin}=fixture();
+  const p=project(db,admin);
+  const selection=command(db,admin,'entity.create',{projectId:p.id,kind:'selection',data:{title:'Ведущий',price:70000,selected:true,terms:'Весь вечер',dueDate:'2027-07-01'}});
+  let obligation=entity(db,selection.data.obligationId),linked=entity(db,selection.id);
+  obligation=command(db,admin,'entity.edit',{projectId:p.id,entityId:obligation.id,version:obligation.version,data:{title:'Ведущий и диджей',agreed:80000,condition:'До полуночи'}});
+  const updated=entity(db,selection.id);
+  assert.equal(updated.version,linked.version+1);
+  assert.equal(updated.data.title,'Ведущий и диджей'); assert.equal(updated.data.price,80000); assert.equal(updated.data.terms,'До полуночи');
+
+  const budgetEditor=registered(db,'linked-budget-only@example.test');
+  const roleId=role(db,admin,'Только связанная смета',['read','edit','finance']).id;
+  assign(db,admin,budgetEditor,[{roleId,projectId:p.id,restrictions:{sections:['budget'],rows:[obligation.id],fields:['agreed']}}]);
+  fails(()=>command(db,budgetEditor,'entity.edit',{projectId:p.id,entityId:obligation.id,version:obligation.version,data:{agreed:85000}}),403);
+  assert.equal(entity(db,obligation.id).data.agreed,80000); assert.equal(entity(db,selection.id).data.price,80000);
+});
+
 test('settings are normalized without mutating the command payload',()=>{
   const {db,admin}=fixture();
   const agency=db.prepare('SELECT * FROM agencies WHERE id=?').get(admin.agency_id);
@@ -322,4 +339,73 @@ test('settings are normalized without mutating the command payload',()=>{
   assert.deepEqual(settings,before);
   assert.deepEqual(result.settings,{tagline:'Вместе',description:'Спокойная организация',contact:'hello@example.test',services:['Координация'],portfolio:[{title:'Летняя свадьба',image:'https://example.test/photo.jpg',description:'В саду'}]});
   fails(()=>command(db,admin,'settings.save',{version:agency.version+1,name:'Имя',settings:{...before,services:[{}]}}));
+});
+
+test('empty sections remain visible without leaking unrelated structure',()=>{
+  const {db,admin}=fixture();
+  const p=project(db,admin),table=rowTable(db,admin,p.id);
+  const empty=command(db,admin,'entity.create',{projectId:p.id,kind:'section',data:{name:'Пустой раздел',order:10,archived:false}});
+  assert(snapshot(db,admin,p.id).entities.some(item=>item.id===empty.id));
+
+  const scoped=registered(db,'section-scope@example.test');
+  const reader=role(db,admin,'Одна таблица',['read']);
+  assign(db,admin,scoped,[{roleId:reader.id,projectId:p.id,restrictions:{sections:[table.id]}}]);
+  const state=snapshot(db,scoped,p.id);
+  assert(state.entities.some(item=>item.id===table.data.sectionId));
+  assert.equal(state.entities.some(item=>item.id===empty.id),false);
+});
+
+test('history exposes current entity state for restoring deleted records',()=>{
+  const {db,admin}=fixture();
+  const p=project(db,admin),table=rowTable(db,admin,p.id);
+  let row=addRow(db,admin,p.id,table,{title:'Удаляемая строка'});
+  row=command(db,admin,'entity.delete',{projectId:p.id,entityId:row.id,version:row.version,schemaVersion:table.version});
+  const history=snapshot(db,admin,p.id).history.find(item=>item.entity_id===row.id&&item.action==='delete');
+  assert.equal(history.current_version,row.version); assert.equal(history.current_deleted,1);
+});
+
+test('global resource permissions do not silently grant mutation verbs',()=>{
+  const {db,admin}=fixture();
+  const vendor=command(db,admin,'entity.create',{kind:'vendor',data:{name:'Каталог',price:null}});
+  const user=registered(db,'catalog-reader@example.test');
+  const catalogReader=role(db,admin,'Чтение каталога',['read','catalog']);
+  assign(db,admin,user,[{roleId:catalogReader.id,projectId:null,restrictions:{}}]);
+  assert(snapshot(db,user).global.some(item=>item.id===vendor.id));
+  fails(()=>command(db,user,'entity.create',{kind:'vendor',data:{name:'Недопустимое создание',price:null}}),403);
+  fails(()=>command(db,user,'entity.edit',{entityId:vendor.id,version:vendor.version,data:{name:'Недопустимая правка'}}),403);
+  fails(()=>command(db,user,'entity.delete',{entityId:vendor.id,version:vendor.version}),403);
+});
+
+test('custom template keys are normalized before project structure is cloned',()=>{
+  const {db,admin}=fixture();
+  const template=command(db,admin,'entity.create',{kind:'template',data:{name:'  Свой шаблон  ',sections:[{key:'first',name:'Первый',order:0},{key:' day ',name:'  День  ',order:1}],tables:[{key:'timing',name:'  Тайминг  ',section:'day',columns:[{id:'title',name:'Событие',type:'text'}]}],categories:['  Фото  '],offline:[' timing ']}});
+  assert.deepEqual(template.data.offline,['timing']); assert.deepEqual(template.data.categories,['Фото']);
+  const p=command(db,admin,'project.create',{templateId:template.id,data:{name:'Шаблонная свадьба',date:'2027-12-01'}});
+  const sections=entities(db,admin.agency_id,p.id,'section'),table=rowTable(db,admin,p.id);
+  assert.equal(sections.find(section=>section.id===table.data.sectionId).data.name,'День');
+  assert.equal(table.data.offline,true);
+});
+
+test('movement participant details and agency category totals remain explicit',()=>{
+  const {db,admin}=fixture();
+  const p=project(db,admin);
+  const category=command(db,admin,'entity.create',{kind:'category',data:{name:'Организация',scope:'agency',archived:false}});
+  const deposit=command(db,admin,'movement.save',{projectId:p.id,data:{type:'deposit',amount:10000,date:'2027-01-01',description:'Передача средств',source:'custody',to:admin.id,counterparty:'  Анна и Илья  ',method:'  наличные  '}});
+  assert.equal(deposit.data.counterparty,'Анна и Илья'); assert.equal(deposit.data.method,'наличные');
+  const receipt=upload(db,admin,p.id,{name:'чек.txt',mime:'text/plain',content:Buffer.from('paid').toString('base64')});
+  const payable=command(db,admin,'entity.create',{projectId:p.id,kind:'obligation',data:{title:'Фотограф',priceKind:'amount',agreed:3000,planned:null,dueDate:'',fee:false}});
+  const payment=command(db,admin,'movement.save',{projectId:p.id,obligationVersion:payable.version,data:{type:'payment',amount:3000,date:'2027-01-02',description:'Оплата фотографу',source:'custody',from:admin.id,obligationId:payable.id,counterparty:'Фотограф',method:'карта',fileId:receipt.id}});
+  assert.equal(payment.data.counterparty,'Фотограф'); assert.equal(payment.data.fileId,receipt.id);
+  const refund=command(db,admin,'movement.save',{projectId:p.id,data:{type:'refund',amount:2000,date:'2027-01-02',description:'Возврат остатка',source:'custody',from:admin.id,counterparty:'Анна'}});
+  assert.equal(refund.data.counterparty,'Анна');
+  const obligation=command(db,admin,'entity.create',{projectId:p.id,kind:'obligation',data:{title:'Гонорар',priceKind:'amount',agreed:5000,planned:null,dueDate:'',fee:true}});
+  command(db,admin,'movement.save',{projectId:p.id,obligationVersion:obligation.version,data:{type:'fee',amount:5000,date:'2027-01-02',description:'Гонорар',source:'direct',obligationId:obligation.id,categoryId:category.id}});
+  command(db,admin,'movement.save',{data:{type:'income',amount:12345,date:'2027-01-03',description:'Консультация',source:'direct',categoryId:category.id}});
+  command(db,admin,'movement.save',{data:{type:'expense',amount:2345,date:'2027-01-04',description:'Реклама',source:'direct',categoryId:category.id}});
+  const finance=snapshot(db,admin).financials;
+  assert.equal(finance.incomeByCategory[category.id],17345);
+  assert.equal(finance.expenseByCategory[category.id],2345);
+  fails(()=>command(db,admin,'movement.save',{projectId:p.id,data:{type:'refund',amount:100,date:'2027-01-05',description:'Возврат',source:'custody',from:admin.id,counterparty:''}}));
+  fails(()=>command(db,admin,'movement.save',{data:{type:'income',amount:100,date:'2027-01-05',description:'Доход',source:'direct',method:'x'.repeat(101)}}));
+  fails(()=>command(db,admin,'movement.save',{projectId:p.id,data:{type:'deposit',amount:100,date:'2027-01-05',description:'Без файла',source:'custody',to:admin.id,fileId:uid()}}),404);
 });

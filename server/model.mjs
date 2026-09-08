@@ -64,18 +64,19 @@ export function validateRow(db,u,table,values,changedKeys=Object.keys(values)) {
 }
 export function financials(rows) {
   const obs=rows.filter(r=>r.kind==='obligation'&&!r.deleted), moves=rows.filter(r=>r.kind==='movement'&&!r.deleted);
-  const paid={}, holders={}, byCategory={}; let agreed=0,planned=0,unknown=0,income=0,expense=0;
+  const paid={}, holders={}, byCategory={}, incomeByCategory={}, expenseByCategory={}; let agreed=0,planned=0,unknown=0,income=0,expense=0;
   for(const r of moves) {
     const m=r.data, a=m.amount;
     if(['payment','fee'].includes(m.type)) paid[m.obligationId]=(paid[m.obligationId]||0)+a;
     if(m.type==='deposit') holders[m.to]=(holders[m.to]||0)+a;
     if(['payment','fee','refund'].includes(m.type)&&m.source==='custody') holders[m.from]=(holders[m.from]||0)-a;
     if(m.type==='transfer') { holders[m.from]=(holders[m.from]||0)-a; holders[m.to]=(holders[m.to]||0)+a; }
-    if(['fee','income'].includes(m.type)) income+=a; if(m.type==='expense') expense+=a;
+    if(['fee','income'].includes(m.type)) { income+=a; if(m.categoryId) incomeByCategory[m.categoryId]=(incomeByCategory[m.categoryId]||0)+a; }
+    if(m.type==='expense') { expense+=a; if(m.categoryId) expenseByCategory[m.categoryId]=(expenseByCategory[m.categoryId]||0)+a; }
   }
   for(const o of obs) { const d=o.data; if(d.priceKind==='unknown') unknown++; agreed+=d.priceKind==='amount'?d.agreed:0; planned+=d.planned||0; byCategory[d.categoryId]=(byCategory[d.categoryId]||0)+(d.agreed||0); }
   const totalPaid=Object.values(paid).reduce((a,b)=>a+b,0);
-  return {agreed,planned,unknown,paid,totalPaid,due:agreed-totalPaid,holders,custody:Object.values(holders).reduce((a,b)=>a+b,0),income,expense,own:income-expense,byCategory};
+  return {agreed,planned,unknown,paid,totalPaid,due:agreed-totalPaid,holders,custody:Object.values(holders).reduce((a,b)=>a+b,0),income,expense,own:income-expense,byCategory,incomeByCategory,expenseByCategory};
 }
 export function validateLedger(rows) {
   const f=financials(rows);
