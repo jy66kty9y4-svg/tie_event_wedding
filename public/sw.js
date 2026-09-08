@@ -1,5 +1,42 @@
-const CACHE = 'tie-shell-v2';
+const CACHE = 'tie-shell-v3';
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
+
+function localAsset(value, base = self.location.origin) {
+  try {
+    const url = new URL(value, base);
+    return url.origin === self.location.origin && !url.pathname.startsWith('/api/') ? url.pathname + url.search : null;
+  } catch { return null; }
+}
+
+function moduleImports(source, base) {
+  const found = [];
+  const patterns = [
+    /(?:import|export)\s+(?:[^'";]*?\sfrom\s*)?["']([^"']+)["']/g,
+    /import\s*\(\s*["']([^"']+)["']\s*\)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const asset = localAsset(match[1], base);
+      if (asset) found.push(asset);
+    }
+  }
+  return found;
+}
+
+async function precache(cache, value, seen) {
+  const asset = localAsset(value);
+  if (!asset || seen.has(asset) || seen.size >= 128) return;
+  seen.add(asset);
+  const request = new Request(new URL(asset, self.location.origin), { cache: 'no-cache' });
+  const response = await fetch(request);
+  if (!cacheable(request, response)) return;
+  const source = /(?:java|type)script/i.test(response.headers.get('content-type') || '') || /\.(?:m?js|jsx|ts|tsx)(?:\?|$)/i.test(asset)
+    ? await response.clone().text() : null;
+  await cache.put(asset, response);
+  if (source !== null) {
+    for (const dependency of moduleImports(source, new URL(asset, self.location.origin))) await precache(cache, dependency, seen);
+  }
+}
 
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
@@ -9,15 +46,10 @@ self.addEventListener('install', event => {
     const html = await index.text();
     await cache.put('/index.html', new Response(html, { status: 200, headers: index.headers }));
     await cache.put('/', new Response(html, { status: 200, headers: index.headers }));
-    const assets = [...html.matchAll(/(?:src|href)=["']([^"']+)["']/g)]
-      .map(match => new URL(match[1], self.location.origin))
-      .filter(url => url.origin === self.location.origin && !url.pathname.startsWith('/api/'))
-      .map(url => url.pathname + url.search);
+    const assets = [...html.matchAll(/(?:src|href)=["']([^"']+)["']/g)].map(match => localAsset(match[1])).filter(Boolean);
     const urls = [...new Set([...SHELL.slice(2), ...assets])];
-    await Promise.all(urls.map(async url => {
-      const response = await fetch(url, { cache: 'no-cache' });
-      if (cacheable(new Request(new URL(url, self.location.origin)), response)) await cache.put(url, response);
-    }));
+    const seen = new Set(['/index.html', '/']);
+    for (const url of urls) await precache(cache, url, seen);
     await self.skipWaiting();
   })());
 });
