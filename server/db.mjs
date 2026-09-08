@@ -1,0 +1,54 @@
+import { DatabaseSync } from 'node:sqlite';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
+
+export const uid = () => randomUUID();
+export const now = () => new Date().toISOString();
+export class Fault extends Error {
+  constructor(message, status = 400, details) { super(message); this.status = status; this.details = details; }
+}
+export function assert(ok, message, status = 400, details) { if (!ok) throw new Fault(message, status, details); }
+export function openDatabase(path) {
+  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const db = new DatabaseSync(path);
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
+    CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS agencies(id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL, settings TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, agency_id TEXT NOT NULL REFERENCES agencies(id), email TEXT NOT NULL COLLATE NOCASE, name TEXT NOT NULL, password TEXT NOT NULL, protected INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1, UNIQUE(agency_id,email));
+    CREATE TABLE IF NOT EXISTS sessions(digest TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS roles(id TEXT PRIMARY KEY, agency_id TEXT NOT NULL REFERENCES agencies(id), name TEXT NOT NULL, permissions TEXT NOT NULL, protected INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS grants(id TEXT PRIMARY KEY, agency_id TEXT NOT NULL REFERENCES agencies(id), user_id TEXT NOT NULL REFERENCES users(id), role_id TEXT NOT NULL REFERENCES roles(id), project_id TEXT, restrictions TEXT NOT NULL DEFAULT '{}');
+    CREATE TABLE IF NOT EXISTS entities(id TEXT PRIMARY KEY, agency_id TEXT NOT NULL REFERENCES agencies(id), project_id TEXT, kind TEXT NOT NULL, parent_id TEXT, data TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS entities_scope ON entities(agency_id,project_id,kind,deleted);
+    CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY, agency_id TEXT NOT NULL, project_id TEXT, actor_id TEXT NOT NULL, entity_id TEXT NOT NULL, kind TEXT NOT NULL, action TEXT NOT NULL, before_json TEXT, after_json TEXT, created_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS audit_scope ON audit(agency_id,project_id,created_at);
+    CREATE TABLE IF NOT EXISTS commands(id TEXT NOT NULL, user_id TEXT NOT NULL, digest TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(id,user_id));
+    CREATE TABLE IF NOT EXISTS invitations(digest TEXT PRIMARY KEY, agency_id TEXT NOT NULL REFERENCES agencies(id), project_id TEXT NOT NULL, email TEXT NOT NULL, role_id TEXT NOT NULL REFERENCES roles(id), expires INTEGER NOT NULL, used_by TEXT, restrictions TEXT NOT NULL DEFAULT '{}');
+    CREATE TABLE IF NOT EXISTS blobs(id TEXT PRIMARY KEY REFERENCES entities(id), content BLOB NOT NULL);
+    CREATE TABLE IF NOT EXISTS attempts(key TEXT PRIMARY KEY, count INTEGER NOT NULL, until_ms INTEGER NOT NULL);
+    INSERT OR IGNORE INTO migrations VALUES(1,datetime('now'));
+  `);
+  return db;
+}
+export function transaction(db, fn) {
+  db.exec('BEGIN IMMEDIATE');
+  try { const result = fn(); db.exec('COMMIT'); return result; } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+export function decode(row) { return row ? { ...row, data: JSON.parse(row.data), deleted: !!row.deleted } : null; }
+export function entity(db, id) { return decode(db.prepare('SELECT * FROM entities WHERE id=?').get(id)); }
+export function entities(db, agency, project, kind, deleted = false) {
+  return db.prepare(`SELECT * FROM entities WHERE agency_id=? AND project_id IS ? ${kind ? 'AND kind=?' : ''} ${deleted ? '' : 'AND deleted=0'} ORDER BY updated_at,id`).all(agency, project, ...(kind ? [kind] : [])).map(decode);
+}
+export function audit(db, user, row, before, action) {
+  db.prepare('INSERT INTO audit VALUES(?,?,?,?,?,?,?,?,?,?)').run(uid(), user.agency_id, row.project_id, user.id, row.id, row.kind, action, before ? JSON.stringify(before) : null, JSON.stringify(row), now());
+}
+export function insert(db, user, kind, data, project = null, parent = null, id = uid()) {
+  db.prepare('INSERT INTO entities(id,agency_id,project_id,kind,parent_id,data,updated_at) VALUES(?,?,?,?,?,?,?)').run(id, user.agency_id, project, kind, parent, JSON.stringify(data), now());
+  const row = entity(db, id); audit(db, user, row, null, 'create'); return row;
+}
+export function change(db, user, row, data, deleted = row.deleted, action = 'edit') {
+  db.prepare('UPDATE entities SET data=?,version=version+1,deleted=?,updated_at=? WHERE id=?').run(JSON.stringify(data), Number(deleted), now(), row.id);
+  const next = entity(db, row.id); audit(db, user, next, row, action); return next;
+}
+export function version(row, expected) { assert(row.version === expected, 'Запись уже изменена. Сравните вашу правку с текущей версией.', 409, { current: row }); }

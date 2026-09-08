@@ -1,0 +1,7 @@
+{
+  "name": "tie-event", "version": "0.1.0", "private": true, "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": { "build": "vite build", "start": "node server/http.mjs", "dev": "node server/http.mjs", "test": "node --test tests/*.test.mjs", "demo": "node scripts/demo.mjs" },
+  "dependencies": { "react": "19.2.6", "react-dom": "19.2.6" },
+  "devDependencies": { "vite": "8.0.13", "@vitejs/plugin-react": "6.0.2" }
+}
