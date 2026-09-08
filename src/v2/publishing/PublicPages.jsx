@@ -1,0 +1,11 @@
+import React, { useState } from 'react';
+
+export function AgencyPublicPage({ agency, content = [], onApply }) {
+  const [openFaq, setOpenFaq] = useState(null); const cases = content.filter(item => item.kind === 'case'); const packages = content.filter(item => item.kind === 'package'); const faqs = content.filter(item => item.kind === 'faq');
+  return <main className="v2-publishing-public"><header><a href="/">{agency?.name || 'tie'}</a><nav><a href="#stories">Кейсы</a><a href="#services">Пакеты</a><a href="#faq">FAQ</a></nav><button onClick={()=>onApply?.({})}>Оставить заявку</button></header><section><p>Свадебное агентство</p><h1>{agency?.tagline || 'Подготовка свадьбы в ясном порядке'}</h1>{agency?.description && <p>{agency.description}</p>}</section>{cases.length>0&&<section id="stories"><h2>Истории</h2><div>{cases.map(item=><article key={item.id}><h3>{item.revision.title}</h3><p>{item.revision.summary}</p><button onClick={()=>onApply?.({sourceCaseId:item.id})}>Обсудить похожую свадьбу</button></article>)}</div></section>}{packages.length>0&&<section id="services"><h2>Форматы услуг</h2><div>{packages.map(item=><article key={item.id}><h3>{item.revision.title}</h3><p>{item.revision.summary}</p><button onClick={()=>onApply?.({sourcePackageId:item.id})}>Обсудить этот формат</button></article>)}</div></section>}{faqs.length>0&&<section id="faq"><h2>Вопросы</h2>{faqs.map(item=><article key={item.id}><button aria-expanded={openFaq===item.id} onClick={()=>setOpenFaq(openFaq===item.id?null:item.id)}>{item.revision.question}</button>{openFaq===item.id&&<p>{item.revision.answer}</p>}</article>)}</section>}</main>;
+}
+
+export function WeddingPublicPage({ site }) {
+  const page = site?.revision; if (!page) return <main className="v2-publishing-public"><h1>Страница недоступна</h1><p>Свяжитесь с организатором, если нужна помощь.</p></main>;
+  return <main className={`v2-publishing-wedding-page v2-template-${page.template}`}><header><h1>{page.coupleNames}</h1><p>{page.dateLabel}{page.venue ? ` · ${page.venue}` : ''}</p></header>{page.intro&&<p>{page.intro}</p>}{page.schedule?.length>0&&<section><h2>Программа</h2>{page.schedule.map((item,index)=><p key={`${item.time}-${index}`}><time>{item.time}</time> {item.title}</p>)}</section>}{page.directions&&<section><h2>Как добраться</h2><p>{page.directions}</p></section>}</main>;
+}
