@@ -20,23 +20,30 @@ export function publicUser(user) { const { password, ...safe } = user; return sa
 export function grants(db, user) {
   return db.prepare('SELECT g.*,r.permissions,r.name AS role_name FROM grants g JOIN roles r ON g.role_id=r.id WHERE g.user_id=? AND g.agency_id=? AND r.agency_id=?').all(user.id,user.agency_id,user.agency_id).map(g=>({...g,permissions:JSON.parse(g.permissions),restrictions:JSON.parse(g.restrictions)}));
 }
-export function can(db, user, action, project = null, section = null, row = null, field = null) {
+export function can(db, user, action, project = null, section = undefined, row = undefined, field = undefined) {
   if (!user || user.disabled) return false;
   if (user.protected) return true;
   return grants(db,user).some(g => {
-    if (!g.permissions.includes(action)) return false;
+    const actions=Array.isArray(action)?action:[action];
+    if (actions.some(required=>!g.permissions.includes(required))) return false;
     if (g.project_id !== null && g.project_id !== project) return false;
     if (project === null && g.project_id !== null) return false;
     const r = g.restrictions;
     if (r.sections?.length && (!section || !r.sections.includes(section))) return false;
-    if (r.rows?.length && row !== null && !r.rows.includes(row)) return false;
-    if (r.fields?.length && field !== null && !r.fields.includes(field)) return false;
+    // `undefined` means the caller is checking a harmless container (for
+    // example whether a table schema may be listed). `null` means the action
+    // has no concrete row/field and must therefore not bypass an allow-list.
+    if (r.rows?.length && row !== undefined && !r.rows.includes(row)) return false;
+    if (r.fields?.length && field !== undefined) {
+      const requested=Array.isArray(field)?field:[field];
+      if (!requested.length || requested.some(key=>!r.fields.includes(key))) return false;
+    }
     // Restricted roles cannot rewrite schemas, invite broader users, or access whole history.
-    if ((r.rows?.length || r.fields?.length) && ['structure','invite','history'].includes(action)) return false;
+    if ((r.rows?.length || r.fields?.length) && actions.some(required=>['structure','invite','history'].includes(required))) return false;
     return true;
   });
 }
-export function requireAccess(db,u,action,p=null,s=null,r=null,f=null) { assert(can(db,u,action,p,s,r,f),'Недостаточно прав',403); }
+export function requireAccess(db,u,action,p=null,s=undefined,r=undefined,f=undefined) { assert(can(db,u,action,p,s,r,f),'Недостаточно прав',403); }
 export function defaults(db, agency) {
   const roles = [ ['Администратор',permissions,true], ['Организатор',permissions.filter(x=>!['access','settings'].includes(x)),false], ['Участник пары',projectPermissions,false], ['Координатор',['read','edit','finance','files'],false], ['Подрядчик',['read','edit'],false] ];
   return roles.map(([name,p,protectedRole]) => { const id=uid(); db.prepare('INSERT INTO roles(id,agency_id,name,permissions,protected) VALUES(?,?,?,?,?)').run(id,agency,name,JSON.stringify(p),Number(protectedRole)); return {id,name}; });

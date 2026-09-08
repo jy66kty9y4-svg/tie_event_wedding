@@ -1,17 +1,19 @@
 import { assert, transaction, entity, entities, insert, change, version, uid, now, audit } from './db.mjs';
 import { token, digest, passwordHash, checkPassword, createSession, publicUser, defaults, grant, grants, can, requireAccess, rateLimit } from './auth.mjs';
-import { text, amount, date, safeUrl, getScoped, projectVisible, createProject, initialTemplate, validateColumns, validateRow, financials, validateLedger, sectionOf } from './model.mjs';
+import { text, amount, date, safeUrl, getScoped, projectVisible, createProject, initialTemplate, validateColumns, validateRow, financials, validateLedger, sectionOf, accessRowId } from './model.mjs';
 import { permissions } from '../src/shared.js';
 
 export function bootstrap(db,b) {
   return transaction(db,()=>{
+    assert(!db.prepare('SELECT id FROM agencies LIMIT 1').get(),'Настройка уже выполнена',409);
     const id=uid(),slug=text(b.slug,'Адрес агентства').toLowerCase(); assert(/^[a-z0-9-]{2,50}$/.test(slug),'Адрес: латинские буквы, цифры и дефис');
     db.prepare('INSERT INTO agencies(id,slug,name,settings) VALUES(?,?,?,?)').run(id,slug,text(b.agencyName),JSON.stringify({tagline:'Свадьба, собранная вместе',description:'Организация свадьбы от первой идеи до последнего танца.',contact:'',services:['Организация под ключ','Координация свадебного дня','Концепция и оформление'],portfolio:[]}));
     const user={id:uid(),agency_id:id,email:email(b.email),name:text(b.name),protected:1,disabled:0};
     db.prepare('INSERT INTO users(id,agency_id,email,name,password,protected) VALUES(?,?,?,?,?,1)').run(user.id,id,user.email,user.name,passwordHash(b.password));
     const roles=defaults(db,id); grant(db,user,roles[0].id); insert(db,user,'template',initialTemplate());
     for(const name of ['Гонорары','Аренда','Зарплата','Продвижение','Прочее']) insert(db,user,'category',{name,scope:'agency',archived:false});
-    return {user:publicUser(user),token:createSession(db,user)};
+    const saved=db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
+    return {user:publicUser(saved),token:createSession(db,saved)};
   });
 }
 function email(v) { const e=text(v,'Email',3,200).toLowerCase(); assert(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e),'Проверьте email'); return e; }
@@ -29,12 +31,14 @@ export function register(db,b,ip='local') {
     assert(!db.prepare('SELECT id FROM users WHERE agency_id=? AND email=?').get(agency.id,u.email),'Этот email уже зарегистрирован. Войдите в аккаунт.',409);
     db.prepare('INSERT INTO users(id,agency_id,email,name,password) VALUES(?,?,?,?,?)').run(u.id,u.agency_id,u.email,u.name,passwordHash(b.password));
     if(b.invitation) acceptInvitation(db,u,b.invitation);
-    return {user:publicUser(u),token:createSession(db,u)};
+    const saved=db.prepare('SELECT * FROM users WHERE id=?').get(u.id);
+    return {user:publicUser(saved),token:createSession(db,saved)};
   });
 }
 function acceptInvitation(db,u,raw) {
   const invite=db.prepare('SELECT * FROM invitations WHERE digest=? AND agency_id=?').get(digest(raw),u.agency_id);
   assert(invite && invite.expires>Date.now() && (!invite.used_by||invite.used_by===u.id) && invite.email===u.email,'Приглашение недействительно, истекло или выписано на другой email',403);
+  const role=db.prepare('SELECT * FROM roles WHERE id=? AND agency_id=?').get(invite.role_id,u.agency_id); assert(role&&!role.protected,'Роль приглашения недоступна',403);
   const p=getScoped(db,u,invite.project_id,undefined,'project'); assert(!p.deleted,'Проект удалён');
   if(!invite.used_by) grant(db,u,invite.role_id,invite.project_id,JSON.parse(invite.restrictions));
   db.prepare('UPDATE invitations SET used_by=? WHERE digest=?').run(u.id,digest(raw)); return {projectId:invite.project_id};
@@ -45,43 +49,84 @@ export function publicInfo(db,slug='tie') {
 }
 function filteredRow(db,u,r) {
   const section=sectionOf(r);
-  if(!can(db,u,'read',r.project_id,section,r.id)) return null;
-  const data={}; for(const [key,v] of Object.entries(r.data)) if(can(db,u,'read',r.project_id,section,r.id,key)) data[key]=v;
+  const accessRow=accessRowId(r);
+  const required=r.kind==='obligation'||r.kind==='movement'||r.kind==='category'?['read','finance']:r.kind==='file'?['read','files']:['read'];
+  if(!can(db,u,required,r.project_id,section,accessRow)) return null;
+  const data={}; for(const [key,v] of Object.entries(r.data)) if(can(db,u,required,r.project_id,section,accessRow,key)) data[key]=v;
   return {...r,data};
 }
+function filteredProject(db,u,p) {
+  const data={name:p.data.name,date:p.data.date,status:p.data.status};
+  for(const key of ['location','limit','offline','notes']) if(can(db,u,'read',p.id,'project',p.id,key)) data[key]=p.data[key];
+  return {...p,data};
+}
+function visibleTable(db,u,project,table) {
+  if(!can(db,u,'read',project,table.id)) return null;
+  const columns=table.data.columns.filter(column=>{
+    const dependencies=column.type==='formula'?[...column.formula.matchAll(/\{([^}]+)\}/g)].map(match=>match[1]):[];
+    return can(db,u,'read',project,table.id,undefined,[column.id,...dependencies]);
+  });
+  return {...table,data:{...table.data,columns}};
+}
 export function snapshot(db,u,project=null,offline=false) {
+  u=db.prepare('SELECT * FROM users WHERE id=? AND agency_id=? AND disabled=0').get(u.id,u.agency_id);
+  assert(u,'Доступ отозван',403);
   const agency=db.prepare('SELECT * FROM agencies WHERE id=?').get(u.agency_id);
   const result={user:publicUser(u),agency:{id:agency.id,slug:agency.slug,name:agency.name,settings:JSON.parse(agency.settings),version:agency.version},grants:grants(db,u),time:now()};
   if(project) {
     assert(projectVisible(db,u,project),'Проект недоступен',403);
     const p=getScoped(db,u,project,undefined,'project'), all=entities(db,u.agency_id,project);
-    result.project=p;
-    const tables=all.filter(r=>r.kind==='table'&&can(db,u,'read',project,r.id)).map(r=>({...r,data:{...r.data,columns:r.data.columns.filter(c=>can(db,u,'read',project,r.id,null,c.id))}}));
+    result.project=filteredProject(db,u,p);
+    const liveSections=new Set(all.filter(r=>r.kind==='section').map(r=>r.id));
+    const tables=all.filter(r=>r.kind==='table'&&liveSections.has(r.data.sectionId)).map(r=>visibleTable(db,u,project,r)).filter(Boolean);
+    const tableIds=new Set(tables.map(t=>t.id));
     const prepared=tables.filter(t=>t.data.offline).map(t=>t.id);
-    const payouts=offline && (p.data.offline||[]).includes('payouts') && can(db,u,'read',project,'budget');
+    const offlineKinds=new Set(p.data.offline||[]);
+    const payouts=offline && offlineKinds.has('payouts') && can(db,u,['read','finance'],project,'budget');
+    const budget=offline && offlineKinds.has('budget') && can(db,u,['read','finance'],project,'budget');
+    const vendors=offline && offlineKinds.has('vendors') && can(db,u,'read',project,'vendors');
+    const files=offline && offlineKinds.has('files') && can(db,u,['read','files'],project,'files');
     result.entities=[];
     for(const row of all) {
       if(row.kind==='table') { const t=tables.find(t=>t.id===row.id); if(t&&(!offline||prepared.includes(t.id))) result.entities.push(t); continue; }
-      if(row.kind==='section') { if(!offline||tables.some(t=>prepared.includes(t.id)&&t.data.sectionId===row.id)) result.entities.push(row); continue; }
+      if(row.kind==='section') { if(tables.some(t=>(!offline||prepared.includes(t.id))&&t.data.sectionId===row.id)) result.entities.push({...row,data:{name:row.data.name,order:row.data.order,archived:row.data.archived}}); continue; }
+      if(row.kind==='row'&&!tableIds.has(row.parent_id)) continue;
       if(offline) {
         if(row.kind==='row'&&!prepared.includes(row.parent_id)) continue;
-        if(row.kind==='obligation'&&!payouts) continue;
-        if(!['row','obligation','section'].includes(row.kind)) continue;
+        if(['obligation','category','movement'].includes(row.kind)&&!budget&&!payouts) continue;
+        if(row.kind==='movement'&&!budget) continue;
+        if(row.kind==='category'&&!budget) continue;
+        if(row.kind==='selection'&&!vendors) continue;
+        if(row.kind==='file'&&!files) continue;
+        if(!['row','obligation','category','movement','selection','file','section'].includes(row.kind)) continue;
       }
       const filtered=filteredRow(db,u,row); if(filtered) result.entities.push(filtered);
     }
     // Payouts are a separate, limited view; do not preload the full estimate/ledger.
-    if(payouts) {
+    if(payouts&&!budget) {
       const f=financials(all);
       result.entities=result.entities.map(r=>r.kind==='obligation'?{...r,data:Object.fromEntries(Object.entries({...r.data,paid:f.paid[r.id]||0,due:(r.data.agreed||0)-(f.paid[r.id]||0)}).filter(([k])=>['title','agreed','priceKind','dueDate','condition','responsible','fee','paid','due'].includes(k)&&can(db,u,'read',project,'budget',r.id,k)))}:r);
     }
-    if(!offline && can(db,u,'read',project,'budget') && can(db,u,'read',project,'budget',null,'amount') && can(db,u,'read',project,'budget',null,'agreed')) result.financials=financials(result.entities);
-    result.members=can(db,u,'invite',project)?db.prepare('SELECT DISTINCT u.id,u.name,u.email FROM users u JOIN grants g ON g.user_id=u.id WHERE g.agency_id=? AND g.project_id=?').all(u.agency_id,project):[];
+    const fullFinance=can(db,u,['read','finance'],project,'budget',null,null);
+    if((!offline||budget)&&fullFinance) result.financials=financials(result.entities);
+    const mayInvite=can(db,u,'invite',project);
+    const mayUseFinance=can(db,u,'finance',project,'budget');
+    if(mayInvite) {
+      result.members=db.prepare(`SELECT DISTINCT u.id,u.name,u.email FROM users u JOIN grants g ON g.user_id=u.id JOIN roles r ON r.id=g.role_id
+        WHERE g.agency_id=? AND (g.project_id=? OR (g.project_id IS NULL AND EXISTS (SELECT 1 FROM json_each(r.permissions) WHERE value='finance'))) ORDER BY u.name`).all(u.agency_id,project);
+      const allRoles=db.prepare('SELECT id,name,permissions FROM roles WHERE agency_id=? AND protected=0 ORDER BY name').all(u.agency_id);
+      result.inviteRoles=allRoles.filter(role=>can(db,u,'access')||role.name==='Участник пары').map(({id,name})=>({id,name}));
+    } else if(mayUseFinance) {
+      result.members=db.prepare(`SELECT DISTINCT u.id,u.name FROM users u JOIN grants g ON g.user_id=u.id JOIN roles r ON r.id=g.role_id
+        WHERE g.agency_id=? AND (g.project_id=? OR g.project_id IS NULL) AND EXISTS (SELECT 1 FROM json_each(r.permissions) WHERE value='finance')
+        UNION SELECT DISTINCT u.id,u.name FROM users u JOIN entities m ON m.agency_id=u.agency_id AND m.project_id=? AND m.kind='movement' AND m.deleted=0
+        WHERE u.agency_id=? AND (json_extract(m.data,'$.from')=u.id OR json_extract(m.data,'$.to')=u.id) ORDER BY name`).all(u.agency_id,project,project,u.agency_id);
+    } else result.members=[];
     if(!offline && can(db,u,'history',project)) result.history=db.prepare('SELECT a.*,u.name AS author FROM audit a LEFT JOIN users u ON u.id=a.actor_id WHERE a.agency_id=? AND a.project_id=? ORDER BY a.created_at DESC LIMIT 200').all(u.agency_id,project);
-    if(offline) { result.offline=true; result.expiresAt=Date.now()+7*86400000; result.project={...p,data:{name:p.data.name,date:p.data.date,offline:p.data.offline}}; result.agency={id:agency.id,name:agency.name}; }
+    if(offline) { result.offline=true; result.expiresAt=Date.now()+7*86400000; result.project={...result.project,data:{name:p.data.name,date:p.data.date,offline:p.data.offline}}; result.agency={id:agency.id,name:agency.name}; }
     return result;
   }
-  result.projects=entities(db,u.agency_id,null,'project').filter(p=>projectVisible(db,u,p.id));
+  result.projects=entities(db,u.agency_id,null,'project').filter(p=>projectVisible(db,u,p.id)).map(p=>filteredProject(db,u,p));
   result.applications=entities(db,u.agency_id,null,'application').filter(a=>a.data.userId===u.id||can(db,u,'applications'));
   result.notifications=entities(db,u.agency_id,null,'notification').filter(n=>n.data.userId===u.id);
   result.global=entities(db,u.agency_id,null).filter(r=>(['vendor','vendorCategory'].includes(r.kind)&&can(db,u,'catalog'))||(r.kind==='template'&&can(db,u,'templates'))||(['movement','category'].includes(r.kind)&&can(db,u,'agencyFinance')));
@@ -103,7 +148,7 @@ function validateRestrictions(r={}) {
   for(const k of ['sections','rows','fields']) if(r[k]!==undefined) assert(Array.isArray(r[k])&&r[k].length<=200&&r[k].every(x=>typeof x==='string'&&x.length<=100),'Проверьте ограничения');
   return {sections:r.sections||[],rows:r.rows||[],fields:r.fields||[]};
 }
-function permissionFor(kind,project) { if(project) return ['obligation','movement'].includes(kind)?'finance':kind==='file'?'files':['table','section'].includes(kind)?'structure':null; return ({vendor:'catalog',vendorCategory:'catalog',template:'templates',category:'agencyFinance',movement:'agencyFinance'})[kind]; }
+function permissionFor(kind,project) { if(project) return ['obligation','movement','category'].includes(kind)?'finance':kind==='file'?'files':['table','section'].includes(kind)?'structure':null; return ({vendor:'catalog',vendorCategory:'catalog',template:'templates',category:'agencyFinance',movement:'agencyFinance'})[kind]; }
 function validateData(db,u,kind,data,p,parent,current=null) {
   assert(data&&typeof data==='object'&&!Array.isArray(data),'Проверьте данные'); const d=structuredClone(data);
   if(['section','table','vendor','category','vendorCategory','template'].includes(kind)) d.name=text(d.name);
@@ -134,10 +179,14 @@ function validateData(db,u,kind,data,p,parent,current=null) {
     if(current?.data.obligationId) d.obligationId=current.data.obligationId; else delete d.obligationId;
   }
   if(kind==='template') {
+    d.offline=Array.isArray(d.offline)?d.offline:[];
+    d.categories=Array.isArray(d.categories)?d.categories:[];
     assert(Array.isArray(d.sections)&&d.sections.length<=30&&Array.isArray(d.tables)&&d.tables.length<=50,'Проверьте разделы и таблицы шаблона');
     const keys=new Set(); for(const s of d.sections) { text(s.key); text(s.name); assert(!keys.has(s.key),'Ключ раздела повторяется'); keys.add(s.key); }
-    for(const t of d.tables) { text(t.name); text(t.key); assert(keys.has(t.section),'Раздел таблицы не найден'); validateColumns(t.columns); }
+    const tableKeys=new Set();
+    for(const t of d.tables) { text(t.name); const key=text(t.key); assert(!tableKeys.has(key),'Ключ таблицы повторяется'); tableKeys.add(key); assert(keys.has(t.section),'Раздел таблицы не найден'); validateColumns(t.columns); }
     assert(Array.isArray(d.categories)&&d.categories.length<=100&&d.categories.every(c=>typeof c==='string'&&c.length<=120),'Проверьте категории');
+    assert(Array.isArray(d.offline)&&d.offline.length<=60&&d.offline.every(key=>tableKeys.has(key)||['payouts','budget','vendors','files'].includes(key)),'Проверьте офлайн-разделы шаблона');
   }
   return d;
 }
@@ -171,7 +220,8 @@ export function execute(db,user,cmd) {
         insert(db,u,'notification',{userId:a.data.userId,title:cmd.status==='approved'?'Заявка одобрена. Ваш проект открыт.':cmd.status==='rejected'?'Заявка отклонена':'Уточните детали заявки',body:reason,projectId});
       }
     } else if(op==='invite.create') {
-      requireAccess(db,u,'invite',p); const role=db.prepare('SELECT * FROM roles WHERE id=? AND agency_id=?').get(cmd.roleId,u.agency_id); assert(role,'Роль не найдена');
+      assert(p,'Укажите проект');
+      requireAccess(db,u,'invite',p); const defaultRole=db.prepare("SELECT * FROM roles WHERE agency_id=? AND name='Участник пары'").get(u.agency_id); const role=cmd.roleId?db.prepare('SELECT * FROM roles WHERE id=? AND agency_id=?').get(cmd.roleId,u.agency_id):defaultRole; assert(role,'Роль не найдена');
       assert(!role.protected,'Нельзя приглашать с ролью администратора');
       const restrictions=validateRestrictions(cmd.restrictions),raw=token();
       // Only access managers may delegate permissions outside the ordinary couple role.
@@ -187,7 +237,7 @@ export function execute(db,user,cmd) {
     } else if(op==='grants.save') {
       requireAccess(db,u,'access'); const target=db.prepare('SELECT * FROM users WHERE id=? AND agency_id=?').get(cmd.userId,u.agency_id); assert(target,'Пользователь не найден'); assert(!target.protected,'Основной администратор защищён',403); version(target,cmd.version);
       assert(Array.isArray(cmd.grants)&&cmd.grants.length<=50,'Не более 50 назначений');
-      for(const g of cmd.grants) { const r=db.prepare('SELECT * FROM roles WHERE id=? AND agency_id=?').get(g.roleId,u.agency_id); assert(r,'Роль не найдена'); if(g.projectId) getScoped(db,u,g.projectId,undefined,'project'); else assert(!['Участник пары','Координатор','Подрядчик'].includes(r.name),'Этой роли нужно назначить конкретный проект'); validateRestrictions(g.restrictions); }
+      for(const g of cmd.grants) { const r=db.prepare('SELECT * FROM roles WHERE id=? AND agency_id=?').get(g.roleId,u.agency_id); assert(r,'Роль не найдена'); assert(!r.protected,'Роль администратора защищена',403); if(g.projectId) getScoped(db,u,g.projectId,undefined,'project'); else assert(!['Участник пары','Координатор','Подрядчик'].includes(r.name),'Этой роли нужно назначить конкретный проект'); validateRestrictions(g.restrictions); }
       const before=grants(db,target); db.prepare('DELETE FROM grants WHERE user_id=?').run(target.id);
       for(const g of cmd.grants) grant(db,target,g.roleId,g.projectId||null,validateRestrictions(g.restrictions));
       db.prepare('UPDATE users SET version=version+1,disabled=? WHERE id=?').run(Number(!!cmd.disabled),target.id); result={id:target.id}; audit(db,u,{id:target.id,kind:'grants',project_id:null,data:cmd.grants},before,'access');
@@ -207,21 +257,34 @@ function authorizeCommand(db,u,c) {
   const p=c.projectId||null;
   const actions={'project.create':'projects','application.review':'applications','role.save':'access','grants.save':'access','settings.save':'settings','invite.create':'invite'};
   if(actions[c.op]) requireAccess(db,u,actions[c.op],c.op==='invite.create'?p:null);
-  if(c.op.startsWith('movement.')) requireAccess(db,u,p?'finance':'agencyFinance',p,p?'budget':null,c.data?.obligationId||null);
+  if(c.op.startsWith('movement.')) {
+    const old=c.entityId?getScoped(db,u,c.entityId,p,'movement'):null;
+    const type=c.data?.type||old?.data.type;
+    const fields=c.data?Object.keys(c.data):null;
+    if(!p) requireAccess(db,u,'agencyFinance',null,'agencyFinance',null,fields);
+    else {
+      const obligationId=['payment','fee'].includes(type)?(c.data?.obligationId||old?.data.obligationId):null;
+      requireAccess(db,u,'finance',p,'budget',obligationId,fields);
+      if(old?.data.obligationId&&old.data.obligationId!==obligationId) requireAccess(db,u,'finance',p,'budget',old.data.obligationId,fields);
+    }
+  }
   if(c.op.startsWith('entity.')) {
-    const row=c.entityId?getScoped(db,u,c.entityId,p===null?undefined:p):null,kind=row?.kind||c.kind;
+    const row=c.entityId?getScoped(db,u,c.entityId):null,kind=row?.kind||c.kind;
     if(row) assert(row.project_id===p || kind==='project'&&row.id===p,'Область команды не совпадает с записью',403);
     const allowed=['project','section','table','row','obligation','category','vendorCategory','vendor','selection','template','file']; assert(allowed.includes(kind),'Этот тип записи меняется отдельным действием');
-    const section=row?sectionOf(row):kind==='row'?c.parentId:({table:c.entityId,obligation:'budget',selection:'vendors',file:'files'})[kind]||kind;
+    const section=row?sectionOf(row):kind==='row'?c.parentId:kind==='table'?c.data?.sectionId:({obligation:'budget',selection:'vendors',file:'files'})[kind]||kind;
+    const accessRow=row?accessRowId(row):null;
     const action=c.op==='entity.create'?'create':c.op==='entity.delete'?'delete':'edit';
     if(p) {
-      requireAccess(db,u,action,p,section,row?.id||null);
-      if(row?.kind==='project') requireAccess(db,u,'structure',p);
-      if(c.op==='entity.restore') requireAccess(db,u,'history',p,section);
+      const required=[action];
+      const special=permissionFor(kind,p); if(special) required.push(special);
+      if(row?.kind==='project') required.push('structure');
+      if(c.op==='entity.restore') required.push('history');
+      requireAccess(db,u,[...new Set(required)],p,section,accessRow);
     }
-    const special=permissionFor(kind,p); if(special) requireAccess(db,u,special,p,section,row?.id||null);
+    const special=permissionFor(kind,p); if(!p&&special) requireAccess(db,u,special,p,section,accessRow);
     assert(p || special,'Неизвестная область записи');
-    for(const key of Object.keys(c.data||{})) if(p) requireAccess(db,u,action,p,section,row?.id||null,key);
+    for(const key of Object.keys(c.data||{})) if(p) requireAccess(db,u,action,p,section,accessRow,key);
   }
 }
 function mutateEntity(db,u,c) {
@@ -257,6 +320,7 @@ function mutateEntity(db,u,c) {
       const ob=existing?change(db,u,existing,obligationData):insert(db,u,'obligation',obligationData,p);
       result=change(db,u,result,{...data,obligationId:ob.id});
     } else if(existing) { assert(!entities(db,u.agency_id,p,'movement').some(m=>m.data.obligationId===existing.id),'У подрядчика есть выплаты: сначала исправьте их.',409); change(db,u,existing,existing.data,true,'delete'); result=change(db,u,result,{...data,obligationId:null}); }
+    validateLedger(entities(db,u.agency_id,p));
   }
   if(kind==='obligation') {
     if(data.selectionId) { const sel=getScoped(db,u,data.selectionId,p,'selection'); change(db,u,sel,{...sel.data,title:data.title,price:data.agreed,terms:data.condition||''}); }
@@ -274,6 +338,7 @@ function movement(db,u,c) {
     const r=change(db,u,old,old.data,true,'delete'); validateLedger(entities(db,u.agency_id,p)); return r;
   }
   assert(p?['deposit','payment','refund','transfer','fee'].includes(d.type):['income','expense'].includes(d.type),'Неверный вид операции');
+  if(old?.data.obligationId&&['payment','fee'].includes(d.type)) assert(d.obligationId===old.data.obligationId,'Чтобы сменить статью выплаты, удалите операцию и создайте новую.',409);
   amount(d.amount); assert(d.amount>0,'Сумма должна быть больше нуля'); d.date=date(d.date,false); d.description=String(d.description||''); assert(d.description.length<=3000,'Описание слишком длинное');
   d.source=d.source||'custody'; assert(['custody','direct'].includes(d.source),'Неверный источник');
   if(d.type==='deposit'||d.type==='transfer') d.to=text(d.to,'Получатель');
@@ -292,10 +357,12 @@ function movement(db,u,c) {
 }
 
 export function upload(db,u,p,body) {
+  u=db.prepare('SELECT * FROM users WHERE id=? AND agency_id=? AND disabled=0').get(u.id,u.agency_id); assert(u,'Доступ отозван',403);
   assert(projectVisible(db,u,p),'Проект недоступен',403); requireAccess(db,u,'files',p,'files'); requireAccess(db,u,'create',p,'files');
   const name=text(body.name,'Имя файла',1,200),bytes=Buffer.from(body.content||'','base64'); assert(bytes.length>0&&bytes.length<=8*1024*1024,'Размер файла: от 1 байта до 8 МБ');
   return transaction(db,()=>{ const r=insert(db,u,'file',{name,size:bytes.length,mime:body.mime||'application/octet-stream'},p); db.prepare('INSERT INTO blobs VALUES(?,?)').run(r.id,bytes); return r; });
 }
 export function download(db,u,id) {
+  u=db.prepare('SELECT * FROM users WHERE id=? AND agency_id=? AND disabled=0').get(u.id,u.agency_id); assert(u,'Доступ отозван',403);
   const r=getScoped(db,u,id,undefined,'file'); assert(!r.deleted,'Файл удалён',404); requireAccess(db,u,'read',r.project_id,'files',id); requireAccess(db,u,'files',r.project_id,'files',id); return {row:r,content:db.prepare('SELECT content FROM blobs WHERE id=?').get(id).content};
 }

@@ -10,6 +10,7 @@ export function getScoped(db,u,id,p=undefined,kind=undefined) {
   const row=entity(db,id); assert(row && row.agency_id===u.agency_id && (p===undefined || row.project_id===p) && (!kind || row.kind===kind),'Запись не найдена',404); return row;
 }
 export function sectionOf(row) { return ({obligation:'budget',movement:'budget',selection:'vendors',file:'files'})[row.kind] || (row.kind==='row'?row.parent_id:row.kind==='table'?row.id:row.kind==='section'?'structure':row.kind); }
+export function accessRowId(row) { return row.kind==='movement' && row.data.obligationId ? row.data.obligationId : row.id; }
 export function projectVisible(db,u,id) {
   const p=entity(db,id); if (!p || p.agency_id!==u.agency_id || p.deleted) return false;
   if (u.protected || can(db,u,'read',id)) return true;
@@ -24,10 +25,12 @@ export const initialTemplate = () => ({name:'Свадьба — основной
 ], offline:['timing','payouts'], categories:['Площадка','Банкет','Фото и видео','Декор','Образ','Команда','Гонорар агентства']});
 
 export function createProject(db,u,data,template=null) {
-  const p=insert(db,u,'project',{name:text(data.name),date:date(data.date),location:data.location||'',status:'planning',limit:amount(data.limit??null,true),offline:['payouts'],notes:data.notes||''});
   const tpl=template?.data || entities(db,u.agency_id,null,'template')[0]?.data || initialTemplate();
+  const templateOffline=Array.isArray(tpl.offline)?tpl.offline:[];
+  const nativeOffline=templateOffline.filter(key=>['payouts','budget','vendors','files'].includes(key));
+  const p=insert(db,u,'project',{name:text(data.name),date:date(data.date),location:data.location||'',status:'planning',limit:amount(data.limit??null,true),offline:nativeOffline,notes:data.notes||''});
   const sections={}; for(const s of tpl.sections) sections[s.key]=insert(db,u,'section',{name:s.name,order:s.order,archived:false},p.id).id;
-  for(const t of tpl.tables) insert(db,u,'table',{name:t.name,key:t.key,sectionId:sections[t.section]||Object.values(sections)[0],order:tpl.tables.indexOf(t),archived:false,offline:!!t.offline,columns:t.columns},p.id);
+  for(const t of tpl.tables) insert(db,u,'table',{name:t.name,key:t.key,sectionId:sections[t.section]||Object.values(sections)[0],order:tpl.tables.indexOf(t),archived:false,offline:!!t.offline||templateOffline.includes(t.key),columns:structuredClone(t.columns)},p.id);
   for(const name of tpl.categories||[]) insert(db,u,'category',{name,scope:'wedding',archived:false},p.id);
   // Clone structure only. No source rows, files, guests or paid movements.
   return p;
