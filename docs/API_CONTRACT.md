@@ -21,6 +21,8 @@ All `{id,op,projectId?}`. Mutations return entity/result; UI reloads afterward.
 - project.create `{data:{name,date,location?,limit?},templateId?}`
 - application.create `{data:{name,date,contact,message}}` registered user; application.review `{entityId,version,status,reason}`
 - invite.create `{projectId,email,roleId,restrictions?}` returns token; invite.accept `{token}`
+- invite.revoke `{invitationId}`; creation returns `{id,token,email,expiresAt}` and defaults to the couple role when roleId is omitted. Acceptance rechecks the issuer's current authority.
+- application.respond `{entityId,version,data:{name,date,contact,message}}` lets the applicant resubmit after clarification/rejection.
 - role.save `{roleId?,version?,name,permissions:[...]}`; grants.save `{userId,version,disabled,grants:[{roleId,projectId,restrictions:{sections,rows,fields}}]}`
 - settings.save `{version,name,settings:{tagline,description,contact,services:[string],portfolio:[{title,image,description?}]}}`
 - entity.create `{projectId?,kind,parentId?,data,schemaVersion?}`; entity.edit `{projectId?,entityId,version,data,schemaVersion?}` patches fields; entity.delete `{projectId?,entityId,version,schemaVersion?,confirm?}` soft delete with reference warning; entity.restore `{...,auditId?}`
@@ -29,5 +31,7 @@ All `{id,op,projectId?}`. Mutations return entity/result; UI reloads afterward.
 Native kinds: obligation `{title,priceKind:'amount'|'unknown'|'included',agreed:number|null,planned:number|null,categoryId?,dueDate,condition?,responsible?,fee:boolean}`; selection `{title,vendorId?,price:number|null,selected:boolean,terms?,dueDate?}` gets server obligationId when selected; vendor `{name,categoryId?,contact,portfolio,price,services,terms,notes,updatedOn,archived}`; category `{name,scope,archived}`; vendorCategory `{name,archived}`. Global kinds use projectId null. Template schema in model.initialTemplate. `src/shared.js` exports money,cents,dateLabel,today,permissions,permissionLabels,fieldTypes,statuses,movementLabels,compute.
 
 Project data editing uses entity.edit with entityId=projectId and projectId=projectId (project stored globally but permission scope project). data `{name,date,location,status,limit,offline:['payouts'],notes}`. Table offline boolean configured independently. Finance snapshot `{agreed,planned,unknown,paid:{obligationId:cents},totalPaid,due,holders:{userId:cents},custody,own,byCategory}`. Offline obligations have paid/due fields but no full ledger.
+
+Project snapshots also expose `custodians:[{id,name}]`, `members`, and `inviteRoles`. Use custodians for money holders; a couple account cannot become a staff cash holder. Tables may set `data.rowOrder:[rowId,...]`; schema removals preserve values for restoration and validate formula references.
 
 Do not put original XLSX personal details, credentials or source databases in artifacts. Demo uses separate data/demo.sqlite, clean default data/tie.sqlite. Tests use in-memory databases and invented people.
