@@ -351,7 +351,8 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
 export async function startServer(options = {}) {
   const host = options.host || process.env.HOST || '127.0.0.1';
   const port = Number(options.port ?? process.env.PORT ?? 4173);
-  assert(['127.0.0.1', 'localhost', '::1'].includes(host), 'Локальный сервер можно привязать только к localhost');
+  const allowRemote = options.allowRemote === true || process.env.TIE_ALLOW_REMOTE === '1';
+  assert(['127.0.0.1', 'localhost', '::1'].includes(host) || (allowRemote && ['0.0.0.0', '::'].includes(host)), 'Внешняя привязка требует TIE_ALLOW_REMOTE=1; локальный запуск использует localhost');
   const server = createHttpServer(options);
   await new Promise((resolveListen, reject) => { server.once('error', reject); server.listen(port, host, resolveListen); });
   return server;

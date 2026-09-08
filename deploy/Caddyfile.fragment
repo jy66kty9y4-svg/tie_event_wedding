@@ -1,0 +1,14 @@
+tie-event.cabinpxrn.ru {
+    import orbit_access_metrics
+    encode zstd gzip
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        -Server
+    }
+    reverse_proxy tie-event:4173 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

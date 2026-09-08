@@ -1,0 +1,31 @@
+services:
+  app:
+    image: ${TIE_IMAGE:?Set TIE_IMAGE to the verified release image}
+    container_name: tie-event
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 384m
+    pids_limit: 128
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    volumes:
+      - data:/data
+    networks:
+      proxy:
+        aliases: [tie-event]
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+volumes:
+  data:
+    name: tie-event-data
+    external: true
+networks:
+  proxy:
+    external: true
+    name: ptitsa-plus-cloud_proxy

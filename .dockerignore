@@ -1,0 +1,12 @@
+**
+!Dockerfile
+!package.json
+!pnpm-lock.yaml
+!index.html
+!vite.config.js
+!public/
+!public/**
+!src/
+!src/**
+!server/
+!server/**

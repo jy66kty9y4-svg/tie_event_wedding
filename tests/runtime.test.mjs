@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHttpServer } from '../server/http.mjs';
+import { createHttpServer, startServer } from '../server/http.mjs';
 
 async function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'tie-runtime-'));
@@ -100,4 +100,12 @@ test('errors are JSON without stack traces and body size is bounded', async t =>
   const response = await app.request('/api/setup', { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': app.jar.get('tie_csrf') }, body: JSON.stringify({ padding: 'x'.repeat(12 * 1024 * 1024) }) });
   assert.equal(response.status, 413);
   assert.match((await response.json()).error, /12 МБ/);
+});
+
+test('remote binding requires explicit deployment opt-in',async t=>{
+ await assert.rejects(startServer({host:'0.0.0.0',port:0,dbPath:':memory:'}),/TIE_ALLOW_REMOTE/);
+ const server=await startServer({host:'0.0.0.0',port:0,allowRemote:true,dbPath:':memory:'});
+ t.after(()=>new Promise(resolve=>server.close(resolve)));
+ const response=await fetch(`http://127.0.0.1:${server.address().port}/api/health`);
+ assert.equal(response.status,200);assert.deepEqual(await response.json(),{ok:true});
 });
