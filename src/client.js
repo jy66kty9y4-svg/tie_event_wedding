@@ -169,7 +169,13 @@ export async function loadState(projectId = null) {
       const state = await api(`/api/state${projectId ? `?project=${encodeURIComponent(projectId)}` : ''}`);
       const identity = await reconcileIdentity(state);
       await removeInvisibleSnapshots(state, identity);
-      return state;
+      if (!projectId) return state;
+      const queued = (await records('queue', 'identity', identity))
+        .filter(item => item.projectId === projectId)
+        .sort((a, b) => a.createdAt - b.createdAt);
+      // A server refresh must not make pending or conflicted work disappear.
+      // The queue remains the source of truth until replay or an explicit discard.
+      return applyOptimistic(state, queued);
     } catch (error) {
       if (error.status) throw error;
     }
@@ -367,7 +373,10 @@ export function subscribe(callback) {
 export function initClient() {
   if (initPromise) return initPromise;
   initPromise = (async () => {
-    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) await navigator.serviceWorker.register('/sw.js');
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      try { await navigator.serviceWorker.register('/sw.js'); }
+      catch (error) { if (online() || !navigator.serviceWorker.controller) throw error; }
+    }
     if (online()) {
       await completePendingLogout();
       const identity = await currentIdentity();
