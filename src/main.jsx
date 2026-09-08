@@ -10,6 +10,7 @@ import { TableWorkspace } from './ui/TableWorkspace.jsx';
 import {SectionEditor,TableEditor,InvitationEditor,Payouts,ConflictEditor} from './ui/ProjectTools.jsx';
 import {GrantEditor,TemplateEditor,CategoryEditor} from './ui/ManagementForms.jsx';
 import {Dashboard,CalendarWorkspace,NotificationCenter,NotificationPreferences,ReadinessSettings,VerificationPanel} from './v2/calendar/Workspace.jsx';
+import {GuestWorkspace,SeatingWorkspace} from './v2/guest/Workspace.jsx';
 import {parseRoute,viewUrl} from './v2/routes.js';
 import './styles.css';
 const arr = value => Array.isArray(value) ? value : [];
@@ -645,6 +646,8 @@ function App() {
   }, projectId);
   const moduleProps={state,projectId,run:(op,body)=>run({op,...body},body?.projectId===undefined?activeProject.current:body.projectId),refresh:()=>refresh(activeProject.current),navigate};
   const renderMain = () => {
+    if(view==='project:guests')return <GuestWorkspace {...moduleProps}/>;
+    if(view==='project:seating')return <SeatingWorkspace {...moduleProps}/>;
     if(view==='today'||view==='project:overview'&&!state.offline)return <Dashboard {...moduleProps} projectId={view==='today'?null:projectId}/>;
     if(view==='calendar'||view.startsWith('project:calendar'))return <CalendarWorkspace {...moduleProps} projectId={view==='calendar'?null:projectId}/>;
     if(view==='notifications')return <NotificationCenter {...moduleProps}/>;

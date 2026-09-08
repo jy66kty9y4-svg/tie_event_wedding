@@ -9,6 +9,7 @@ import { bootstrap, authenticate, register, publicInfo, snapshot, execute, uploa
 
 import { calendar, notifications, preferences, previewMeeting, processOutbox } from './v2/calendar/index.mjs';
 import { dashboard } from './v2/calendar/readiness.mjs';
+import {guestList,guestInvites,seatingSnapshot,legacySeatingPreview} from './v2/guest/index.mjs';
 import { members, scoped } from './v2/common.mjs';
 
 const SESSION_COOKIE = 'tie_session';
@@ -162,6 +163,10 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
         if(url.pathname.startsWith('/api/v2/')) {
           const u=requireUser(db,req), q=Object.fromEntries(url.searchParams), path=url.pathname;
           if(req.method==='GET') {
+            if(path==='/api/v2/guests')return sendJson(res,200,guestList(db,u,q.projectId,q.guestTableId,q));
+            if(path==='/api/v2/invites')return sendJson(res,200,guestInvites(db,u,q.projectId,q.guestTableId));
+            if(path==='/api/v2/seating')return sendJson(res,200,seatingSnapshot(db,u,q.projectId,q.planId,q));
+            if(path==='/api/v2/legacy-preview')return sendJson(res,200,legacySeatingPreview(db,u,q.projectId,q.guestTableId,q.columnId));
             if(path==='/api/v2/dashboard')return sendJson(res,200,dashboard(db,u,q));
             if(path==='/api/v2/calendar/events')return sendJson(res,200,calendar(db,u,q));
             if(path==='/api/v2/notifications')return sendJson(res,200,notifications(db,u,q));

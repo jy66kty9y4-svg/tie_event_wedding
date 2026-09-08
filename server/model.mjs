@@ -28,7 +28,7 @@ export function createProject(db,u,data,template=null) {
   const tpl=template?.data || entities(db,u.agency_id,null,'template')[0]?.data || initialTemplate();
   const templateOffline=Array.isArray(tpl.offline)?tpl.offline:[];
   const nativeOffline=templateOffline.filter(key=>['payouts','budget','vendors','files'].includes(key));
-  const p=insert(db,u,'project',{name:text(data.name),date:date(data.date,false),location:data.location?text(data.location,'Место',1,1000):'',status:'planning',limit:amount(data.limit??null,true),offline:nativeOffline,notes:data.notes?text(data.notes,'Заметка',1,8000):''});
+  const p=insert(db,u,'project',{name:text(data.name),date:date(data.date,false),location:data.location?text(data.location,'Место',1,1000):'',status:'planning',timeZone:'Europe/Moscow',readinessPolicy:{},limit:amount(data.limit??null,true),offline:nativeOffline,notes:data.notes?text(data.notes,'Заметка',1,8000):''});
   const sections={}; for(const s of tpl.sections) sections[s.key]=insert(db,u,'section',{name:s.name,order:s.order,archived:false},p.id).id;
   for(const t of tpl.tables) insert(db,u,'table',{name:t.name,key:t.key,sectionId:sections[t.section]||Object.values(sections)[0],order:tpl.tables.indexOf(t),archived:false,offline:!!t.offline||templateOffline.includes(t.key),columns:structuredClone(t.columns),rowOrder:[]},p.id);
   for(const name of tpl.categories||[]) insert(db,u,'category',{name,scope:'wedding',archived:false},p.id);
@@ -40,6 +40,7 @@ export function validateColumns(columns) {
   for(const c of columns) {
     assert(/^[a-zA-Z0-9_-]{1,80}$/.test(c.id) && !['__proto__','constructor','prototype'].includes(c.id) && !ids.has(c.id),'У каждой колонки должен быть уникальный ID'); ids.add(c.id); text(c.name); assert(fieldTypes[c.type],'Неизвестный тип поля');
     if(c.type==='select') assert(Array.isArray(c.options) && c.options.length<=100 && c.options.every(x=>typeof x==='string'&&x.length<=120),'Проверьте варианты выбора');
+    if(c.type==='relation') assert(!c.targetKind||['row','seatingTable'].includes(c.targetKind),'Недопустимый тип связи');
     if(c.type==='formula') { text(c.formula,'Формула',1,500); compute(c.formula,{}); }
   }
   for(const c of columns.filter(c=>c.type==='formula')) for(const ref of c.formula.matchAll(/\{([^}]+)\}/g)) assert(ids.has(ref[1]) && columns.find(x=>x.id===ref[1]).type!=='formula','Формула ссылается на отсутствующую или вычисляемую колонку');

@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { migrate as migrateGuests } from './v2/guest/index.mjs';
 import { migrate as migrateCalendar } from './v2/calendar/index.mjs';
 
 export const uid = () => randomUUID();
@@ -52,6 +53,7 @@ export function openDatabase(path) {
     db.exec("UPDATE entities SET data=json_set(data,'$.timeZone','Europe/Moscow') WHERE kind='project' AND json_extract(data,'$.timeZone') IS NULL");
     db.prepare("INSERT INTO migrations VALUES(4,datetime('now'))").run();
   });
+  if(!db.prepare('SELECT version FROM migrations WHERE version=5').get()) transaction(db,()=>{migrateGuests(db);db.prepare("INSERT INTO migrations VALUES(5,datetime('now'))").run();});
   return db;
 }
 export function transaction(db, fn) {

@@ -3,6 +3,7 @@ import { token, digest, passwordHash, checkPassword, createSession, publicUser, 
 import { text, amount, date, safeUrl, getScoped, projectVisible, createProject, initialTemplate, validateColumns, validateRow, financials, validateLedger, sectionOf, accessRowId } from './model.mjs';
 import { permissions, projectPermissions } from '../src/shared.js';
 import { operations as v2Operations, typedKinds } from './v2/index.mjs';
+import {guestInvites,validateGuestSchemaMutation,validateGuestRowMutation} from './v2/guest/index.mjs';
 import { executeModule, members as assignableMembers } from './v2/common.mjs';
 import { queueChanges, notifications } from './v2/calendar/index.mjs';
 
@@ -128,6 +129,8 @@ export function snapshot(db,u,project=null,offline=false) {
     const vendors=offline && offlineKinds.has('vendors') && can(db,u,'read',project,'vendors');
     const files=offline && offlineKinds.has('files') && can(db,u,['read','files'],project,'files');
     result.entities=[];
+    if(!offline){const site=all.find(r=>r.kind==='microsite');if(site&&can(db,u,'read',project,'microsite',site.id,null))result.microsite={id:site.id,version:site.version,shareId:site.data.shareId,status:site.data.status,rsvpDeadline:site.data.rsvpDeadline};const guestTable=all.find(r=>r.kind==='table'&&r.data.key==='guests');if(guestTable&&can(db,u,'manageGuestInvites',project,guestTable.id,null,null))result.guestInvites=guestInvites(db,u,project,guestTable.id);}
+
     for(const row of all) {
       if(['task','approval','approvalRevision','comment','meeting','microsite','micrositeRevision','publicRevision','notification'].includes(row.kind)) continue;
       if(row.kind==='table') { const t=tables.find(t=>t.id===row.id); if(t&&(!offline||prepared.includes(t.id))) result.entities.push(t); continue; }
@@ -377,6 +380,7 @@ function mutateEntity(db,u,c) {
     assert(table.version===c.schemaVersion,'Структура таблицы изменилась. Проверьте правку перед повтором.',409,{table});
   }
   if(c.op==='entity.delete') {
+    if(kind==='row'){const table=entity(db,old.parent_id),m=table?.data.semanticMap;if(m?.seatingTable&&old.data[m.seatingTable]){requireAccess(db,u,'edit',p,table.id,old.id,[m.seatingTable,m.seatIndex]);return change(db,u,old,{...old.data,[m.seatingTable]:'',[m.seatIndex]:''},true,'delete_unassign');}}
     if(kind==='obligation') {
       assert(!entities(db,u.agency_id,p,'movement').some(m=>m.data.obligationId===old.id),'У статьи есть выплаты. Сначала исправьте или отмените их.',409);
       assert(!entities(db,u.agency_id,p,'selection').some(m=>m.data.obligationId===old.id),'Статья связана с выбранным подрядчиком. Сначала снимите выбор.',409);
@@ -395,6 +399,15 @@ function mutateEntity(db,u,c) {
   }
   let data={...(old?.data||{}),...(c.data||{})};
   if(c.op==='entity.restore') { assert(old.deleted || c.auditId,'Выберите удалённую запись или версию'); if(c.auditId) { const h=db.prepare('SELECT * FROM audit WHERE id=? AND entity_id=? AND agency_id=?').get(c.auditId,old.id,u.agency_id); assert(h,'Версия не найдена'); data=JSON.parse(h.before_json||h.after_json).data; } }
+  if(kind==='row') {
+    const table=entity(db,old?.parent_id||c.parentId),m=table?.data.semanticMap;
+    if(c.op==='entity.restore'&&m?.seatingTable){data[m.seatingTable]='';data[m.seatIndex]='';}
+    const changed=Object.keys(data).filter(k=>data[k]!==old?.data?.[k]);
+    if(!old&&m){for(const field of [m.seatingTable,m.seatIndex].filter(Boolean))assert(!data[field],'Назначьте место через рассадку',409);const value=data[m.rsvpStatus];assert(!value||[m.rsvpValues?.unanswered,'unanswered','Приглашён','Не отправлено'].includes(value),'Создайте гостя без ответа и измените RSVP отдельным действием',409);}
+    else validateGuestRowMutation(table,old,data,changed);
+  }
+  if(kind==='table'&&old){const guard=validateGuestSchemaMutation(old,{...old,data});assert(guard.ok,'Сначала переподключите или отключите смысловые поля гостей',409,guard);}
+  if(old){const protectedFields=kind==='project'?['readinessPolicy','leadOrganizerUserId','staffIntervals']:kind==='file'?['documentKind','verificationStatus','verifiedBy','verifiedAt','verificationNote']:kind==='selection'?['bookingRequired','bookingStatus','bookingVerifiedBy','bookingVerifiedAt','bookingEvidenceFileId','bookingEvidenceNote']:[];for(const field of protectedFields)assert(JSON.stringify(data[field])===JSON.stringify(old.data[field]),'Для изменения отметок проверки используйте специальное действие',409);}
   if(kind==='row'&&old) {
     const table=getScoped(db,u,old.parent_id,p,'table'); validateRow(db,u,table,data,Object.keys(c.data||{}));
   } else data=validateData(db,u,kind,data,p,old?.parent_id||c.parentId,old);
