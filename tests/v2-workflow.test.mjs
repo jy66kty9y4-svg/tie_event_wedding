@@ -4,7 +4,7 @@ import { openDatabase, entity, insert, uid } from '../server/db.mjs';
 import { defaults, grant } from '../server/auth.mjs';
 import { bootstrap } from '../server/service.mjs';
 import { executeModule } from '../server/v2/common.mjs';
-import { guardProjectDateEdit, migrate, operations, previewReschedule } from '../server/v2/workflow/index.mjs';
+import { getApproval, getTask, guardProjectDateEdit, listTasks, migrate, operations, previewBudgetApplication, previewReschedule } from '../server/v2/workflow/index.mjs';
 
 let sequence=0;
 const command = (db,user,op,body={}) => executeModule(db,user,{id:`workflow_cmd_${++sequence}_safe`,op,...body},operations);
@@ -91,14 +91,17 @@ test('approved budget application preserves paid amount and is idempotent by rev
   const approval=command(db,admin,'approval.saveDraft',{projectId:project.id,data:{title:'Новый вариант',category:'vendor',approverUserIds:[admin.id],policy:'any',options:[{id:'winner',title:'Новый вариант',price:120000,selectionId:selection.id,terms:'До полуночи'}]}});
   const published=command(db,admin,'approval.publish',{projectId:project.id,entityId:approval.id,version:approval.version});
   command(db,admin,'approval.vote',{projectId:project.id,entityId:approval.id,revisionId:published.revision.id,decision:'approve',optionId:'winner'});
-  const applied=command(db,admin,'approval.applyToBudget',{projectId:project.id,entityId:approval.id,revisionId:published.revision.id,optionId:'winner',selectionVersion:entity(db,selection.id).version,obligationVersion:entity(db,obligation.id).version});
+  fails(()=>command(db,admin,'approval.applyToBudget',{projectId:project.id,entityId:approval.id,revisionId:published.revision.id,optionId:'winner',selectionId:selection.id,obligationId:obligation.id,selectionVersion:entity(db,selection.id).version,obligationVersion:entity(db,obligation.id).version}),409);
+  const preview=previewBudgetApplication(db,admin,{projectId:project.id,id:approval.id,revisionId:published.revision.id,optionId:'winner',selectionId:selection.id,obligationId:obligation.id});
+  const applied=command(db,admin,'approval.applyToBudget',{projectId:project.id,entityId:approval.id,revisionId:published.revision.id,optionId:'winner',selectionId:selection.id,obligationId:obligation.id,selectionVersion:preview.selection.version,obligationVersion:preview.obligation.version,previewDigest:preview.digest,confirmed:true});
   assert.equal(applied.obligation.data.agreed,120000);assert.equal(applied.selection.data.approvalOptionId,'winner');
   const repeated=command(db,admin,'approval.applyToBudget',{projectId:project.id,entityId:approval.id,revisionId:published.revision.id,optionId:'winner'});
   assert.equal(repeated.alreadyApplied,true);
   insert(db,admin,'movement',{type:'payment',amount:115000,obligationId:obligation.id},project.id);
   const second=command(db,admin,'approval.saveDraft',{projectId:project.id,data:{title:'Дешевле',category:'vendor',approverUserIds:[admin.id],policy:'any',options:[{id:'cheap',title:'Дешевле',price:100000,selectionId:selection.id}]}});
   const sent=command(db,admin,'approval.publish',{projectId:project.id,entityId:second.id,version:second.version});command(db,admin,'approval.vote',{projectId:project.id,entityId:second.id,revisionId:sent.revision.id,decision:'approve',optionId:'cheap'});
-  fails(()=>command(db,admin,'approval.applyToBudget',{projectId:project.id,entityId:second.id,revisionId:sent.revision.id,optionId:'cheap',selectionVersion:entity(db,selection.id).version,obligationVersion:entity(db,obligation.id).version}),409);
+  const conflict=previewBudgetApplication(db,admin,{projectId:project.id,id:second.id,revisionId:sent.revision.id,optionId:'cheap',selectionId:selection.id,obligationId:obligation.id});assert.equal(conflict.conflict,true);
+  fails(()=>command(db,admin,'approval.applyToBudget',{projectId:project.id,entityId:second.id,revisionId:sent.revision.id,optionId:'cheap',selectionId:selection.id,obligationId:obligation.id,selectionVersion:conflict.selection.version,obligationVersion:conflict.obligation.version,previewDigest:conflict.digest,confirmed:true}),409);
 });
 
 test('module replay validates current authorization before returning saved result',()=>{
@@ -118,4 +121,49 @@ test('template repeat is safe, new version does not overwrite, and date guard pe
   assert.equal(second.created.length,1);assert.equal(entity(db,changed.id).data.title,'Ручная правка');
   guardProjectDateEdit(db,admin,{op:'entity.edit',entityId:project.id,data:{date:project.data.date}});
   fails(()=>guardProjectDateEdit(db,admin,{op:'entity.edit',entityId:project.id,data:{date:'2027-07-01'}}),409);
+});
+
+test('task comments, deletion listing and restore use current versions',()=>{
+  const {db,admin,project}=fixture();
+  let task=command(db,admin,'task.create',{projectId:project.id,data:{title:'Комментарии',dueMode:'fixed',fixedDate:'2027-05-01'}});
+  let comment=command(db,admin,'comment.create',{projectId:project.id,parentId:task.id,text:'Первый комментарий'});
+  assert.equal(getTask(db,admin,{projectId:project.id,id:task.id}).comments.length,1);
+  comment=command(db,admin,'comment.edit',{projectId:project.id,entityId:comment.id,version:comment.version,text:'Исправленный комментарий'});
+  command(db,admin,'comment.delete',{projectId:project.id,entityId:comment.id,version:comment.version});
+  assert.equal(getTask(db,admin,{projectId:project.id,id:task.id}).comments.length,0);
+  task=command(db,admin,'task.delete',{projectId:project.id,entityId:task.id,version:task.version});
+  assert.equal(listTasks(db,admin,{projectId:project.id,includeDeleted:true}).items.some(item=>item.id===task.id&&item.deleted),true);
+  const restored=command(db,admin,'task.restore',{projectId:project.id,entityId:task.id,version:task.version});assert.equal(restored.deleted,false);
+});
+
+test('approved topic can start a reasoned second immutable revision',()=>{
+  const {db,admin,project}=fixture();
+  let approval=command(db,admin,'approval.saveDraft',{projectId:project.id,data:{title:'Свет',category:'decor',approverUserIds:[admin.id],policy:'any',options:[{id:'warm',title:'Тёплый свет',price:500000}]}});
+  const first=command(db,admin,'approval.publish',{projectId:project.id,entityId:approval.id,version:approval.version});
+  approval=command(db,admin,'approval.vote',{projectId:project.id,entityId:approval.id,revisionId:first.revision.id,decision:'approve',optionId:'warm'}).approval;
+  approval=command(db,admin,'approval.startRevision',{projectId:project.id,entityId:approval.id,version:approval.version,reason:'Изменилась схема зала'});
+  approval=command(db,admin,'approval.saveDraft',{projectId:project.id,entityId:approval.id,version:approval.version,data:{options:[{id:'warm',title:'Тёплый свет',price:550000}]}});
+  const second=command(db,admin,'approval.publish',{projectId:project.id,entityId:approval.id,version:approval.version});
+  assert.equal(second.revision.data.number,2);const history=getApproval(db,admin,{projectId:project.id,id:approval.id});assert.equal(history.revisions.length,2);assert.equal(history.revisions.find(item=>item.revision.id===first.revision.id).votes.length,1);
+});
+
+test('approval revisions freeze authorized file versions and require integer cents',()=>{
+  const {db,admin,project}=fixture(),file=insert(db,admin,'file',{name:'Референс.jpg',size:123},project.id);
+  fails(()=>command(db,admin,'approval.saveDraft',{projectId:project.id,data:{title:'Фото',category:'other',approverUserIds:[admin.id],policy:'any',options:[{id:'bad',title:'Плавающая цена',price:12.5}]}}));
+  const approval=command(db,admin,'approval.saveDraft',{projectId:project.id,data:{title:'Фото',category:'other',approverUserIds:[admin.id],policy:'any',options:[{id:'photo',title:'Референс',price:1200,fileIds:[file.id],imageIds:[file.id]}]}});
+  const published=command(db,admin,'approval.publish',{projectId:project.id,entityId:approval.id,version:approval.version});
+  assert.deepEqual(published.revision.data.options[0].fileRefs,[{id:file.id,version:file.version}]);
+});
+
+test('time-zone reschedule previews unchanged finance and dirties publication atomically',()=>{
+  const {db,admin,project}=fixture();
+  const fixed=command(db,admin,'task.create',{projectId:project.id,data:{title:'Фиксированная',dueMode:'fixed',fixedDate:'2027-05-01'}});
+  const meeting=insert(db,admin,'meeting',{title:'На следующий день',dateAnchor:'wedding',offsetDays:1,localStartTime:'10:30',durationMinutes:60,timeZone:'Europe/Moscow',startAt:'2027-06-13T07:30:00.000Z',endAt:'2027-06-13T08:30:00.000Z'},project.id);
+  const obligation=insert(db,admin,'obligation',{title:'Площадка',priceKind:'amount',agreed:10000,dueDate:'2027-05-10',selectionId:'none'},project.id);
+  insert(db,admin,'movement',{type:'deposit',amount:10000,date:'2027-04-10',to:admin.id},project.id);
+  const site=insert(db,admin,'microsite',{status:'published',dirty:false},project.id);
+  const preview=previewReschedule(db,admin,{projectId:project.id,newDate:project.data.date,newTimeZone:'Europe/Berlin'});
+  assert.equal(preview.unchanged.some(item=>item.id===fixed.id&&item.reason==='fixed_task'),true);assert.equal(preview.unchanged.some(item=>item.id===obligation.id),true);
+  const result=command(db,admin,'project.reschedule.apply',{projectId:project.id,newDate:preview.newDate,newTimeZone:preview.newTimeZone,projectVersion:preview.projectVersion,previewDigest:preview.digest,sourceVersions:preview.affected.map(item=>({id:item.id,version:item.version}))});
+  assert.equal(result.project.data.timeZone,'Europe/Berlin');assert.equal(entity(db,meeting.id).data.timeZone,'Europe/Berlin');assert.equal(entity(db,meeting.id).data.startAt,'2027-06-13T08:30:00.000Z');assert.equal(entity(db,fixed.id).version,fixed.version);assert.equal(entity(db,site.id).data.dirty,true);
 });

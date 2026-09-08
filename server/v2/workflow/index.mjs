@@ -1,7 +1,7 @@
 import { assert, audit, change, entities, entity, insert, now, uid, version } from '../../db.mjs';
 import { can, digest, requireAccess } from '../../auth.mjs';
-import { amount, date, getScoped, projectVisible, text } from '../../model.mjs';
-import { addDays, listPage, projectAccess, scoped, zonedInstant } from '../common.mjs';
+import { amount, date, getScoped, projectVisible, safeUrl, text } from '../../model.mjs';
+import { addDays, listPage, projectAccess, scoped, timeZone, zonedInstant } from '../common.mjs';
 
 const TASK_STATUSES = new Set(['todo', 'doing', 'done', 'skipped']);
 const APPROVAL_POLICIES = new Set(['any', 'all']);
@@ -21,6 +21,16 @@ export const DEFAULT_TASK_BLUEPRINTS = [
 function object(value, label='Проверьте данные') { assert(value && typeof value === 'object' && !Array.isArray(value),label); return value; }
 function optionalText(value,label,max=8000) { return value == null || value === '' ? '' : text(value,label,1,max); }
 function ids(value,label='Проверьте список') { assert(Array.isArray(value) && value.length <= 100 && new Set(value).size === value.length,label); return value; }
+function readableLink(db,u,projectId,id,kind,section) {
+  if(!id) return null;
+  const row=scoped(db,u,id,kind==='vendor'?null:projectId,kind);
+  requireAccess(db,u,'read',kind==='vendor'?null:projectId,section,row.id);
+  return row;
+}
+function linkedFiles(db,u,projectId,value,label='Проверьте файлы',maximum=100) {
+  ids(value,label); assert(value.length<=maximum,`${label}: не более ${maximum}`);
+  return value.map(id=>readableLink(db,u,projectId,id,'file','files'));
+}
 // The shared `members` helper will be corrected by the integration worker. Keep this
 // implementation local so the module's validations use an actual project ID today.
 function workflowMembers(db,u,projectId) {
@@ -74,14 +84,18 @@ function taskData(db,u,project,source={},existing={}) {
   const skipReason=source.skipReason === undefined ? (existing.skipReason || '') : optionalText(source.skipReason,'Причина',1000);
   if(status==='skipped') assert(skipReason.length>=3,'Для статуса «Не требуется» укажите причину не короче 3 символов');
   const priority=source.priority ?? existing.priority ?? 'normal'; assert(['low','normal','high','urgent'].includes(priority),'Проверьте приоритет');
+  const approvalId=source.approvalId === undefined ? (existing.approvalId||null) : (source.approvalId||null);
+  const selectionId=source.selectionId === undefined ? (existing.selectionId||null) : (source.selectionId||null);
+  const fileIds=source.fileIds === undefined ? (existing.fileIds||[]) : ids(source.fileIds);
+  if(approvalId) readableLink(db,u,projectId,approvalId,'approval','approvals');
+  if(selectionId) readableLink(db,u,projectId,selectionId,'selection','vendors');
+  linkedFiles(db,u,projectId,fileIds);
   return {
     title: source.title === undefined ? existing.title : text(source.title,'Название задачи'),
     description: source.description === undefined ? (existing.description||'') : optionalText(source.description,'Описание'),
     phaseKey: source.phaseKey === undefined ? (existing.phaseKey||'general') : text(source.phaseKey,'Этап',1,80),
     status, assigneeUserId, participantUserIds, ...due, dependencyIds, priority,
-    approvalId: source.approvalId === undefined ? (existing.approvalId||null) : (source.approvalId||null),
-    selectionId: source.selectionId === undefined ? (existing.selectionId||null) : (source.selectionId||null),
-    fileIds: source.fileIds === undefined ? (existing.fileIds||[]) : ids(source.fileIds),
+    approvalId, selectionId, fileIds,
     sourceTemplateId: existing.sourceTemplateId||source.sourceTemplateId||null,
     sourceTemplateVersion: existing.sourceTemplateVersion||source.sourceTemplateVersion||null,
     sourceTemplateKey: existing.sourceTemplateKey||source.sourceTemplateKey||null,
@@ -101,14 +115,20 @@ function setTaskStatus(db,u,c) {
   const next={...row.data,status,skipReason:status==='skipped'?skipReason:'',completedAt:['done','skipped'].includes(status)?now():null,completedBy:['done','skipped'].includes(status)?u.id:null};
   return change(db,u,row,next,false,'setStatus');
 }
-function approvalOptions(value) {
+function approvalOptions(db,u,projectId,value) {
   assert(Array.isArray(value) && value.length>=1 && value.length<=6,'Добавьте от 1 до 6 вариантов');
-  return value.map((raw,index)=>{ object(raw,'Проверьте вариант'); const option={
+  return value.map((raw,index)=>{ object(raw,'Проверьте вариант');
+    const fileIds=ids(raw.fileIds||[],'Проверьте файлы'), imageIds=ids(raw.imageIds||[],'Проверьте изображения');
+    linkedFiles(db,u,projectId,fileIds); linkedFiles(db,u,projectId,imageIds,'Проверьте изображения',8);
+    if(raw.vendorId) readableLink(db,u,projectId,raw.vendorId,'vendor','catalog');
+    if(raw.selectionId) readableLink(db,u,projectId,raw.selectionId,'selection','vendors');
+    const links=Array.isArray(raw.links)?raw.links.map(link=>safeUrl(link)):[]; assert(links.length<=12,'Не более 12 ссылок в варианте');
+    const option={
     id: raw.id && /^[a-zA-Z0-9_-]{1,100}$/.test(raw.id) ? raw.id : `option_${index+1}`,
     title:text(raw.title,'Название варианта'), description:optionalText(raw.description,'Описание'),
     price:raw.price == null ? null : amount(raw.price,true), included:optionalText(raw.included,'Состав'), terms:optionalText(raw.terms,'Условия'),
     availability:optionalText(raw.availability,'Доступность',1000), comment:optionalText(raw.comment,'Комментарий',2000),
-    vendorId:raw.vendorId||null, selectionId:raw.selectionId||null, fileIds:ids(raw.fileIds||[],'Проверьте файлы'), imageIds:ids(raw.imageIds||[],'Проверьте изображения')
+    vendorId:raw.vendorId||null, selectionId:raw.selectionId||null, fileIds, imageIds, links
   }; assert(!value.slice(0,index).some(other=>other.id===option.id),'ID варианта повторяется'); return option; });
 }
 function approvalDraftData(db,u,project,source,existing={}) {
@@ -117,10 +137,11 @@ function approvalDraftData(db,u,project,source,existing={}) {
   const approverUserIds=source.approverUserIds === undefined ? (existing.approverUserIds||[]) : ids(source.approverUserIds);
   validateWorkflowMembers(db,u,projectId,approverUserIds); assert(approverUserIds.length,'Выберите согласующих');
   const category=source.category ?? existing.category ?? 'other'; assert(APPROVAL_CATEGORIES.has(category),'Проверьте категорию');
+  const sourceTaskId=source.sourceTaskId===undefined?(existing.sourceTaskId||null):(source.sourceTaskId||null); if(sourceTaskId) readableLink(db,u,projectId,sourceTaskId,'task','tasks');
   return { title:source.title === undefined ? existing.title : text(source.title,'Название согласования'), category,
     draft:source.draft === undefined ? (existing.draft||'') : optionalText(source.draft,'Описание'),
-    approverUserIds,policy,options:source.options === undefined ? (existing.options||[]) : approvalOptions(source.options),
-    sourceTaskId:source.sourceTaskId === undefined ? (existing.sourceTaskId||null) : (source.sourceTaskId||null),
+    approverUserIds,policy,options:source.options === undefined ? (existing.options||[]) : approvalOptions(db,u,projectId,source.options),
+    sourceTaskId,
     dueDate:source.dueDate === undefined ? (existing.dueDate||'') : date(source.dueDate),
     currentRevisionId:existing.currentRevisionId||null,state:existing.state||'draft',outcomeOptionId:existing.outcomeOptionId||null,discussion:false
   };
@@ -143,7 +164,14 @@ function publishApproval(db,u,c) {
   assert(['draft','changes','withdrawn'].includes(approval.data.state),'Текущая ревизия уже открыта',409);
   const data=approval.data; assert(data.options.length,'Добавьте хотя бы один вариант');
   validateWorkflowMembers(db,u,c.projectId,data.approverUserIds);
-  const revisionRow=insert(db,u,'approvalRevision',{number:(entities(db,u.agency_id,c.projectId,'approvalRevision',true).filter(row=>row.parent_id===approval.id).length+1),approverUserIds:[...data.approverUserIds],policy:data.policy,options:structuredClone(data.options),publishedAt:now(),publishedBy:u.id,withdrawnAt:null,withdrawReason:'',state:'open'},c.projectId,approval.id);
+  const frozenOptions=approvalOptions(db,u,c.projectId,data.options).map(option=>{
+    const fileRefs=option.fileIds.map(id=>{const file=readableLink(db,u,c.projectId,id,'file','files');return {id,version:file.version};});
+    const imageRefs=option.imageIds.map(id=>{const file=readableLink(db,u,c.projectId,id,'file','files');return {id,version:file.version};});
+    const selection=option.selectionId?readableLink(db,u,c.projectId,option.selectionId,'selection','vendors'):null;
+    const obligation=selection?.data.obligationId?readableLink(db,u,c.projectId,selection.data.obligationId,'obligation','budget'):null;
+    return {...option,fileRefs,imageRefs,selectionVersion:selection?.version||null,obligationId:obligation?.id||null,obligationVersion:obligation?.version||null};
+  });
+  const revisionRow=insert(db,u,'approvalRevision',{number:(entities(db,u.agency_id,c.projectId,'approvalRevision',true).filter(row=>row.parent_id===approval.id).length+1),approverUserIds:[...data.approverUserIds],policy:data.policy,options:frozenOptions,publishedAt:now(),publishedBy:u.id,withdrawnAt:null,withdrawReason:'',state:'open'},c.projectId,approval.id);
   const next=change(db,u,approval,{...data,currentRevisionId:revisionRow.id,state:'in_review',outcomeOptionId:null,discussion:false},false,'publish');
   return {approval:next,revision:revisionRow};
 }
@@ -153,6 +181,12 @@ function withdrawApproval(db,u,c) {
   const reason=text(c.reason,'Причина отзыва',3,1000);
   const nextRevision=change(db,u,row,{...row.data,state:'withdrawn',withdrawnAt:now(),withdrawnBy:u.id,withdrawReason:reason},false,'withdraw');
   const nextApproval=change(db,u,approval,{...approval.data,state:'withdrawn'},false,'withdraw'); return {approval:nextApproval,revision:nextRevision};
+}
+function startApprovalRevision(db,u,c) {
+  const approval=requireApproval(db,u,c.projectId,c.entityId); requireApprovalAccess(db,u,c,'edit',approval); version(approval,c.version);
+  assert(approval.data.state==='approved','Новую ревизию можно начать после принятого решения',409);
+  const reason=text(c.reason,'Причина новой ревизии',3,1000);
+  return change(db,u,approval,{...approval.data,state:'changes',revisionReason:reason,outcomeOptionId:null,discussion:false},false,'startRevision');
 }
 function voteApproval(db,u,c) {
   const approval=requireApproval(db,u,c.projectId,c.entityId); requireApprovalAccess(db,u,c,'edit',approval,['currentRevisionId']);
@@ -172,28 +206,42 @@ function voteApproval(db,u,c) {
   const next=change(db,u,approval,{...approval.data,...outcome},false,'vote'); return approvalResult(db,next,row);
 }
 function paidFor(db,project,obligationId) { return entities(db,entity(db,obligationId).agency_id,project,'movement').filter(row=>['payment','fee'].includes(row.data.type)&&row.data.obligationId===obligationId).reduce((sum,row)=>sum+Number(row.data.amount||0),0); }
+export function previewBudgetApplication(db,u,{projectId,id,revisionId,optionId,selectionId,obligationId}) {
+  const approval=requireApproval(db,u,projectId,id); projectAccess(db,u,projectId,'read','approvals',approval.id); requireAccess(db,u,'finance',projectId,'budget');
+  assert(approval.data.state==='approved'&&approval.data.currentRevisionId===revisionId,'Сначала утвердите текущую ревизию',409);
+  const row=revision(db,u,revisionId,projectId), option=row.data.options.find(item=>item.id===optionId);
+  assert(option&&option.id===approval.data.outcomeOptionId,'Вариант не является утверждённым',409);
+  assert(Number.isSafeInteger(option.price)&&option.price>=0,'В утверждённом варианте не указана сумма',409);
+  assert(selectionId&&obligationId,'Выберите существующую услугу и её обязательство',400);
+  const selection=readableLink(db,u,projectId,selectionId,'selection','vendors');
+  const obligation=readableLink(db,u,projectId,obligationId,'obligation','budget');
+  assert(selection.data.obligationId===obligation.id&&obligation.data.selectionId===selection.id,'Услуга и обязательство больше не связаны',409,{code:'budget_link_changed'});
+  assert(!option.selectionId||option.selectionId===selection.id,'В согласовании указана другая услуга',409,{code:'approval_selection_changed'});
+  if(option.selectionVersion) assert(option.selectionVersion===selection.version,'Услуга изменилась после отправки согласования. Создайте новую ревизию.',409,{code:'approval_selection_changed',current:selection});
+  if(option.obligationId) assert(option.obligationId===obligation.id&&option.obligationVersion===obligation.version,'Обязательство изменилось после отправки согласования. Создайте новую ревизию.',409,{code:'approval_obligation_changed',current:obligation});
+  const paid=paidFor(db,projectId,obligation.id), conflict=option.price<paid;
+  const payload={approvalId:approval.id,revisionId:row.id,optionId:option.id,selection:{id:selection.id,version:selection.version,title:selection.data.title||'',price:selection.data.price??null},obligation:{id:obligation.id,version:obligation.version,title:obligation.data.title||'',agreed:obligation.data.agreed??null},paid,newPrice:option.price,delta:Number(option.price)-Number(obligation.data.agreed||0),createsPayment:false,conflict};
+  return {...payload,digest:digest(JSON.stringify(payload))};
+}
 function applyBudget(db,u,c) {
   const approval=requireApproval(db,u,c.projectId,c.entityId); requireApprovalAccess(db,u,c,'edit',approval); requireAccess(db,u,'finance',c.projectId,'budget');
   assert(approval.data.state==='approved'&&approval.data.currentRevisionId===c.revisionId,'Сначала утвердите текущую ревизию',409);
   const row=revision(db,u,c.revisionId,c.projectId); const option=row.data.options.find(item=>item.id===c.optionId);
   assert(option && option.id===approval.data.outcomeOptionId,'Вариант не является утверждённым',409); assert(Number.isSafeInteger(option.price) && option.price>=0,'В утверждённом варианте не указана сумма',409);
   const link=db.prepare('SELECT * FROM approval_budget_links WHERE revision_id=? AND option_id=?').get(row.id,option.id); if(link) return {link:{...link,applied_at:link.applied_at},alreadyApplied:true};
-  let selection=option.selectionId ? scoped(db,u,option.selectionId,c.projectId,'selection') : null;
-  let obligation=selection?.data.obligationId ? scoped(db,u,selection.data.obligationId,c.projectId,'obligation') : null;
-  if(c.selectionId) { selection=scoped(db,u,c.selectionId,c.projectId,'selection'); assert(!option.selectionId || selection.id===option.selectionId,'Выбрана другая услуга',409); }
-  if(c.obligationId) { obligation=scoped(db,u,c.obligationId,c.projectId,'obligation'); }
-  if(selection) { assert(Number.isInteger(c.selectionVersion),'Укажите текущую версию услуги',409); version(selection,c.selectionVersion); }
-  if(obligation) { assert(Number.isInteger(c.obligationVersion),'Укажите текущую версию обязательства',409); version(obligation,c.obligationVersion); }
-  if(!selection) selection=insert(db,u,'selection',{title:option.title,price:option.price,selected:true,terms:option.terms,vendorId:option.vendorId||null,dueDate:'',approvalRevisionId:row.id,approvalOptionId:option.id},c.projectId);
-  if(!obligation) obligation=insert(db,u,'obligation',{title:option.title,priceKind:'amount',agreed:option.price,planned:null,dueDate:'',fee:false,condition:option.terms,selectionId:selection.id},c.projectId);
-  const paid=paidFor(db,c.projectId,obligation.id); assert(option.price>=paid,'Новая стоимость ниже уже оплаченной суммы. Исправьте существующий учёт вручную.',409,{code:'paid_amount_conflict',paid});
+  const preview=previewBudgetApplication(db,u,{projectId:c.projectId,id:approval.id,revisionId:row.id,optionId:option.id,selectionId:c.selectionId,obligationId:c.obligationId});
+  assert(c.confirmed===true&&c.previewDigest===preview.digest,'Сначала проверьте и подтвердите актуальные изменения сметы',409,{code:'budget_preview_required',preview});
+  let selection=scoped(db,u,c.selectionId,c.projectId,'selection'), obligation=scoped(db,u,c.obligationId,c.projectId,'obligation');
+  assert(Number.isInteger(c.selectionVersion)&&Number.isInteger(c.obligationVersion),'Укажите текущие версии услуги и обязательства',409);
+  version(selection,c.selectionVersion); version(obligation,c.obligationVersion);
+  assert(!preview.conflict,'Новая стоимость ниже уже оплаченной суммы. Исправьте существующий учёт вручную.',409,{code:'paid_amount_conflict',paid:preview.paid});
   requireAccess(db,u,'edit',c.projectId,'vendors',selection.id,['price','selected']); requireAccess(db,u,'edit',c.projectId,'budget',obligation.id,['agreed']);
   selection=change(db,u,selection,{...selection.data,title:option.title,price:option.price,selected:true,terms:option.terms,vendorId:option.vendorId||selection.data.vendorId||null,obligationId:obligation.id,approvalRevisionId:row.id,approvalOptionId:option.id},false,'approvalApply');
   obligation=change(db,u,obligation,{...obligation.data,title:option.title,priceKind:'amount',agreed:option.price,condition:option.terms,selectionId:selection.id,approvalRevisionId:row.id,approvalOptionId:option.id},false,'approvalApply');
   db.prepare('INSERT INTO approval_budget_links(revision_id,option_id,selection_id,obligation_id,applied_by,applied_at) VALUES(?,?,?,?,?,?)').run(row.id,option.id,selection.id,obligation.id,u.id,now());
-  return {selection,obligation,link:{revisionId:row.id,optionId:option.id,selectionId:selection.id,obligationId:obligation.id}};
+  return {selection,obligation,preview,createsPayment:false,link:{revisionId:row.id,optionId:option.id,selectionId:selection.id,obligationId:obligation.id}};
 }
-function parentForComment(db,u,c,parentId) { const parent=getScoped(db,u,parentId,c.projectId); assert(['task','approval'].includes(parent.kind),'Комментарий можно добавить только к задаче или согласованию'); projectAccess(db,u,c.projectId,'read',taskSection(parent),parent.id); return parent; }
+function parentForComment(db,u,c,parentId) { const parent=getScoped(db,u,parentId,c.projectId); assert(!parent.deleted,'Запись удалена',409); assert(['task','approval'].includes(parent.kind),'Комментарий можно добавить только к задаче или согласованию'); projectAccess(db,u,c.projectId,'read',taskSection(parent),parent.id); return parent; }
 function commentCreate(db,u,c) { const parent=parentForComment(db,u,c,c.parentId); projectAccess(db,u,c.projectId,'create',taskSection(parent),parent.id); return insert(db,u,'comment',{text:text(c.text,'Комментарий',1,2000),authorId:u.id,createdAt:now(),editedAt:null},c.projectId,parent.id); }
 function commentEdit(db,u,c) { const row=scoped(db,u,c.entityId,c.projectId,'comment'); const parent=parentForComment(db,u,c,row.parent_id); assert(row.data.authorId===u.id,'Редактировать можно только свой комментарий',403); projectAccess(db,u,c.projectId,'edit',taskSection(parent),parent.id); version(row,c.version); return change(db,u,row,{...row.data,text:text(c.text,'Комментарий',1,2000),editedAt:now()},false,'editComment'); }
 function commentDelete(db,u,c) { const row=scoped(db,u,c.entityId,c.projectId,'comment'); const parent=parentForComment(db,u,c,row.parent_id); assert(row.data.authorId===u.id||can(db,u,'delete',c.projectId,taskSection(parent),parent.id),'Удалить можно только свой комментарий',403); version(row,c.version); return change(db,u,row,row.data,true,'deleteComment'); }
@@ -205,12 +253,19 @@ export function migrate(db) {
     CREATE INDEX IF NOT EXISTS approval_votes_revision ON approval_votes(revision_id);`);
 }
 
-export function listTasks(db,u,{projectId,from,to,assignee,status,phaseKey,offset,limit}={}) {
+export function listTasks(db,u,{projectId,from,to,assignee,status,phaseKey,mine=false,includeDeleted=false,offset,limit}={}) {
   projectAccess(db,u,projectId,'read','tasks'); if(from) date(from,false); if(to) date(to,false);
-  const rows=taskRows(db,u,projectId).filter(row=>can(db,u,'read',projectId,'tasks',row.id)).filter(row=>
-    (!from||row.data.dueDate>=from)&&(!to||row.data.dueDate<=to)&&(!assignee||row.data.assigneeUserId===assignee)&&(!status||row.data.status===status)&&(!phaseKey||row.data.phaseKey===phaseKey)
+  if(includeDeleted===true||includeDeleted==='true') requireAccess(db,u,'history',projectId,'tasks');
+  const rows=taskRows(db,u,projectId,{includeDeleted:includeDeleted===true||includeDeleted==='true'}).filter(row=>can(db,u,'read',projectId,'tasks',row.id)).filter(row=>
+    (!from||row.data.dueDate>=from)&&(!to||row.data.dueDate<=to)&&(!assignee||row.data.assigneeUserId===assignee)&&(!(mine===true||mine==='true')||(row.data.assigneeUserId===u.id||(row.data.participantUserIds||[]).includes(u.id)))&&(!status||row.data.status===status)&&(!phaseKey||row.data.phaseKey===phaseKey)
   ).sort((a,b)=>(a.data.dueDate||'9999-12-31').localeCompare(b.data.dueDate||'9999-12-31')||Number(a.data.order||0)-Number(b.data.order||0)||a.id.localeCompare(b.id));
   return listPage(rows,{offset,limit});
+}
+export function getTask(db,u,{projectId,id,includeDeleted=false}) {
+  const deleted=includeDeleted===true||includeDeleted==='true'; if(deleted) requireAccess(db,u,'history',projectId,'tasks');
+  const task=requireTask(db,u,projectId,id,{deleted}); projectAccess(db,u,projectId,'read','tasks',task.id);
+  const comments=entities(db,u.agency_id,projectId,'comment').filter(row=>row.parent_id===task.id&&!row.deleted).sort((a,b)=>a.data.createdAt.localeCompare(b.data.createdAt)||a.id.localeCompare(b.id));
+  return {task,comments};
 }
 export function getApproval(db,u,{projectId,id}) {
   const approval=requireApproval(db,u,projectId,id); projectAccess(db,u,projectId,'read','approvals',approval.id);
@@ -241,24 +296,33 @@ function applyTemplate(db,u,c) {
   db.prepare('INSERT INTO template_applications(project_id,template_id,template_version,applied_at,applied_by) VALUES(?,?,?,?,?)').run(project.id,template.id,template.version,now(),u.id);
   return {created,preview};
 }
-export function previewReschedule(db,u,{projectId,newDate}) {
-  const project=projectAccess(db,u,projectId,'read','tasks'); newDate=date(newDate,false); const affected=taskRows(db,u,projectId).filter(row=>!['done','skipped'].includes(row.data.status)&&row.data.dueMode==='relative').map(row=>({id:row.id,version:row.version,oldDate:row.data.dueDate,newDate:addDays(newDate,row.data.offsetDays),reason:'relative_task'}));
-  const zone=project.data.timeZone||'Europe/Moscow';
+export function previewReschedule(db,u,{projectId,newDate,newTimeZone}) {
+  const project=projectAccess(db,u,projectId,'read','tasks'), oldTimeZone=timeZone(project.data.timeZone||'Europe/Moscow'); newDate=date(newDate||project.data.date,false); newTimeZone=timeZone(newTimeZone||oldTimeZone);
+  const allTasks=taskRows(db,u,projectId), affected=allTasks.filter(row=>!['done','skipped'].includes(row.data.status)&&row.data.dueMode==='relative').map(row=>({id:row.id,kind:'task',version:row.version,oldDate:row.data.dueDate,newDate:addDays(newDate,row.data.offsetDays),reason:'relative_task'})).filter(item=>item.oldDate!==item.newDate);
+  const unchanged=allTasks.filter(row=>row.data.dueMode==='fixed'||['done','skipped'].includes(row.data.status)).map(row=>({id:row.id,kind:'task',version:row.version,title:row.data.title,oldDate:row.data.dueDate,newDate:row.data.dueDate,reason:row.data.dueMode==='fixed'?'fixed_task':'completed_task'}));
   const meetings=entities(db,u.agency_id,projectId,'meeting').filter(row=>row.data.dateAnchor==='wedding').map(row=>{
     assert(typeof row.data.localStartTime==='string'&&Number.isInteger(row.data.durationMinutes)&&row.data.durationMinutes>0,'Привязанная встреча содержит неполные данные времени',409,{code:'anchored_meeting_invalid',meetingId:row.id});
-    const startAt=zonedInstant(newDate,row.data.localStartTime,row.data.timeZone||zone,row.data.dstChoice);
+    const inheritedZone=!row.data.timeZone||row.data.timeZone===oldTimeZone, meetingZone=inheritedZone?newTimeZone:timeZone(row.data.timeZone), meetingDate=addDays(newDate,Number(row.data.offsetDays||0));
+    const startAt=zonedInstant(meetingDate,row.data.localStartTime,meetingZone,row.data.dstChoice);
     const endAt=new Date(Date.parse(startAt)+row.data.durationMinutes*60000).toISOString();
-    return {id:row.id,kind:'meeting',version:row.version,oldStartAt:row.data.startAt,oldEndAt:row.data.endAt,newStartAt:startAt,newEndAt:endAt,reason:'anchored_meeting'};
+    return {id:row.id,kind:'meeting',version:row.version,oldStartAt:row.data.startAt,oldEndAt:row.data.endAt,newStartAt:startAt,newEndAt:endAt,oldTimeZone:row.data.timeZone||oldTimeZone,newTimeZone:meetingZone,updateTimeZone:inheritedZone,reason:'anchored_meeting'};
   });
-  const allAffected=[...affected,...meetings];
-  const dependencyDigest=JSON.stringify({projectId,projectVersion:project.version,newDate,affected:allAffected.map(item=>[item.kind||'task',item.id,item.version,item.newDate||item.newStartAt])});
-  return {projectId,projectVersion:project.version,oldDate:project.data.date,newDate,affected:allAffected,digest:digest(dependencyDigest)};
+  const allAffected=[...affected,...meetings.filter(item=>item.oldStartAt!==item.newStartAt||item.oldTimeZone!==item.newTimeZone)];
+  unchanged.push(...meetings.filter(item=>item.oldStartAt===item.newStartAt&&item.oldTimeZone===item.newTimeZone));
+  if(can(db,u,['read','finance'],projectId,'budget')) {
+    unchanged.push(...entities(db,u.agency_id,projectId,'obligation').filter(row=>can(db,u,'read',projectId,'budget',row.id)).map(row=>({id:row.id,kind:'obligation',version:row.version,title:row.data.title,oldDate:row.data.dueDate||'',newDate:row.data.dueDate||'',reason:'financial_date'})));
+    unchanged.push(...entities(db,u.agency_id,projectId,'movement').filter(row=>row.data.type==='deposit'&&can(db,u,'read',projectId,'budget',row.id)).map(row=>({id:row.id,kind:'deposit',version:row.version,title:row.data.description||'Поступление',oldDate:row.data.date||row.data.createdAt||'',newDate:row.data.date||row.data.createdAt||'',reason:'deposit'})));
+  }
+  const dependencyDigest=JSON.stringify({projectId,projectVersion:project.version,newDate,newTimeZone,affected:allAffected.map(item=>[item.kind,item.id,item.version,item.newDate||item.newStartAt,item.newTimeZone||'']),unchanged:unchanged.map(item=>[item.kind,item.id,item.version,item.newDate||item.newStartAt||''])});
+  return {projectId,projectVersion:project.version,oldDate:project.data.date,newDate,oldTimeZone,newTimeZone,affected:allAffected,unchanged,digest:digest(dependencyDigest)};
 }
 function applyReschedule(db,u,c) {
-  const preview=previewReschedule(db,u,{projectId:c.projectId,newDate:c.newDate}); requireTaskAccess(db,u,c,'edit'); assert(preview.projectVersion===c.projectVersion&&preview.digest===c.previewDigest,'План переноса устарел. Постройте новый предпросмотр.',409,{code:'reschedule_stale',preview});
+  const preview=previewReschedule(db,u,{projectId:c.projectId,newDate:c.newDate,newTimeZone:c.newTimeZone}); requireTaskAccess(db,u,c,'edit'); assert(preview.projectVersion===c.projectVersion&&preview.digest===c.previewDigest,'План переноса устарел. Постройте новый предпросмотр.',409,{code:'reschedule_stale',preview});
   const wanted=Array.isArray(c.sourceVersions)?new Map(c.sourceVersions.map(item=>[item.id,item.version])):new Map(); for(const item of preview.affected) assert(!wanted.size||wanted.get(item.id)===item.version,'Задача изменилась после предпросмотра',409,{code:'reschedule_stale',preview});
-  const project=projectAccess(db,u,c.projectId,'read','tasks'); const nextProject=change(db,u,project,{...project.data,date:preview.newDate},false,'reschedule'); const changed=[];
-  for(const item of preview.affected){const row=entity(db,item.id); if(item.kind==='meeting') { requireAccess(db,u,'edit',c.projectId,'calendar',row.id,['startAt','endAt']); changed.push(change(db,u,row,{...row.data,startAt:item.newStartAt,endAt:item.newEndAt},false,'reschedule')); } else changed.push(change(db,u,row,{...row.data,dueDate:item.newDate},false,'reschedule'));} return {project:nextProject,affected:changed,preview};
+  const project=projectAccess(db,u,c.projectId,'read','tasks'); const nextProject=change(db,u,project,{...project.data,date:preview.newDate,timeZone:preview.newTimeZone},false,'reschedule'); const changed=[];
+  for(const item of preview.affected){const row=entity(db,item.id); if(item.kind==='meeting') { requireAccess(db,u,'edit',c.projectId,'calendar',row.id,item.updateTimeZone?['startAt','endAt','timeZone']:['startAt','endAt']); changed.push(change(db,u,row,{...row.data,startAt:item.newStartAt,endAt:item.newEndAt,...(item.updateTimeZone?{timeZone:item.newTimeZone}:{})},false,'reschedule')); } else changed.push(change(db,u,row,{...row.data,dueDate:item.newDate},false,'reschedule'));}
+  let publicationDirty=false; for(const microsite of entities(db,u.agency_id,c.projectId,'microsite')) { if(microsite.data.status==='published'&&!microsite.data.dirty){change(db,u,microsite,{...microsite.data,dirty:true},false,'projectTimingChanged');publicationDirty=true;} }
+  return {project:nextProject,affected:changed,unchanged:preview.unchanged,publicationDirty,preview};
 }
 
 // Called by the root generic entity handler before a project edit. Moving a project
@@ -281,6 +345,8 @@ export const operations = {
   'project.reschedule.apply': {authorize(db,u,c){requireTaskAccess(db,u,c,'edit');},run:applyReschedule},
   'approval.saveDraft': {authorize(db,u,c){if(c.entityId){const row=requireApproval(db,u,c.projectId,c.entityId);requireApprovalAccess(db,u,c,'edit',row,Object.keys(c.data||{}));}else requireApprovalAccess(db,u,c,'create');},run(db,u,c){const project=projectAccess(db,u,c.projectId,'read','approvals');if(!c.entityId){const data=approvalDraftData(db,u,project,c.data||{});return insert(db,u,'approval',data,c.projectId);}const row=requireApproval(db,u,c.projectId,c.entityId);version(row,c.version);assert(['draft','changes','withdrawn'].includes(row.data.state),'Изменение отправленной ревизии требует новой темы или отзыва',409);return change(db,u,row,approvalDraftData(db,u,project,c.data||{},row.data),false,'saveDraft');}},
   'approval.publish': {authorize(db,u,c){const row=requireApproval(db,u,c.projectId,c.entityId);requireApprovalAccess(db,u,c,'edit',row);},run:publishApproval},
+  'approval.startRevision': {authorize(db,u,c){const row=requireApproval(db,u,c.projectId,c.entityId);requireApprovalAccess(db,u,c,'edit',row);},run:startApprovalRevision},
+  'approval.delete': {authorize(db,u,c){const row=requireApproval(db,u,c.projectId,c.entityId);requireApprovalAccess(db,u,c,'delete',row);},run(db,u,c){const row=requireApproval(db,u,c.projectId,c.entityId);version(row,c.version);assert(row.data.state==='draft'&&!row.data.currentRevisionId,'Удалить можно только неотправленный черновик',409);return change(db,u,row,row.data,true,'deleteDraft');}},
   'approval.withdraw': {authorize(db,u,c){const row=requireApproval(db,u,c.projectId,c.entityId);requireApprovalAccess(db,u,c,'edit',row);},run:withdrawApproval},
   'approval.vote': {authorize(db,u,c){const row=requireApproval(db,u,c.projectId,c.entityId);requireApprovalAccess(db,u,c,'edit',row);},run:voteApproval},
   'approval.applyToBudget': {authorize(db,u,c){const row=requireApproval(db,u,c.projectId,c.entityId);requireApprovalAccess(db,u,c,'edit',row);requireAccess(db,u,'finance',c.projectId,'budget');},run:applyBudget},
@@ -290,4 +356,4 @@ export const operations = {
 };
 
 // Root may register these pure functions in the central dispatcher/old project-date guard.
-export const integrationHooks = { previewReschedule, previewTemplateApplication, listTasks, listApprovals, getApproval, guardProjectDateEdit };
+export const integrationHooks = { previewReschedule, previewTemplateApplication, previewBudgetApplication, listTasks, getTask, listApprovals, getApproval, guardProjectDateEdit };
