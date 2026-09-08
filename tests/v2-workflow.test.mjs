@@ -4,7 +4,7 @@ import { openDatabase, entity, insert, uid } from '../server/db.mjs';
 import { defaults, grant } from '../server/auth.mjs';
 import { bootstrap } from '../server/service.mjs';
 import { executeModule } from '../server/v2/common.mjs';
-import { migrate, operations, previewReschedule } from '../server/v2/workflow/index.mjs';
+import { guardProjectDateEdit, migrate, operations, previewReschedule } from '../server/v2/workflow/index.mjs';
 
 let sequence=0;
 const command = (db,user,op,body={}) => executeModule(db,user,{id:`workflow_cmd_${++sequence}_safe`,op,...body},operations);
@@ -105,4 +105,17 @@ test('module replay validates current authorization before returning saved resul
   const {db,admin,project}=fixture();const task=command(db,admin,'task.create',{projectId:project.id,data:{title:'Однократно',dueMode:'fixed',fixedDate:'2027-05-01'}});
   const replay={id:'workflow_replay_authorized',op:'task.create',projectId:project.id,data:{title:'Повтор',dueMode:'fixed',fixedDate:'2027-05-02'}};
   const first=executeModule(db,admin,replay,operations),second=executeModule(db,admin,replay,operations);assert.equal(first.id,second.id);assert.equal(task.data.title,'Однократно');
+});
+
+test('template repeat is safe, new version does not overwrite, and date guard permits unchanged values',()=>{
+  const {db,admin,project}=fixture();
+  const template=insert(db,admin,'template',{name:'База',taskBlueprints:[{key:'venue',title:'Площадка',phaseKey:'plan',offsetDays:-60,order:0}]});
+  const first=command(db,admin,'taskTemplate.apply',{projectId:project.id,templateId:template.id,templateVersion:template.version,projectVersion:project.version});
+  assert.equal(first.created.length,1);fails(()=>command(db,admin,'taskTemplate.apply',{projectId:project.id,templateId:template.id,templateVersion:template.version,projectVersion:project.version}),409);
+  const changed=entity(db,first.created[0].id);db.prepare('UPDATE entities SET data=?,version=version+1 WHERE id=?').run(JSON.stringify({...changed.data,title:'Ручная правка'}),changed.id);
+  const nextTemplate=entity(db,template.id);db.prepare('UPDATE entities SET data=?,version=version+1 WHERE id=?').run(JSON.stringify({...nextTemplate.data,taskBlueprints:[...nextTemplate.data.taskBlueprints,{key:'menu',title:'Меню',phaseKey:'plan',offsetDays:-30,order:1}]}),nextTemplate.id);
+  const second=command(db,admin,'taskTemplate.apply',{projectId:project.id,templateId:template.id,templateVersion:entity(db,template.id).version,projectVersion:project.version});
+  assert.equal(second.created.length,1);assert.equal(entity(db,changed.id).data.title,'Ручная правка');
+  guardProjectDateEdit(db,admin,{op:'entity.edit',entityId:project.id,data:{date:project.data.date}});
+  fails(()=>guardProjectDateEdit(db,admin,{op:'entity.edit',entityId:project.id,data:{date:'2027-07-01'}}),409);
 });

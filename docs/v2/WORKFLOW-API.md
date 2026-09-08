@@ -34,6 +34,10 @@ Root mounts these permission-filtered GET handlers (private/no-store):
 - `GET /api/v2/workflow/approvals?projectId=&offset=&limit=` → `listApprovals`.
 - `GET /api/v2/workflow/approvals/:id?projectId=` → `getApproval`, including immutable revision history
   and votes visible to a user who can read the approval.
+- `GET /api/v2/workflow/template-preview?projectId=&templateId=&templateVersion=` →
+  `previewTemplateApplication`; `GET /api/v2/workflow/reschedule-preview?projectId=&newDate=` →
+  `previewReschedule`. Both are pure reads and must be mounted before the React `TemplateApply` and
+  `RescheduleDialog` controls are enabled.
 
 ## Root integration hooks
 

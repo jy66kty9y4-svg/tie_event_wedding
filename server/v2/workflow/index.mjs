@@ -182,7 +182,8 @@ function applyBudget(db,u,c) {
   let obligation=selection?.data.obligationId ? scoped(db,u,selection.data.obligationId,c.projectId,'obligation') : null;
   if(c.selectionId) { selection=scoped(db,u,c.selectionId,c.projectId,'selection'); assert(!option.selectionId || selection.id===option.selectionId,'Выбрана другая услуга',409); }
   if(c.obligationId) { obligation=scoped(db,u,c.obligationId,c.projectId,'obligation'); }
-  if(selection && c.selectionVersion !== undefined) version(selection,c.selectionVersion); if(obligation && c.obligationVersion !== undefined) version(obligation,c.obligationVersion);
+  if(selection) { assert(Number.isInteger(c.selectionVersion),'Укажите текущую версию услуги',409); version(selection,c.selectionVersion); }
+  if(obligation) { assert(Number.isInteger(c.obligationVersion),'Укажите текущую версию обязательства',409); version(obligation,c.obligationVersion); }
   if(!selection) selection=insert(db,u,'selection',{title:option.title,price:option.price,selected:true,terms:option.terms,vendorId:option.vendorId||null,dueDate:'',approvalRevisionId:row.id,approvalOptionId:option.id},c.projectId);
   if(!obligation) obligation=insert(db,u,'obligation',{title:option.title,priceKind:'amount',agreed:option.price,planned:null,dueDate:'',fee:false,condition:option.terms,selectionId:selection.id},c.projectId);
   const paid=paidFor(db,c.projectId,obligation.id); assert(option.price>=paid,'Новая стоимость ниже уже оплаченной суммы. Исправьте существующий учёт вручную.',409,{code:'paid_amount_conflict',paid});
@@ -262,8 +263,12 @@ function applyReschedule(db,u,c) {
 
 // Called by the root generic entity handler before a project edit. Moving a project
 // date only through the reschedule command keeps task/meeting versions coherent.
-export function guardProjectDateEdit(cmd) {
-  if(cmd?.op==='entity.edit'&&cmd?.data&&Object.hasOwn(cmd.data,'date')) assert(false,'Дата свадьбы меняется через предпросмотр переноса',409,{code:'reschedule_preview_required'});
+export function guardProjectDateEdit(db,u,cmd) {
+  if(cmd?.op!=='entity.edit'||!cmd?.entityId||!cmd?.data) return;
+  const project=getScoped(db,u,cmd.entityId,undefined,'project');
+  const changedDate=Object.hasOwn(cmd.data,'date')&&cmd.data.date!==project.data.date;
+  const changedZone=Object.hasOwn(cmd.data,'timeZone')&&cmd.data.timeZone!==(project.data.timeZone||'Europe/Moscow');
+  if(changedDate||changedZone) assert(false,'Дату или часовой пояс свадьбы меняйте через предпросмотр переноса',409,{code:'reschedule_preview_required'});
 }
 
 export const operations = {
