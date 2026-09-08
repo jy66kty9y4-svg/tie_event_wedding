@@ -190,10 +190,10 @@ function Overview({
   const fin = state.financials || {};
   const limit = d.limit;
   const remaining = limit == null ? null : limit - (fin.agreed || 0);
-  const upcoming = byKind(state, 'obligation').filter(item => dataOf(item).dueDate && !dataOf(item).paid).sort((a, b) => String(dataOf(a).dueDate).localeCompare(String(dataOf(b).dueDate))).slice(0, 5);
+  const upcoming = byKind(state, 'obligation').filter(item => dataOf(item).dueDate && Math.max(0,(dataOf(item).agreed || 0) - (fin.paid?.[item.id] || 0)) > 0).sort((a, b) => String(dataOf(a).dueDate).localeCompare(String(dataOf(b).dueDate))).slice(0, 5);
   return <><PageHeader eyebrow="Свадьба" title={d.name || 'Проект'} action={<button className="button quiet" onClick={onProjectEdit}>Изменить данные</button>}><p className="subtitle">{dateLabel(d.date)} {d.location && ` · ${d.location}`}</p></PageHeader><div className="metric-grid"><Metric label="Согласовано" value={money(fin.agreed || 0)} note="стоимость услуг" /><Metric label="Оплачено" value={money(fin.totalPaid || 0)} note="фактические выплаты" /><Metric label="К оплате" value={money(fin.due || 0)} note="по обязательствам" /><Metric label="У организаторов" value={money(fin.custody || 0)} note="средства пары" /><Metric label="До лимита" value={remaining == null ? 'Не задан' : money(remaining)} note={limit == null ? 'задайте бюджет проекта' : `лимит ${money(limit)}`} /></div><div className="split-grid"><section className="panel"><div className="panel-header"><div><p className="eyebrow">Ближайшие выплаты</p><h2>Кому и когда платить</h2></div><button className="text-button" onClick={() => openTab('estimate')}>Вся смета <Icon name="arrow" /></button></div>{upcoming.length ? <div className="due-list">{upcoming.map(item => {
             const x = dataOf(item);
-            return <div key={item.id}><span className="date-chip">{dateLabel(x.dueDate)}</span><strong>{x.title}</strong><span>{money(x.agreed || x.planned || 0)}</span></div>;
+            return <div key={item.id}><span className="date-chip">{dateLabel(x.dueDate)}</span><strong>{x.title}</strong><span>{money(Math.max(0,(x.agreed || x.planned || 0)-(fin.paid?.[item.id] || 0)))}</span></div>;
           })}</div> : <Empty title="Нет запланированных выплат" text="Добавьте статью сметы с датой или условием оплаты." action="Добавить статью" onAction={() => openTab('estimate')} />}</section><section className="panel note-panel"><p className="eyebrow">Подготовка</p><h2>{d.status ? statuses[d.status] : 'Подготовка'}</h2><p>{d.notes || 'Добавьте заметку, чтобы команда видела ключевой контекст проекта.'}</p><button className="text-button" onClick={() => openTab('timing')}>Открыть тайминг <Icon name="arrow" /></button></section></div><section className="panel custody-panel"><div><p className="eyebrow">Деньги пары</p><h2>Реестр средств у организаторов</h2><p>Это отдельный остаток: он не является доходом агентства.</p></div><strong>{money(fin.custody || 0)}</strong><button className="button quiet" onClick={onMovement}>Записать движение</button></section></>;
 }
 function Metric({
@@ -465,10 +465,14 @@ function Offline({
 }
 function TableLibrary({
   tables,
-  setView
+  sections = [],
+  setView,
+  onSection,
+  onTable
 }) {
-  return <><PageHeader eyebrow="Структура проекта" title="Все рабочие таблицы" /><div className="card-list">{tables.map(table => <button key={table.id} className="vendor-card" onClick={() => setView(`project:table:${table.id}`)}><div className="vendor-monogram">▦</div><div><h2>{dataOf(table).name}</h2><p>{arr(dataOf(table).columns).length} колонок · {dataOf(table).offline ? 'доступна офлайн' : 'только онлайн'}</p></div><Icon name="arrow" /></button>)}</div></>;
+  return <><div className="table-tools"><button className="button quiet" onClick={() => onSection()}>+ Раздел</button></div>{sections.sort((a,b)=>(dataOf(a).order||0)-(dataOf(b).order||0)).map((section,index)=><section className="panel" key={section.id}><div className="panel-header"><div><p className="eyebrow">Раздел {index+1}</p><h2>{dataOf(section).name}</h2></div><div className="button-group"><button className="text-button" onClick={()=>onSection(section)}>Изменить</button><button className="text-button danger-text" onClick={()=>onSection(section,'delete')}>Архив</button></div></div><div className="card-list">{tables.filter(t=>dataOf(t).sectionId===section.id&&!dataOf(t).archived).sort((a,b)=>(dataOf(a).order||0)-(dataOf(b).order||0)).map(table=><article key={table.id} className="vendor-card"><button className="vendor-monogram" onClick={()=>setView(`project:table:${table.id}`)}>▦</button><div><h2>{dataOf(table).name}</h2><p>{arr(dataOf(table).columns).length} колонок · {dataOf(table).offline?'офлайн':'онлайн'}</p></div><div><button className="text-button" onClick={()=>onTable(table)}>Изменить</button><button className="text-button danger-text" onClick={()=>onTable(table,'delete')}>Архив</button></div></article>)}</div></section>)}</>;
 }
+function SectionForm({ section, onClose, onSave }) { const d=dataOf(section); const [name,setName]=useState(d.name||''); return <Modal title={section?'Раздел проекта':'Новый раздел'} onClose={onClose}><form className="form-stack" onSubmit={async e=>{e.preventDefault();await onSave({name,order:d.order||0,archived:false});onClose();}}><FormField label="Название"><input required autoFocus value={name} onChange={e=>setName(e.target.value)}/></FormField><FormActions onCancel={onClose}/></form></Modal>; }
 function Workspace({
   state,
   view,
@@ -482,6 +486,7 @@ function Workspace({
   onEditMovement,
   onDeleteMovement,
   onCreateTable,
+  onSection,
   offline,
   offlineActions,
   onFile,
@@ -495,7 +500,7 @@ function Workspace({
   const table = tab === 'table' ? tables.find(e => e.id === targetTableId) : tables.find(e => dataOf(e).key === tableKey || dataOf(e).name?.toLowerCase().includes(tab === 'timing' ? 'тайминг' : 'гост'));
   const rows = table ? entities.filter(e => e.parent_id === table.id && !e.deleted) : [];
   let content;
-  if (tab === 'overview') content = <Overview state={state} onProjectEdit={onProjectEdit} openTab={key => setView(`project:${key}`)} onMovement={onMovement} />;else if (tab === 'estimate') content = <Finance state={state} onMovement={onMovement} onAddObligation={onAddObligation} onEditObligation={onEditObligation} onEditMovement={onEditMovement} onDeleteMovement={onDeleteMovement} />;else if (tab === 'catalog') content = <Catalog state={state} projectMode onVendor={onVendor} />;else if (tab === 'files') content = <Files state={state} onFile={onFile} />;else if (tab === 'history') content = <History state={state} onRestore={onRestore} />;else if (tab === 'tables') content = <><PageHeader eyebrow="Структура проекта" title="Все рабочие таблицы" action={<button className="button" onClick={onCreateTable}><Icon name="plus"/>Таблица</button>}/><TableLibrary tables={tables} setView={setView} /></>;else content = <><PageHeader eyebrow="Рабочая таблица" title={dataOf(table).name || (tab === 'guests' ? 'Гости и рассадка' : 'Тайминг дня')} action={<button className="button quiet" onClick={onInvite}><Icon name="plus" />Пригласить участника</button>} /><TableWorkspace table={table} rows={rows} files={entities.filter(e=>e.kind==='file'&&!e.deleted)} audience={tab==='timing-pair'?'Пара':tab==='timing-team'?'Команда':null} canEdit onEditRow={(row, data) => onTable('edit', row, data)} onAddRow={() => onTable('add', table)} onEditTable={() => onTable('structure', table)} onDeleteRow={row => onTable('delete', row)} onReorder={rowOrder=>onTable('reorder',table,rowOrder)} /></>;
+  if (tab === 'overview') content = <Overview state={state} onProjectEdit={onProjectEdit} openTab={key => setView(`project:${key}`)} onMovement={onMovement} />;else if (tab === 'estimate') content = <Finance state={state} onMovement={onMovement} onAddObligation={onAddObligation} onEditObligation={onEditObligation} onEditMovement={onEditMovement} onDeleteMovement={onDeleteMovement} />;else if (tab === 'catalog') content = <Catalog state={state} projectMode onVendor={onVendor} />;else if (tab === 'files') content = <Files state={state} onFile={onFile} />;else if (tab === 'history') content = <History state={state} onRestore={onRestore} />;else if (tab === 'tables') content = <><PageHeader eyebrow="Структура проекта" title="Все рабочие таблицы" action={<button className="button" onClick={onCreateTable}><Icon name="plus"/>Таблица</button>}/><TableLibrary tables={tables} sections={entities.filter(e=>e.kind==='section'&&!e.deleted)} setView={setView} onSection={onSection} onTable={(item,action)=>action==='delete'?onTable('delete',item):onTable('structure',item)}/></>;else content = <><PageHeader eyebrow="Рабочая таблица" title={dataOf(table).name || (tab === 'guests' ? 'Гости и рассадка' : 'Тайминг дня')} action={<button className="button quiet" onClick={onInvite}><Icon name="plus" />Пригласить участника</button>} /><TableWorkspace table={table} rows={rows} files={entities.filter(e=>e.kind==='file'&&!e.deleted)} audience={tab==='timing-pair'?'Пара':tab==='timing-team'?'Команда':null} canEdit onEditRow={(row, data) => onTable('edit', row, data)} onAddRow={() => onTable('add', table)} onEditTable={() => onTable('structure', table)} onDeleteRow={row => onTable('delete', row)} onReorder={rowOrder=>onTable('reorder',table,rowOrder)} /></>;
   return <>{content}<Offline project={state.project} status={offline} {...offlineActions} /></>;
 }
 function Files({
@@ -670,7 +675,7 @@ function App() {
       type: 'vendor',
       item,
       project: true
-    })} onEditMovement={item=>setModal({type:'movement',agency:false,item})} onDeleteMovement={item=>setModal({type:'confirmMovementDelete',item})} onCreateTable={()=>setModal({type:'table',create:true})} onRestore={restore} offline={offline} offlineActions={{
+    })} onEditMovement={item=>setModal({type:'movement',agency:false,item})} onDeleteMovement={item=>setModal({type:'confirmMovementDelete',item})} onCreateTable={()=>setModal({type:'table',create:true})} onSection={(item,action)=>action==='delete'?setModal({type:'confirmSectionDelete',item}):setModal({type:'section',item})} onRestore={restore} offline={offline} offlineActions={{
       onPrepare: async () => {
         await prepareProject(projectId);
         setOffline(await getOfflineStatus(projectId));
@@ -790,7 +795,7 @@ function App() {
       op: 'invite.create',
       projectId,
       ...f
-    }, projectId)} />} {modal?.type === 'table' && <TableForm table={modal.table} sections={entities.filter(e => e.kind === 'section' && !e.deleted)} onClose={() => setModal(null)} onSave={data => run(modal.create ? { op: 'entity.create', projectId, kind: 'table', data: {...data, columns:data.columns.length ? data.columns : [{id:'title',name:'Название',type:'text'}]} } : {op: 'entity.edit', projectId, entityId: modal.table.id, version: modal.table.version, data}, projectId)} />} {modal?.type === 'template' && <TemplateForm onClose={() => setModal(null)} onSave={data => run({
+    }, projectId)} />} {modal?.type === 'section' && <SectionForm section={modal.item} onClose={()=>setModal(null)} onSave={data=>run(modal.item ? {op:'entity.edit',projectId,entityId:modal.item.id,version:modal.item.version,data:{...data,...dataOf(modal.item)}} : {op:'entity.create',projectId,kind:'section',data:{...data,order:entities.filter(e=>e.kind==='section').length}},projectId)}/>} {modal?.type === 'confirmSectionDelete' && <ConfirmDialog title="Архивировать раздел?" danger confirm="Архивировать" onClose={()=>setModal(null)} onConfirm={async()=>{await run({op:'entity.delete',projectId,entityId:modal.item.id,version:modal.item.version,confirm:true},projectId);setModal(null)}}><p>Связанные таблицы будут сохранены в истории и доступны для восстановления.</p></ConfirmDialog>} {modal?.type === 'table' && <TableForm table={modal.table} sections={entities.filter(e => e.kind === 'section' && !e.deleted)} onClose={() => setModal(null)} onSave={data => run(modal.create ? { op: 'entity.create', projectId, kind: 'table', data: {...data, columns:data.columns.length ? data.columns : [{id:'title',name:'Название',type:'text'}]} } : {op: 'entity.edit', projectId, entityId: modal.table.id, version: modal.table.version, data}, projectId)} />} {modal?.type === 'template' && <TemplateForm onClose={() => setModal(null)} onSave={data => run({
       op: 'entity.create',
       kind: 'template',
       data
