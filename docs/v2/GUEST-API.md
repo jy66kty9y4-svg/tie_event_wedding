@@ -22,11 +22,13 @@
 - `guestInvite.create`: `{ guestTableId, schemaVersion, guestRowIds, plusOneRowIds?, expiresAt }`; raw token бывает только в результате создания.
 - `guestInvite.revoke`: `{ inviteId, version }`; удаляет все guest sessions.
 - `guestInvite.rotate`: тот же scope/версии, отзывает старый token и создаёт новый с теми же строками.
+- `guest.rsvp.set`: рабочий специализированный путь для RSVP организатора; принимает `schemaVersion`, row version и `{values}`. `declined` снимает место в этой же транзакции.
 - `seatingPlan.save`: создаёт/изменяет `{ name,widthM,heightM,scale,zones,guestTableId }`.
 - `seatingTable.create`, `.createMany`, `.edit`, `.delete`: проверяют границы, вместимость 1–30, версии и атомарный delete-preview `requiresUnassignConfirmation`.
 - `seating.assign` и `.unassign`: меняют только mapped row поля, не допускают declined и двойное место. Пересадка освобождает прежнее место в той же транзакции.
+- `seating.legacyImport`: принимает явный preview старой текстовой колонки, подтверждённую вместимость каждого стола и актуальные версии строк. Создаёт tables/assignments атомарно и сохраняет первоначальные значения в `plan.data.legacyImport`; вместимость никогда не выводится молча из числа старых строк.
 
-`guestList(db,user,projectId,guestTableId,{offset,limit,rsvp,invited})` и `seatingSnapshot(db,user,projectId,planId)` — чистые GET helpers. Корень отдаёт их как `GET /api/v2/guests` и `GET /api/v2/seating`; оба с текущими project/row/field checks и без побочного эффекта.
+`guestList(db,user,projectId,guestTableId,{offset,limit,rsvp,invited})`, `guestInvites(db,user,projectId,guestTableId)`, `legacySeatingPreview(db,user,projectId,guestTableId,columnId)` и `seatingSnapshot(db,user,projectId,planId)` — чистые GET helpers. Каждый сначала перечитывает current user, затем применяет project/row/field checks; скрытые поля не попадают ни в `data`, ни в RSVP/seat/invite aggregates. Корень отдаёт их как `GET /api/v2/guests`, `/invites`, `/legacy-preview` и `/seating`.
 
 ## Публичный RSVP
 
