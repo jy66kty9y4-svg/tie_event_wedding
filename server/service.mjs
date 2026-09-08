@@ -2,6 +2,10 @@ import { assert, transaction, entity, entities, insert, change, version, uid, no
 import { token, digest, passwordHash, checkPassword, createSession, publicUser, defaults, grant, grants, can, requireAccess, rateLimit } from './auth.mjs';
 import { text, amount, date, safeUrl, getScoped, projectVisible, createProject, initialTemplate, validateColumns, validateRow, financials, validateLedger, sectionOf, accessRowId } from './model.mjs';
 import { permissions, projectPermissions } from '../src/shared.js';
+import { operations as v2Operations, typedKinds } from './v2/index.mjs';
+import {guestInvites,validateGuestSchemaMutation,validateGuestRowMutation} from './v2/guest/index.mjs';
+import { executeModule, members as assignableMembers } from './v2/common.mjs';
+import { queueChanges, notifications } from './v2/calendar/index.mjs';
 
 export function bootstrap(db,b) {
   return transaction(db,()=>{
@@ -70,7 +74,7 @@ function acceptInvitation(db,u,raw) {
 }
 export function publicInfo(db,slug='tie') {
   const a=db.prepare('SELECT * FROM agencies WHERE slug=?').get(slug);
-  return a?{id:a.id,slug:a.slug,name:a.name,...JSON.parse(a.settings),setup:false}:{setup:!db.prepare('SELECT id FROM agencies LIMIT 1').get(),notFound:true};
+  return a?{id:a.id,slug:a.slug,name:a.name,...Object.fromEntries(Object.entries(JSON.parse(a.settings)).filter(([key])=>['tagline','description','contact','services','portfolio'].includes(key))),setup:false}:{setup:!db.prepare('SELECT id FROM agencies LIMIT 1').get(),notFound:true};
 }
 function filteredRow(db,u,r) {
   const section=sectionOf(r);
@@ -84,7 +88,7 @@ function filteredRow(db,u,r) {
 }
 function filteredProject(db,u,p) {
   const data={name:p.data.name,date:p.data.date,status:p.data.status};
-  for(const key of ['location','limit','offline','notes']) if(can(db,u,'read',p.id,'project',p.id,key)) data[key]=p.data[key];
+  for(const key of ['location','limit','offline','notes','timeZone','readinessPolicy','leadOrganizerUserId','staffIntervals']) if(can(db,u,'read',p.id,'project',p.id,key)) data[key]=p.data[key];
   return {...p,data};
 }
 function canHoldFunds(db,user,project) {
@@ -125,7 +129,10 @@ export function snapshot(db,u,project=null,offline=false) {
     const vendors=offline && offlineKinds.has('vendors') && can(db,u,'read',project,'vendors');
     const files=offline && offlineKinds.has('files') && can(db,u,['read','files'],project,'files');
     result.entities=[];
+    if(!offline){const site=all.find(r=>r.kind==='microsite');if(site&&can(db,u,'read',project,'microsite',site.id,null))result.microsite={id:site.id,version:site.version,shareId:site.data.shareId,status:site.data.status,rsvpDeadline:site.data.rsvpDeadline};const guestTable=all.find(r=>r.kind==='table'&&r.data.key==='guests');if(guestTable&&can(db,u,'manageGuestInvites',project,guestTable.id,null,null))result.guestInvites=guestInvites(db,u,project,guestTable.id);}
+
     for(const row of all) {
+      if(['task','approval','approvalRevision','comment','meeting','microsite','micrositeRevision','publicRevision','notification'].includes(row.kind)) continue;
       if(row.kind==='table') { const t=tables.find(t=>t.id===row.id); if(t&&(!offline||prepared.includes(t.id))) result.entities.push(t); continue; }
       if(row.kind==='section') {
         const hasVisibleTable=tables.some(table=>(!offline||prepared.includes(table.id))&&table.data.sectionId===row.id);
@@ -157,6 +164,7 @@ export function snapshot(db,u,project=null,offline=false) {
     const projectPeople=db.prepare('SELECT * FROM users WHERE agency_id=? AND disabled=0 ORDER BY name').all(u.agency_id).filter(person=>projectVisible(db,person,project));
     const custodians=projectPeople.filter(person=>canHoldFunds(db,person,project)).map(({id,name})=>({id,name}));
     result.custodians=mayUseFinance?custodians:[];
+    if(!offline) result.assignableMembers=assignableMembers(db,u,project);
     if(mayInvite) {
       result.members=projectPeople.map(({id,name,email})=>({id,name,email}));
       const allRoles=db.prepare('SELECT id,name,permissions,key FROM roles WHERE agency_id=? AND protected=0 ORDER BY name').all(u.agency_id);
@@ -170,7 +178,7 @@ export function snapshot(db,u,project=null,offline=false) {
   }
   result.projects=entities(db,u.agency_id,null,'project').filter(p=>projectVisible(db,u,p.id)).map(p=>filteredProject(db,u,p));
   result.applications=entities(db,u.agency_id,null,'application').filter(a=>a.data.userId===u.id||can(db,u,'applications'));
-  result.notifications=entities(db,u.agency_id,null,'notification').filter(n=>n.data.userId===u.id);
+  result.notifications=notifications(db,u,{limit:50}).items;
   result.global=entities(db,u.agency_id,null).filter(r=>(['vendor','vendorCategory'].includes(r.kind)&&can(db,u,['read','catalog']))||(r.kind==='template'&&can(db,u,['read','templates']))||(['movement','category'].includes(r.kind)&&can(db,u,['read','agencyFinance'])));
   if(can(db,u,['read','agencyFinance'])) {
     const fees=db.prepare("SELECT * FROM entities WHERE agency_id=? AND kind='movement' AND deleted=0 AND json_extract(data,'$.type')='fee'").all(u.agency_id).map(r=>({...r,data:JSON.parse(r.data)}));
@@ -245,6 +253,7 @@ function validateData(db,u,kind,data,p,parent,current=null) {
   return d;
 }
 export function execute(db,user,cmd) {
+  if(v2Operations[cmd?.op]) return executeModule(db,user,cmd,v2Operations);
   assert(cmd && typeof cmd==='object' && /^[a-zA-Z0-9_-]{8,100}$/.test(cmd.id||''),'Команда должна иметь уникальный ID');
   // All writes including duplicate checks run after current authorization, inside a transaction.
   return transaction(db,()=>{
@@ -254,6 +263,7 @@ export function execute(db,user,cmd) {
     authorizeCommand(db,u,cmd);
     const hash=digest(JSON.stringify(cmd)), previous=db.prepare('SELECT * FROM commands WHERE id=? AND user_id=?').get(cmd.id,u.id);
     if(previous) { assert(previous.digest===hash,'Этот ID уже использован для другого действия',409); return JSON.parse(previous.result); }
+    const beforeAudit=db.prepare('SELECT coalesce(max(rowid),0) AS n FROM audit').get().n;
     let result;
     if(op==='project.create') { requireAccess(db,u,'projects'); const template=cmd.templateId?getScoped(db,u,cmd.templateId,null,'template'):null; result=createProject(db,u,cmd.data,template); }
     else if(op==='application.create') {
@@ -311,6 +321,7 @@ export function execute(db,user,cmd) {
     } else if(op==='movement.save'||op==='movement.delete') result=movement(db,u,cmd);
     else if(op==='entity.create'||op==='entity.edit'||op==='entity.delete'||op==='entity.restore') result=mutateEntity(db,u,cmd);
     else assert(false,'Неизвестное действие');
+    queueChanges(db,u,beforeAudit);
     db.prepare('INSERT INTO commands VALUES(?,?,?,?)').run(cmd.id,u.id,hash,JSON.stringify(result)); return result;
   });
 }
@@ -359,6 +370,7 @@ function referencesEntity(db,u,p,row,targetId) {
 }
 function mutateEntity(db,u,c) {
   const p=c.projectId||null,old=c.entityId?getScoped(db,u,c.entityId):null,kind=old?.kind||c.kind;
+  assert(!typedKinds.has(kind),'Используйте специальное действие этого раздела',409);
   if(old) version(old,c.version);
   assert(c.op==='entity.create'||old,'Запись не найдена',404);
   if(old&&c.op!=='entity.restore') assert(!old.deleted,'Запись удалена. Сначала восстановите её.',409);
@@ -368,6 +380,7 @@ function mutateEntity(db,u,c) {
     assert(table.version===c.schemaVersion,'Структура таблицы изменилась. Проверьте правку перед повтором.',409,{table});
   }
   if(c.op==='entity.delete') {
+    if(kind==='row'){const table=entity(db,old.parent_id),m=table?.data.semanticMap;if(m?.seatingTable&&old.data[m.seatingTable]){requireAccess(db,u,'edit',p,table.id,old.id,[m.seatingTable,m.seatIndex]);return change(db,u,old,{...old.data,[m.seatingTable]:'',[m.seatIndex]:''},true,'delete_unassign');}}
     if(kind==='obligation') {
       assert(!entities(db,u.agency_id,p,'movement').some(m=>m.data.obligationId===old.id),'У статьи есть выплаты. Сначала исправьте или отмените их.',409);
       assert(!entities(db,u.agency_id,p,'selection').some(m=>m.data.obligationId===old.id),'Статья связана с выбранным подрядчиком. Сначала снимите выбор.',409);
@@ -386,6 +399,15 @@ function mutateEntity(db,u,c) {
   }
   let data={...(old?.data||{}),...(c.data||{})};
   if(c.op==='entity.restore') { assert(old.deleted || c.auditId,'Выберите удалённую запись или версию'); if(c.auditId) { const h=db.prepare('SELECT * FROM audit WHERE id=? AND entity_id=? AND agency_id=?').get(c.auditId,old.id,u.agency_id); assert(h,'Версия не найдена'); data=JSON.parse(h.before_json||h.after_json).data; } }
+  if(kind==='row') {
+    const table=entity(db,old?.parent_id||c.parentId),m=table?.data.semanticMap;
+    if(c.op==='entity.restore'&&m?.seatingTable){data[m.seatingTable]='';data[m.seatIndex]='';}
+    const changed=Object.keys(data).filter(k=>data[k]!==old?.data?.[k]);
+    if(!old&&m){for(const field of [m.seatingTable,m.seatIndex].filter(Boolean))assert(!data[field],'Назначьте место через рассадку',409);const value=data[m.rsvpStatus];assert(!value||[m.rsvpValues?.unanswered,'unanswered','Приглашён','Не отправлено'].includes(value),'Создайте гостя без ответа и измените RSVP отдельным действием',409);}
+    else validateGuestRowMutation(table,old,data,changed);
+  }
+  if(kind==='table'&&old){const guard=validateGuestSchemaMutation(old,{...old,data});assert(guard.ok,'Сначала переподключите или отключите смысловые поля гостей',409,guard);}
+  if(old){const protectedFields=kind==='project'?['readinessPolicy','leadOrganizerUserId','staffIntervals']:kind==='file'?['documentKind','verificationStatus','verifiedBy','verifiedAt','verificationNote']:kind==='selection'?['bookingRequired','bookingStatus','bookingVerifiedBy','bookingVerifiedAt','bookingEvidenceFileId','bookingEvidenceNote']:[];for(const field of protectedFields)assert(JSON.stringify(data[field])===JSON.stringify(old.data[field]),'Для изменения отметок проверки используйте специальное действие',409);}
   if(kind==='row'&&old) {
     const table=getScoped(db,u,old.parent_id,p,'table'); validateRow(db,u,table,data,Object.keys(c.data||{}));
   } else data=validateData(db,u,kind,data,p,old?.parent_id||c.parentId,old);

@@ -2,6 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { migrate as migrateGuests } from './v2/guest/index.mjs';
+import { migrate as migrateCalendar } from './v2/calendar/index.mjs';
 
 export const uid = () => randomUUID();
 export const now = () => new Date().toISOString();
@@ -37,6 +39,21 @@ export function openDatabase(path) {
   if (!roleColumns.has('key')) db.exec('ALTER TABLE roles ADD COLUMN key TEXT');
   for (const [key,name] of [['admin','Администратор'],['organizer','Организатор'],['couple','Участник пары'],['coordinator','Координатор'],['contractor','Подрядчик']]) db.prepare('UPDATE roles SET key=? WHERE key IS NULL AND name=?').run(key,name);
   db.prepare("INSERT OR IGNORE INTO migrations VALUES(3,datetime('now'))").run();
+  if(!db.prepare('SELECT version FROM migrations WHERE version=4').get()) transaction(db,()=>{
+    const auditColumns=new Set(db.prepare('PRAGMA table_info(audit)').all().map(c=>c.name));
+    if(!auditColumns.has('actor_type')) db.exec("ALTER TABLE audit ADD COLUMN actor_type TEXT NOT NULL DEFAULT 'user'");
+    if(!auditColumns.has('actor_ref')) db.exec('ALTER TABLE audit ADD COLUMN actor_ref TEXT');
+    db.exec('UPDATE audit SET actor_ref=actor_id WHERE actor_ref IS NULL');
+    migrateCalendar(db);
+    for(const role of db.prepare("SELECT * FROM roles WHERE key IN ('admin','organizer','couple')").all()) {
+      const additions=role.key==='admin'?['publishWeddingSite','manageGuestInvites','publishAgencySite','viewTeamAvailability']:role.key==='organizer'?['publishWeddingSite','manageGuestInvites','viewTeamAvailability']:['publishWeddingSite','manageGuestInvites'];
+      const permissions=[...new Set([...JSON.parse(role.permissions),...additions])];
+      db.prepare('UPDATE roles SET permissions=?,version=version+1 WHERE id=?').run(JSON.stringify(permissions),role.id);
+    }
+    db.exec("UPDATE entities SET data=json_set(data,'$.timeZone','Europe/Moscow') WHERE kind='project' AND json_extract(data,'$.timeZone') IS NULL");
+    db.prepare("INSERT INTO migrations VALUES(4,datetime('now'))").run();
+  });
+  if(!db.prepare('SELECT version FROM migrations WHERE version=5').get()) transaction(db,()=>{migrateGuests(db);db.prepare("INSERT INTO migrations VALUES(5,datetime('now'))").run();});
   return db;
 }
 export function transaction(db, fn) {
@@ -49,7 +66,7 @@ export function entities(db, agency, project, kind, deleted = false) {
   return db.prepare(`SELECT * FROM entities WHERE agency_id=? AND project_id IS ? ${kind ? 'AND kind=?' : ''} ${deleted ? '' : 'AND deleted=0'} ORDER BY updated_at,id`).all(agency, project, ...(kind ? [kind] : [])).map(decode);
 }
 export function audit(db, user, row, before, action) {
-  db.prepare('INSERT INTO audit VALUES(?,?,?,?,?,?,?,?,?,?)').run(uid(), user.agency_id, row.project_id, user.id, row.id, row.kind, action, before ? JSON.stringify(before) : null, JSON.stringify(row), now());
+  db.prepare('INSERT INTO audit(id,agency_id,project_id,actor_id,entity_id,kind,action,before_json,after_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(uid(), user.agency_id, row.project_id, user.id, row.id, row.kind, action, before ? JSON.stringify(before) : null, JSON.stringify(row), now());
 }
 export function insert(db, user, kind, data, project = null, parent = null, id = uid()) {
   db.prepare('INSERT INTO entities(id,agency_id,project_id,kind,parent_id,data,updated_at) VALUES(?,?,?,?,?,?,?)').run(id, user.agency_id, project, kind, parent, JSON.stringify(data), now());

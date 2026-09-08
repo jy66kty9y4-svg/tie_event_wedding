@@ -9,6 +9,9 @@ import { Notice } from './ui/Notice.jsx';
 import { TableWorkspace } from './ui/TableWorkspace.jsx';
 import {SectionEditor,TableEditor,InvitationEditor,Payouts,ConflictEditor} from './ui/ProjectTools.jsx';
 import {GrantEditor,TemplateEditor,CategoryEditor} from './ui/ManagementForms.jsx';
+import {Dashboard,CalendarWorkspace,NotificationCenter,NotificationPreferences,ReadinessSettings,VerificationPanel} from './v2/calendar/Workspace.jsx';
+import {GuestWorkspace,SeatingWorkspace} from './v2/guest/Workspace.jsx';
+import {parseRoute,viewUrl} from './v2/routes.js';
 import './styles.css';
 const arr = value => Array.isArray(value) ? value : [];
 const dataOf = item => item?.data || item || {};
@@ -470,7 +473,7 @@ function Workspace({
   offlineActions,
   onFile,
   onInvite,
-  onRestore, onCategory, onDeleteObligation
+  onRestore, onCategory, onDeleteObligation, runV2
 }) {
   const [, tab = 'overview', targetTableId] = view.split(':');
   const entities = arr(state.entities);
@@ -480,7 +483,7 @@ function Workspace({
   const rows = table ? entities.filter(e => e.parent_id === table.id && !e.deleted) : [];
   let content;
   if (tab === 'payouts' || (state.offline && !state.financials && ['overview','estimate'].includes(tab))) content=<Payouts state={state} onPay={onMovement}/>;else if (tab === 'overview') content = <Overview state={state} onProjectEdit={onProjectEdit} openTab={key => setView(`project:${key}`)} onMovement={onMovement} />;else if (tab === 'estimate') content = <Finance state={state} onCategory={onCategory} onDeleteObligation={onDeleteObligation} onMovement={onMovement} onAddObligation={onAddObligation} onEditObligation={onEditObligation} onEditMovement={onEditMovement} onDeleteMovement={onDeleteMovement} />;else if (tab === 'catalog') content = <Catalog state={state} projectMode onVendor={onVendor} />;else if (tab === 'files') content = <Files state={state} onFile={onFile} />;else if (tab === 'history') content = <History state={state} onRestore={onRestore} />;else if (tab === 'tables') content = <><PageHeader eyebrow="Структура проекта" title="Все рабочие таблицы" action={<button className="button" onClick={onCreateTable}><Icon name="plus"/>Таблица</button>}/><TableLibrary tables={tables} sections={entities.filter(e=>e.kind==='section'&&!e.deleted)} setView={setView} onSection={onSection} onTable={(item,action)=>action==='delete'?onTable('delete',item):onTable('structure',item)}/></>;else content = <><PageHeader eyebrow="Рабочая таблица" title={dataOf(table).name || (tab === 'guests' ? 'Гости и рассадка' : 'Тайминг дня')} action={<button className="button quiet" onClick={onInvite}><Icon name="plus" />Пригласить участника</button>} /><TableWorkspace key={table?.id} relationRows={entities.filter(e=>e.kind==='row')} table={table} rows={rows} files={entities.filter(e=>e.kind==='file'&&!e.deleted)} audience={tab==='timing-pair'?'Пара':tab==='timing-team'?'Команда':null} canEdit={has(state,'edit',state.project.id)} canCreate={permitted(state,'create',table?.id,null,null)} canStructure={permitted(state,['edit','structure'],table?.id,table?.id,null)} canEditField={(row,col)=>permitted(state,'edit',table?.id,row.id,col.id)} canDeleteRow={row=>permitted(state,'delete',table?.id,row.id,null)} onEditRow={(row, data) => onTable('edit', row, data)} onAddRow={() => onTable('add', table)} onEditTable={() => onTable('structure', table)} onDeleteRow={row => onTable('delete', row)} onReorder={rowOrder=>onTable('reorder',table,rowOrder)} /></>;
-  return <>{content}<Offline project={state.project} status={offline} {...offlineActions} /></>;
+  return <>{content}{['files','catalog'].includes(tab)&&runV2&&<VerificationPanel state={state} projectId={state.project.id} run={runV2} type={tab==='files'?'file':'selection'}/>}<Offline project={state.project} status={offline} {...offlineActions} /></>;
 }
 function Files({
   state,
@@ -500,7 +503,7 @@ function App() {
   const [mode, setMode] = useState('loading'),
     [state, setState] = useState(null),
     [publicInfo, setPublicInfo] = useState(null),
-    [view, setView] = useState('projects'),
+    [view, setViewState] = useState('today'),
     [modal, setModal] = useState(null),
     [notice, setNotice] = useState(null),
     [offline, setOffline] = useState(null),
@@ -516,13 +519,18 @@ function App() {
     return next;
   }, []);
   const activeProject = useRef(null);
+  const setView=next=>{setViewState(next);const path=viewUrl(next,activeProject.current);if(location.pathname!==path)history.pushState(null,'',path+location.search);};
+  const navigate=async path=>{const route=parseRoute(new URL(path,location.origin).pathname);if(!route)return;try{const next=await loadState(route.projectId);activeProject.current=route.projectId;setState(next);setSelected(next.project||null);setViewState(route.view);history.pushState(null,'',path);setOffline(await getOfflineStatus(route.projectId));}catch(error){flash(error.message,'error')}};
+  useEffect(()=>{const pop=async()=>{const route=parseRoute(location.pathname);if(!route)return;try{const next=await loadState(route.projectId);activeProject.current=route.projectId;setSelected(next.project||null);setState(next);setViewState(route.view);setMode('app');}catch(error){if(error.status===401)setMode('public');else flash(error.message,'error')}};window.addEventListener('popstate',pop);return()=>window.removeEventListener('popstate',pop)},[]);
   const acceptState = useCallback(async next => {
+    const requested=parseRoute(location.pathname);
+    if(requested?.projectId&&!next.project) {next=await loadState(requested.projectId);}
     let project=next.project;
     const staff=has(next,'projects');
     if(!project && !staff && arr(next.projects).length===1) project=next.projects[0];
     if(!project && next.offline && arr(next.projects).length===1) project=next.projects[0];
-    if(project) { next=next.project?next:await loadState(project.id); activeProject.current=project.id; setSelected(next.project); setView(next.offline?'project:payouts':'project:overview'); setOffline(await getOfflineStatus(project.id)); }
-    else { activeProject.current=null; setSelected(null);setView(staff?'projects':'applications'); }
+    if(project) { next=next.project?next:await loadState(project.id); activeProject.current=project.id; setSelected(next.project); setView(next.offline?'project:payouts':requested?.projectId===project.id?requested.view:'project:overview'); setOffline(await getOfflineStatus(project.id)); }
+    else { activeProject.current=null; setSelected(null);setView(staff?(requested?.projectId? 'today':requested?.view||'today'):'applications'); }
     setState(next);setMode(next.user?'app':'public');return next;
   },[]);
   useEffect(() => {
@@ -636,8 +644,20 @@ function App() {
     schemaVersion: entities.find(e=>e.id===JSON.parse(item.after_json || '{}').parent_id)?.version,
     auditId: item.id
   }, projectId);
+  const moduleProps={state,projectId,run:(op,body)=>run({op,...body},body?.projectId===undefined?activeProject.current:body.projectId),refresh:()=>refresh(activeProject.current),navigate};
   const renderMain = () => {
-    if (workspace) return <Workspace state={state} view={view} setView={setView} onProjectEdit={() => setModal({
+    if(view==='project:guests')return <GuestWorkspace {...moduleProps}/>;
+    if(view==='project:seating')return <SeatingWorkspace {...moduleProps}/>;
+    if(view==='today'||view==='project:overview'&&!state.offline)return <Dashboard {...moduleProps} projectId={view==='today'?null:projectId}/>;
+    if(view==='calendar'||view.startsWith('project:calendar'))return <CalendarWorkspace {...moduleProps} projectId={view==='calendar'?null:projectId}/>;
+    if(view==='notifications')return <NotificationCenter {...moduleProps}/>;
+    if(view==='profile')return <NotificationPreferences {...moduleProps}/>;
+    if(view==='project:more')return <><PageHeader eyebrow="Наша свадьба" title="Ещё в проекте"/><div className="v2-more-grid">{[['site','Сайт свадьбы'],['tables','Все таблицы'],['files','Файлы'],['history','История'],['members','Участники'],['offline','Офлайн'],['calendar','Календарь'],['settings','Данные свадьбы']].map(([key,label])=><button key={key} onClick={()=>setView('project:'+key)}>{label} →</button>)}</div></>;
+    if(view==='project:settings')return <ReadinessSettings {...moduleProps} onEditProject={()=>setModal({type:'project',project:state.project})}/>;
+    if(view==='project:members')return <><PageHeader eyebrow="Участники проекта" title="Вместе над свадьбой"/><div className="panel">{state.assignableMembers?.map(u=><p key={u.id}>{u.name}</p>)}<button className="button" onClick={()=>setModal({type:'invite'})}>Пригласить участника</button></div></>;
+    if(view==='templates')return <Settings state={state} onSave={values=>run({op:'settings.save',version:state.agency.version,...values})} onTemplate={item=>setModal({type:'template',item})}/>;
+
+    if (workspace) return <Workspace runV2={moduleProps.run} state={state} view={view} setView={setView} onProjectEdit={() => setModal({
       type: 'project',
       project: state.project
     })} onMovement={obligation => setModal({type:'movement',agency:false,item:obligation?.kind==='obligation'?{data:{type:obligation.data.fee?'fee':'payment',obligationId:obligation.id,amount:obligation.due??obligation.data.due??Math.max(0,(obligation.data.agreed||0)-(state.financials?.paid?.[obligation.id]||0)),description:obligation.data.title,source:'custody'}}:undefined})} onAddObligation={() => setModal({
