@@ -28,6 +28,7 @@ export function projectAccess(db,u,id,action='read',section, row,fields) {
 }
 export function scoped(db,u,id,project,kind,{deleted=false}={}) {const r=getScoped(db,u,id,project,kind);assert(deleted||!r.deleted,'Запись удалена',409);return r;}
 export function members(db,u,project) {
+ project=typeof project==='object'?project.id:project;
  projectAccess(db,u,project);
  return db.prepare('SELECT * FROM users WHERE agency_id=? AND disabled=0 ORDER BY name,id').all(u.agency_id).filter(person=>projectVisible(db,person,project)).map(({id,name})=>({id,name}));
 }

@@ -9,7 +9,7 @@ export function safeUrl(v) { assert(!v || /^https?:\/\//.test(v),'Ссылка �
 export function getScoped(db,u,id,p=undefined,kind=undefined) {
   const row=entity(db,id); assert(row && row.agency_id===u.agency_id && (p===undefined || row.project_id===p) && (!kind || row.kind===kind),'Запись не найдена',404); return row;
 }
-export function sectionOf(row) { return ({obligation:'budget',movement:'budget',selection:'vendors',file:'files'})[row.kind] || (row.kind==='row'?row.parent_id:row.kind==='table'?row.id:row.kind==='section'?'structure':row.kind); }
+export function sectionOf(row) { return ({obligation:'budget',movement:'budget',selection:'vendors',file:'files',task:'tasks',approval:'approvals',approvalRevision:'approvals',meeting:'calendar',seatingPlan:'seating',seatingTable:'seating',microsite:'microsite',micrositeRevision:'microsite'})[row.kind] || (row.kind==='row'?row.parent_id:row.kind==='table'?row.id:row.kind==='section'?'structure':row.kind); }
 export function accessRowId(row) { return row.kind==='movement' && row.data.obligationId ? row.data.obligationId : row.id; }
 export function projectVisible(db,u,id) {
   const p=entity(db,id); if (!p || p.agency_id!==u.agency_id || p.deleted) return false;
@@ -59,7 +59,7 @@ export function validateRow(db,u,table,values,changedKeys=Object.keys(values)) {
     if(c.type==='select') assert(c.options.includes(v),'Выберите вариант из списка');
     if(c.type==='url') safeUrl(v);
     if(c.type==='formula') assert(false,'Вычисляемая колонка не редактируется');
-    if(c.type==='relation' || c.type==='file') { const target=getScoped(db,u,v,table.project_id,c.type==='file'?'file':'row'); assert(!target.deleted,'Связанная запись удалена'); requireAccess(db,u,c.type==='file'?['read','files']:['read'],table.project_id,sectionOf(target),target.id); }
+    if(c.type==='relation' || c.type==='file') { const target=getScoped(db,u,v,table.project_id,c.type==='file'?'file':c.targetKind==='seatingTable'?'seatingTable':'row'); assert(!target.deleted,'Связанная запись удалена'); requireAccess(db,u,c.type==='file'?['read','files']:['read'],table.project_id,sectionOf(target),target.id); }
   }
 }
 export function financials(rows) {
