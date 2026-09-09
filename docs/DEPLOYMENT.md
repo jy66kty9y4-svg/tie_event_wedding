@@ -4,10 +4,10 @@
 
 - Сервер: `ssh ptitsa-plus`, IP `130.17.11.158`.
 - DNS: `A tie-event → 130.17.11.158`, авторитетные серверы REG.RU.
-- Приложение: `/opt/tie-event/compose.yaml`, контейнер `tie-event`, образ `tie-event:v2-f80f40b`.
-- Исходники релиза: `/opt/tie-event/releases/v2-f80f40b`.
-- Image digest: `sha256:c76b037e1c0f9423c43202e07696c130c8d7b4408c790f30da8063257eed0bf2`.
-- SHA256 архива: `60efed322a1f66d4d3212bb994f4aaf01b61bb76997f4bfb83846da6ede7b4f0`.
+- Приложение: `/opt/tie-event/compose.yaml`, контейнер `tie-event`, образ `tie-event:visual-ba84151`.
+- Исходники релиза: `/opt/tie-event/releases/visual-ba84151`.
+- Image digest: `sha256:9187a80e04056b0a5a5c7b525dbbdd962ed6b364a8a4e441e841e18b29a3b458`.
+- SHA256 архива: `0fae998fd15e37f079c93fee31c5cebefcddc0ade3790ef1eec63e68c57b126d`.
 - Данные: отдельный внешний Docker volume `tie-event-data`, SQLite `/data/tie.sqlite`. Первый администратор создан до открытия домена. Демонстрационные клиенты, проекты и деньги не переносились.
 - Локальный файл доступа: `data/production-credentials.txt`, режим 0600, исключён из Git. Не копировать пароль в README, образ, логи или команды запуска.
 
@@ -53,8 +53,18 @@ docker compose up -d
 Первый согласованный backup через `node:sqlite.backup()`:
 `/opt/tie-event/backups/tie-first-release.sqlite`, права 0600. Создан после запуска новой базы; live-файл не копировался отдельно от WAL.
 
-`deploy/verify-live.mjs` проверяет реальный опубликованный домен: TLS, вход администратора через UI, Secure/HttpOnly cookie, отсутствие демо-проектов, desktop-маршруты и mobile 390px. Пароль читается из локального файла, не печатается. Артефакты: `test-results/live/verification.json`, `dashboard-desktop.png`, `dashboard-mobile.png`.
+`deploy/verify-live.mjs` проверяет реальный опубликованный домен: TLS, вход администратора через UI, Secure/HttpOnly cookie, существующие проекты, desktop-маршруты, цвета кнопок, геометрию и mobile 390/320px. Пароль читается из локального файла, не печатается. Артефакты: `test-results/live/verification.json`, `dashboard-1440.png`, `dashboard-390.png`, `dashboard-320.png` и скриншоты проектных маршрутов.
 
 Соседние сайты до/после reload: `gutv.tech` 200, `event.gutv.tech` 200, `money.gutv.tech` 307, `admin.cabinpxrn.ru` 401, `pticaplus.tech` 200. Сервис tie-event: healthy, restart count 0 на момент сдачи.
 
 Внешняя email-доставка не подключена. Приглашения передаются ссылками. Реальные материалы агентства публикуются через редактор после их добавления владельцем.
+
+## Визуальное обновление 9 сентября 2026
+
+Коммит приложения: `ba84151`. Релиз исправляет пять замечаний из визуальной проверки. Подробности: `docs/v2/VISUAL_FIXES_2026-09-09.md`.
+
+Перед переключением создан согласованный backup `/opt/tie-event/backups/before-visual-ba84151.sqlite` с правами 0600. Новый образ отдельно проверен с временной базой, без сети и рабочего тома: health, защищённый API, HTML/assets и Sharp.
+
+После запуска: healthy, 0 рестартов; HTTPS 200. Браузерная проверка настоящего входа, кнопок задач/согласований и существующего проекта прошла на 1440/390/320 px. Контрольные суммы всех 17 проверенных бизнес-таблиц совпали до/после; в `entities` сохранились 20 записей. Файл Caddy и ответы соседних сайтов совпадают с указанной выше базой.
+
+Предыдущий рабочий образ для отката: `tie-event:v2-f80f40b`; предыдущая `.env`: `/opt/tie-event/backups/env-before-visual-ba84151`. Откат интерфейса выполняется переключением образа, без восстановления старой базы поверх новых пользовательских записей.
