@@ -18,6 +18,7 @@ import {parseRoute,viewUrl} from './v2/routes.js';
 import './styles.css';
 const applicationDraftKey='tie:application-draft';
 function savedApplication(){try{return JSON.parse(sessionStorage.getItem(applicationDraftKey)||'{}')}catch{return {}}}
+const applicationEntry=new URLSearchParams(location.search).get('application')==='1';
 const incomingSource=Object.fromEntries(['sourceCaseId','sourcePackageId'].map(key=>[key,new URLSearchParams(location.search).get(key)]).filter(([,value])=>value));
 if(Object.keys(incomingSource).length){try{sessionStorage.setItem(applicationDraftKey,JSON.stringify({...savedApplication(),...incomingSource}))}catch{}}
 const arr = value => Array.isArray(value) ? value : [];
@@ -545,7 +546,7 @@ function App() {
   },[]);
   useEffect(() => {
     let alive=true;
-    (async()=>{try{await initClient();let next=await loadState();const invite=new URLSearchParams(location.search).get('invite');if(invite&&navigator.onLine){try{await command({op:'invite.accept',token:invite});const url=new URL(location.href);url.searchParams.delete('invite');history.replaceState(null,'',url);next=await loadState();}catch(error){flash(error.message,'error');}}if(alive){await acceptState(next);if(Object.keys(incomingSource).length)setModal({type:'application'});}}catch{try{const info=await api(`/api/public?agency=${encodeURIComponent(agencySlug())}`);if(alive)setPublicInfo(info);}catch{}if(alive){setMode('public');if(Object.keys(incomingSource).length)setModal({type:'auth',mode:'login',next:'application'});}}})();
+    (async()=>{try{await initClient();let next=await loadState();const invite=new URLSearchParams(location.search).get('invite');if(invite&&navigator.onLine){try{await command({op:'invite.accept',token:invite});const url=new URL(location.href);url.searchParams.delete('invite');history.replaceState(null,'',url);next=await loadState();}catch(error){flash(error.message,'error');}}if(alive){await acceptState(next);if(applicationEntry||Object.keys(incomingSource).length)setModal({type:'application'});}}catch{try{const info=await api(`/api/public?agency=${encodeURIComponent(agencySlug())}`);if(alive)setPublicInfo(info);}catch{}if(alive){setMode('public');if(applicationEntry||Object.keys(incomingSource).length)setModal({type:'auth',mode:'login',next:'application'});}}})();
     const off=subscribe(async()=>{try{const next=await loadState(activeProject.current);if(alive){setState(next);setOffline(await getOfflineStatus(activeProject.current));}}catch(error){if(error.status===401&&alive){setState(null);setMode('public');}else if(error.status===403&&alive){activeProject.current=null;await acceptState(await loadState());}}});
     const timer=setInterval(async()=>{if(!navigator.onLine||document.visibilityState!=='visible')return;try{const next=await loadState(activeProject.current);if(alive){if(!activeProject.current&&!has(next,'projects')&&next.projects?.length===1)await acceptState(next);else setState(next);}}catch{}},15000);
     return()=>{alive=false;off();clearInterval(timer)};
@@ -666,7 +667,7 @@ function App() {
     schemaVersion: entities.find(e=>e.id===JSON.parse(item.after_json || '{}').parent_id)?.version,
     auditId: item.id
   }, projectId);
-  const moduleProps={state,projectId,run:(op,body)=>run({op,...body},body?.projectId===undefined?activeProject.current:body.projectId),refresh:()=>refresh(activeProject.current),navigate};
+  const moduleProps={state,projectId,can:(action,section)=>permitted(state,action,section),run:(op,body)=>run({op,...body},body?.projectId===undefined?activeProject.current:body.projectId),refresh:()=>refresh(activeProject.current),navigate};
   const renderMain = () => {
     if(view==='content')return <AgencyPublishingWorkspace {...moduleProps}/>;
     if(view==='project:site')return <MicrositeWorkspace {...moduleProps}/>;
