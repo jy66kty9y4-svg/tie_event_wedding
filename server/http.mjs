@@ -6,8 +6,10 @@ import { timingSafeEqual } from 'node:crypto';
 import { openDatabase, Fault, assert } from './db.mjs';
 import { can, requireAccess, digest, token, userSession, rateLimit } from './auth.mjs';
 import { bootstrap, authenticate, register, publicInfo, snapshot, execute, upload, download } from './service.mjs';
+import { activeIpBan, clientIp, handleOrbitControl, privateControlHost } from './orbitpanel-control.mjs';
 
 import { calendar, notifications, preferences, previewMeeting, processOutbox } from './v2/calendar/index.mjs';
+import {beginGoogleCalendar,connectAppleCalendar,disconnectExternalCalendar,externalCalendarStatus,finishGoogleCalendar,syncDueExternalCalendars,syncExternalCalendar} from './v2/calendar/external.mjs';
 import { dashboard } from './v2/calendar/readiness.mjs';
 import {context as guestContext, exchange as guestExchange, guestList,guestInvites,seatingSnapshot,legacySeatingPreview,respond as guestRespond} from './v2/guest/index.mjs';
 import { members, scoped } from './v2/common.mjs';
@@ -109,13 +111,9 @@ function requireGuestCsrf(req) {
 }
 
 function requireUser(db, req) {
-  const user = userSession(db, cookies(req)[SESSION_COOKIE]);
+  const user = userSession(db, cookies(req)[SESSION_COOKIE], { clientIp: clientIp(req), userAgent: req.headers['user-agent'] });
   assert(user, 'Войдите в аккаунт', 401);
   return user;
-}
-
-function clientIp(req) {
-  return String(req.socket.remoteAddress || 'local').slice(0, 100);
 }
 
 function addCsrf(req, res) {
@@ -203,6 +201,17 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+      if (url.pathname.startsWith('/api/internal/orbitpanel/')) {
+        if (!privateControlHost(req)) {
+          res.writeHead(404, securityHeaders({ 'Cache-Control': 'no-store' }));
+          return res.end();
+        }
+        const raw = req.method === 'POST' ? (await readRaw(req, 64 * 1024)).toString('utf8') : '';
+        const outcome = handleOrbitControl(db, req, url, raw);
+        return sendJson(res, outcome.status, outcome.body, { 'Cache-Control': 'no-store' });
+      }
+      const blocked = activeIpBan(db, clientIp(req));
+      if (blocked) return sendJson(res, 403, { error: 'Доступ с этого адреса временно ограничен.' });
       addCsrf(req, res);
       if (url.pathname === '/api/health' && req.method === 'GET') return sendJson(res, 200, { ok: true });
       if (url.pathname === '/api/public' && req.method === 'GET') return sendJson(res, 200, publicInfo(db, url.searchParams.get('agency') || 'tie'));
@@ -214,17 +223,17 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
         if (url.pathname === '/api/public/rsvp/exchange' && req.method === 'POST') {
           assert(sameOrigin(req), 'Запрос с другого сайта отклонён', 403);
           const body = await readJson(req); rateLimit(db, `guest-exchange-ip:${clientIp(req)}`, 30); rateLimit(db, `guest-exchange-token:${digest(String(body.token || ''))}`, 8);
-          const result = guestExchange(db, { shareId: body.shareId, token: body.token, ip: clientIp(req) });
+          const result = guestExchange(db, { shareId: body.shareId, token: body.token, ip: clientIp(req), userAgent: req.headers['user-agent'] });
           return sendJson(res, 200, { expiresAt: result.expiresAt, shareId: result.shareId }, { 'Set-Cookie': [cookie(GUEST_SESSION_COOKIE, result.sessionToken, req, { httpOnly: true, maxAge: 86400 }), cookie(GUEST_CSRF_COOKIE, result.csrfToken, req, { maxAge: 86400 })] });
         }
         const guest = cookies(req);
         if (url.pathname === '/api/public/rsvp/context' && req.method === 'GET') {
-          return sendJson(res, 200, guestContext(db, { shareId, sessionToken: guest[GUEST_SESSION_COOKIE], csrfToken: guest[GUEST_CSRF_COOKIE] }));
+          return sendJson(res, 200, guestContext(db, { shareId, sessionToken: guest[GUEST_SESSION_COOKIE], csrfToken: guest[GUEST_CSRF_COOKIE], clientIp: clientIp(req), userAgent: req.headers['user-agent'] }));
         }
         if (url.pathname === '/api/public/rsvp/respond' && req.method === 'POST') {
           requireGuestCsrf(req); rateLimit(db, `guest-respond-ip:${clientIp(req)}`, 60); rateLimit(db, `guest-respond-session:${digest(String(guest[GUEST_SESSION_COOKIE] || ''))}`, 30);
           const body = await readJson(req);
-          return sendJson(res, 200, guestRespond(db, { shareId: body.shareId, sessionToken: guest[GUEST_SESSION_COOKIE], csrfToken: guest[GUEST_CSRF_COOKIE], commandId: body.commandId, inviteVersion: body.inviteVersion, schemaVersion: body.schemaVersion, changes: body.changes }));
+          return sendJson(res, 200, guestRespond(db, { shareId: body.shareId, sessionToken: guest[GUEST_SESSION_COOKIE], csrfToken: guest[GUEST_CSRF_COOKIE], commandId: body.commandId, inviteVersion: body.inviteVersion, schemaVersion: body.schemaVersion, changes: body.changes, clientIp: clientIp(req), userAgent: req.headers['user-agent'] }));
         }
         throw new Fault('API-метод не найден', 404);
       }
@@ -240,6 +249,11 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
         const id=url.pathname.slice('/api/public/assets/'.length); assert(id&&!id.includes('/'),'Изображение не найдено',404);
         return sendAsset(res,getPublicAsset(db,publicAgency(db,url).id,id));
       }
+      if(url.pathname==='/api/v2/calendar/google/callback'&&req.method==='GET') {
+        const result=await finishGoogleCalendar(db,url.searchParams.get('state'),url.searchParams.get('code'));
+        res.writeHead(303,securityHeaders({'Location':`/app/projects/${encodeURIComponent(result.projectId)}/calendar?calendarConnected=google`,'Cache-Control':'no-store'}));
+        return res.end();
+      }
 
       if (url.pathname.startsWith('/api/')) {
         if (req.method === 'POST') {
@@ -248,20 +262,24 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
         }
         if (url.pathname === '/api/setup' && req.method === 'POST') {
           assert(!db.prepare('SELECT id FROM agencies LIMIT 1').get(), 'Настройка уже выполнена', 409);
-          const result = bootstrap(db, await readJson(req));
+          const result = bootstrap(db, await readJson(req), { clientIp: clientIp(req), userAgent: req.headers['user-agent'] });
           return sendJson(res, 201, { user: result.user }, { 'Set-Cookie': [cookie(SESSION_COOKIE, result.token, req, { httpOnly: true }), cookie(CSRF_COOKIE, cookies(req)[CSRF_COOKIE] || token(), req)] });
         }
         if (url.pathname === '/api/register' && req.method === 'POST') {
-          const result = register(db, await readJson(req), clientIp(req));
+          const result = register(db, await readJson(req), clientIp(req) || 'local', { clientIp: clientIp(req), userAgent: req.headers['user-agent'] });
           return sendJson(res, 201, { user: result.user }, { 'Set-Cookie': [cookie(SESSION_COOKIE, result.token, req, { httpOnly: true }), cookie(CSRF_COOKIE, cookies(req)[CSRF_COOKIE] || token(), req)] });
         }
         if (url.pathname === '/api/login' && req.method === 'POST') {
-          const result = authenticate(db, await readJson(req), clientIp(req));
+          const result = authenticate(db, await readJson(req), clientIp(req) || 'local', { clientIp: clientIp(req), userAgent: req.headers['user-agent'] });
           return sendJson(res, 200, { user: result.user }, { 'Set-Cookie': [cookie(SESSION_COOKIE, result.token, req, { httpOnly: true }), cookie(CSRF_COOKIE, cookies(req)[CSRF_COOKIE] || token(), req)] });
         }
         if (url.pathname === '/api/logout' && req.method === 'POST') {
           const raw = cookies(req)[SESSION_COOKIE];
-          if (raw) db.prepare('DELETE FROM sessions WHERE digest=?').run(digest(raw));
+          if (raw) {
+            const sessionDigest = digest(raw), revokedAt = new Date().toISOString();
+            db.prepare('UPDATE orbit_session_registry SET revoked_at=COALESCE(revoked_at,?) WHERE digest=?').run(revokedAt,sessionDigest);
+            db.prepare('DELETE FROM sessions WHERE digest=?').run(sessionDigest);
+          }
           return sendJson(res, 200, { ok: true }, { 'Set-Cookie': cookie(SESSION_COOKIE, '', req, { httpOnly: true, clear: true }) });
         }
         if(url.pathname.startsWith('/api/v2/')) {
@@ -273,6 +291,7 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
             if(path==='/api/v2/publishing/home') return sendJson(res,200,getPublicHome(db,u));
             if(path.startsWith('/api/v2/publishing/assets/')) { const id=path.slice('/api/v2/publishing/assets/'.length); assert(id&&!id.includes('/'),'Изображение не найдено',404); return sendAsset(res,getPrivateAsset(db,u,id),{'Cache-Control':'no-store, private'}); }
             if(path==='/api/v2/workflow/tasks') return sendJson(res,200,workflow.listTasks(db,u,q));
+            if(path==='/api/v2/workflow/task-suggestions') return sendJson(res,200,workflow.suggestTasks(db,u,q));
             if(path.startsWith('/api/v2/workflow/tasks/')) return sendJson(res,200,workflow.getTask(db,u,{...q,id:path.slice('/api/v2/workflow/tasks/'.length)}));
             if(path==='/api/v2/workflow/approvals') return sendJson(res,200,workflow.listApprovals(db,u,q));
             if(path.startsWith('/api/v2/workflow/approvals/')) return sendJson(res,200,workflow.getApproval(db,u,{...q,id:path.slice('/api/v2/workflow/approvals/'.length)}));
@@ -285,6 +304,7 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
             if(path==='/api/v2/legacy-preview')return sendJson(res,200,legacySeatingPreview(db,u,q.projectId,q.guestTableId,q.columnId));
             if(path==='/api/v2/dashboard')return sendJson(res,200,dashboard(db,u,q));
             if(path==='/api/v2/calendar/events')return sendJson(res,200,calendar(db,u,q));
+            if(path==='/api/v2/calendar/external')return sendJson(res,200,externalCalendarStatus(db,u,q.projectId));
             if(path==='/api/v2/notifications')return sendJson(res,200,notifications(db,u,q));
             if(path==='/api/v2/notification-preferences')return sendJson(res,200,preferences(db,u));
             if(path==='/api/v2/members')return sendJson(res,200,{items:members(db,u,q.projectId)});
@@ -294,6 +314,10 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
             const input=await publicationAssetInput(req); return sendJson(res,201,await createPublicAsset(db,u,input));
           }
           if(req.method==='POST'&&path==='/api/v2/calendar/meeting-preview')return sendJson(res,200,previewMeeting(db,u,await readJson(req)));
+          if(req.method==='POST'&&path==='/api/v2/calendar/google/start'){const body=await readJson(req);return sendJson(res,200,beginGoogleCalendar(db,u,body.projectId));}
+          if(req.method==='POST'&&path==='/api/v2/calendar/apple/connect')return sendJson(res,200,await connectAppleCalendar(db,u,await readJson(req)));
+          if(req.method==='POST'&&path==='/api/v2/calendar/external/sync')return sendJson(res,200,await syncExternalCalendar(db,u,await readJson(req)));
+          if(req.method==='POST'&&path==='/api/v2/calendar/external/disconnect')return sendJson(res,200,disconnectExternalCalendar(db,u,await readJson(req)));
         }
         if (url.pathname === '/api/state' && req.method === 'GET') return sendJson(res, 200, snapshot(db, requireUser(db, req), url.searchParams.get('project') || null));
         if (url.pathname === '/api/offline' && req.method === 'GET') {
@@ -344,7 +368,8 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
   });
   server.db = db;
   const outboxTimer=setInterval(()=>{try{processOutbox(db)}catch{/* Leave durable work queued for retry; no private payload logging. */}},30000);outboxTimer.unref();
-  server.on('close', () => { clearInterval(outboxTimer); try { db.close(); } catch { /* already closed */ } });
+  const calendarTimer=setInterval(()=>{syncDueExternalCalendars(db).catch(()=>{})},5*60000);calendarTimer.unref();
+  server.on('close', () => { clearInterval(outboxTimer);clearInterval(calendarTimer); try { db.close(); } catch { /* already closed */ } });
   return server;
 }
 

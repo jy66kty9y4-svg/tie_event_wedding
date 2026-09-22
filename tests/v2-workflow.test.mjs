@@ -4,7 +4,7 @@ import { openDatabase, entity, insert, uid } from '../server/db.mjs';
 import { defaults, grant } from '../server/auth.mjs';
 import { bootstrap } from '../server/service.mjs';
 import { executeModule } from '../server/v2/common.mjs';
-import { getApproval, getTask, guardProjectDateEdit, listTasks, migrate, operations, previewBudgetApplication, previewReschedule } from '../server/v2/workflow/index.mjs';
+import { getApproval, getTask, guardProjectDateEdit, listTasks, migrate, operations, previewBudgetApplication, previewReschedule, suggestTasks } from '../server/v2/workflow/index.mjs';
 
 let sequence=0;
 const command = (db,user,op,body={}) => executeModule(db,user,{id:`workflow_cmd_${++sequence}_safe`,op,...body},operations);
@@ -37,6 +37,32 @@ test('task dependencies, versions and relative dates are enforced atomically',()
   assert.equal(second.data.completedBy,admin.id);
   fails(()=>command(db,admin,'task.edit',{projectId:project.id,entityId:first.id,version:first.version,data:{title:'Старая правка'}}),409);
   fails(()=>command(db,admin,'task.edit',{projectId:project.id,entityId:done.id,version:done.version,data:{dependencyIds:[second.id]}}),409);
+});
+
+test('organizer focus is staff-only and controls agency task list membership',()=>{
+  const {db,admin,project}=fixture(),organizer=user(db,admin,'organizer@example.test','Организатор'),couple=user(db,admin,'couple@example.test','Пара');
+  grant(db,organizer,role(db,organizer,'organizer'));give(db,couple,'couple',project);
+  const earlier=command(db,admin,'task.create',{projectId:project.id,data:{title:'Ранняя обычная',dueMode:'fixed',fixedDate:'2027-04-01'}}),later=command(db,admin,'task.create',{projectId:project.id,data:{title:'Главная для организатора',dueMode:'fixed',fixedDate:'2027-05-01'}});
+  fails(()=>command(db,couple,'task.setOrganizerFocus',{projectId:project.id,entityId:later.id,version:later.version,focused:true}),403);
+  fails(()=>command(db,couple,'task.edit',{projectId:project.id,entityId:later.id,version:later.version,data:{organizerFocus:true}}),409);
+  const saved=command(db,organizer,'task.setOrganizerFocus',{projectId:project.id,entityId:later.id,version:later.version,focused:true});
+  assert.equal(saved.data.organizerFocus,true);assert.equal(saved.data.organizerFocusedBy,organizer.id);
+  const projectTasks=listTasks(db,organizer,{projectId:project.id,status:'active'});assert.equal(projectTasks.total,2);assert.equal(projectTasks.items.every(item=>item.canSetOrganizerFocus),true);
+  const coupleTasks=listTasks(db,couple,{projectId:project.id,status:'active'});assert.equal(coupleTasks.items.every(item=>item.canSetOrganizerFocus===false),true);
+  assert.deepEqual(listTasks(db,organizer,{status:'active'}).items.map(item=>item.id),[later.id]);
+  assert.equal(listTasks(db,organizer,{status:'active'}).items.some(item=>item.id===earlier.id),false);
+  const done=command(db,organizer,'task.setStatus',{projectId:project.id,entityId:later.id,version:saved.version,status:'done'});assert.equal(done.data.organizerFocus,false);assert.equal(listTasks(db,organizer,{status:'active',focus:true}).total,0);
+});
+
+test('task suggestions reuse readable history without exposing other weddings',()=>{
+  const {db,admin,project}=fixture(),past=insert(db,admin,'project',{name:'Прошлая свадьба',date:'2027-01-20',timeZone:'Europe/Moscow'}),second=insert(db,admin,'project',{name:'Другая свадьба',date:'2027-03-20',timeZone:'Europe/Moscow'});
+  insert(db,admin,'task',{title:'Согласовать холодные фонтаны',description:'Проверить площадку, технику безопасности и время запуска',phaseKey:'day',status:'done',dueMode:'relative',fixedDate:'',offsetDays:-30,dueDate:'2026-12-21',priority:'normal',participantUserIds:[],dependencyIds:[]},past.id);
+  insert(db,admin,'task',{title:'Согласовать холодные фонтаны',description:'Проверить технические ограничения площадки',phaseKey:'day',status:'done',dueMode:'relative',fixedDate:'',offsetDays:-28,dueDate:'2027-02-20',priority:'normal',participantUserIds:[],dependencyIds:[]},second.id);
+  const initial=suggestTasks(db,admin,{projectId:project.id,query:'',limit:12});assert(initial.items.length>0);assert(initial.items.some(item=>item.source==='preset'&&item.title==='Поиск площадки'));
+  const result=suggestTasks(db,admin,{projectId:project.id,query:'холодные фонтаны'});
+  assert.equal(result.items.length,1);assert.equal(result.items[0].title,'Согласовать холодные фонтаны');assert.equal(result.items[0].usageCount,2);assert([-30,-28].includes(result.items[0].offsetDays));assert.equal(JSON.stringify(result).includes('Прошлая свадьба'),false);
+  const couple=user(db,admin,'suggestions-couple@example.test','Пара');give(db,couple,'couple',project);
+  assert.deepEqual(suggestTasks(db,couple,{projectId:project.id,query:'фонтаны'}).items,[]);
 });
 
 test('task delete reports dependents and reschedule rejects stale previews',()=>{
@@ -168,9 +194,9 @@ test('time-zone reschedule previews unchanged finance and dirties publication at
   assert.equal(result.project.data.timeZone,'Europe/Berlin');assert.equal(entity(db,meeting.id).data.timeZone,'Europe/Berlin');assert.equal(entity(db,meeting.id).data.startAt,'2027-06-13T08:30:00.000Z');assert.equal(entity(db,fixed.id).version,fixed.version);assert.equal(entity(db,site.id).data.dirty,true);
 });
 
-test('agency task pagination retains tasks beyond the first project page',()=>{
+test('focused agency task pagination retains tasks beyond the first project page',()=>{
  const {db,admin,project}=fixture();
- for(let i=0;i<301;i++)insert(db,admin,'task',{title:`Задача ${i}`,status:'todo',dueDate:'2027-06-01',order:i},project.id);
+ for(let i=0;i<301;i++)insert(db,admin,'task',{title:`Задача ${i}`,status:'todo',dueDate:'2027-06-01',order:i,organizerFocus:true},project.id);
  const first=listTasks(db,admin,{limit:200});const last=listTasks(db,admin,{offset:first.nextOffset,limit:200});
  assert.equal(first.total,301);assert.equal(first.items.length,200);assert.equal(last.items.length,101);assert.equal(last.nextOffset,null);assert.equal(new Set([...first.items,...last.items].map(row=>row.id)).size,301);
 });

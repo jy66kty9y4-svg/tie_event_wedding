@@ -13,7 +13,7 @@ try{
  const context=await browser.newContext({viewport:{width:1440,height:900}}),page=await context.newPage();
  page.on('pageerror',error=>report.errors.push(error.message));
  const failures=[];page.on('response',response=>{if(response.status()>=400&&!response.url().endsWith('/api/state'))failures.push({url:response.url(),status:response.status()})});
- const response=await page.goto(origin,{waitUntil:'networkidle'});assert.equal(response.status(),200);report.tls=await response.securityDetails();assert(report.tls?.issuer);
+ const response=await page.goto(origin+'/app',{waitUntil:'networkidle'});assert.equal(response.status(),200);report.tls=await response.securityDetails();assert(report.tls?.issuer);
  await page.getByRole('button',{name:'Войти',exact:true}).click();
  const dialog=page.getByRole('dialog');await dialog.getByLabel('Почта').fill(credentials.email);await dialog.getByLabel('Пароль').fill(credentials.password);await dialog.getByRole('button',{name:'Войти',exact:true}).click();
  await page.locator('.app-shell').waitFor();await page.getByRole('heading',{name:/Здравствуйте/}).waitFor();

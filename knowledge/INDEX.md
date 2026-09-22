@@ -2,8 +2,8 @@
 type: index
 tags:
   - knowledge/index
-last_verified: 2026-09-08
-updated: 2026-09-08
+last_verified: 2026-09-13
+updated: 2026-09-13
 ---
 
 # Project knowledge index
@@ -28,6 +28,12 @@ Use this index as the entry point. Read only the relevant map, component card, a
 - [[maps/architecture|Architecture map]] — component links.
 - [[maps/active-work|Active work]] — live task links.
 - [[DECISIONS]] — accepted cross-cutting decisions.
+- [[tasks/wedding-parity-release|Visual release with functionality preserved, 2026-09-09]] — deployed version, parity fixes and validation.
+- [[tasks/seating-editor-0911|Seating editor, 2026-09-11]] — nine browser comments, editable zone contours and deployment.
+
+- [[tasks/populated-workspace-0911|Filled live workspace and readable seating labels, 2026-09-11]] — role credentials, content manifest and production verification.
+- [[tasks/ux-regression-0913|UX fixes and browser acceptance, 2026-09-13]] — local A01–A16 changes, temporary fixtures and current browser evidence. See `docs/v2/UX_FIXES_2026-09-13.md` for the consolidated outcome.
+- [[tasks/ux-release-0913|UX release, 2026-09-13]] — R3 deployed after explicit user authorization, isolated image checks, SQLite backups and matching business-table fingerprints. See the consolidated UX report for live browser acceptance.
 
 ## Freshness
 

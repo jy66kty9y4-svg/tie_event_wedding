@@ -21,8 +21,10 @@ ENV NODE_ENV=production HOST=0.0.0.0 TIE_ALLOW_REMOTE=1 PORT=4173 TIE_DB_PATH=/d
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY package.json ./
 COPY server ./server
-COPY src/shared.js src/task-blueprints.js ./src/
+COPY src/shared.js src/task-blueprints.js src/guest-blueprint.js src/vendor-categories.js ./src/
+COPY src/v2/guest/geometry.mjs ./src/v2/guest/geometry.mjs
 COPY --from=build /app/dist ./dist
+RUN node --input-type=module -e "await import('./server/http.mjs')"
 RUN mkdir /data && chown node:node /data
 USER node
 EXPOSE 4173

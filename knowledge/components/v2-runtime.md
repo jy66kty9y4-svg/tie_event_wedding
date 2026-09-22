@@ -1,7 +1,7 @@
 ---
 type: component
 tags: [v2, runtime, guest, publishing, workflow, calendar]
-last_verified: 2026-09-08
+last_verified: 2026-09-13
 ---
 
 # Runtime V2
@@ -14,6 +14,8 @@ Navigation: `docs/v2/INTEGRATION-API.md`, `docs/v2/VALIDATION-NOTES.md` and the 
 - Private app entry and anonymous wedding RSVP entry are distinct Vite bundles. Guest context uses only invitation membership and active publication display settings; no private IndexedDB client or staff-state request.
 - Service worker v5 caches static app chunks and app shell for V1 offline workflows, never API or `/w/` pages. Cold restart regression matters when changing asset exclusions.
 - Seating table and canvas edit the same mapped rows. Geometry uses plan proportions, bounded rotations and finite zone coordinates; printable output excludes contacts, dietary restrictions and finance.
+- Seating update verified 2026-09-11: zones support rect/oval/custom shapes, validated normalized contours and inline names. Draft point editing and numeric previews are client state; server versions and validation still govern persistence. See `tasks/seating-editor-0911.md` for current guest UI behavior.
+- UX revision 2026-09-13, deployed as `tie-event:ux-20260913-r3`: addressed guest/meeting routes, calendar-to-task date handoff, Monday-aligned periods, compact task fields and readable states; guest registry search/mobile cells, per-row permissions, recipient-labelled invitations and guest/edit seating modes; project-zone close-time conversion and guarded publication drafts/actions. Navigation restores scroll after asynchronous content loads. R3 distinguishes missing allowed guest values from denied fields through `can('read', table.id, row.id, field)`. Acceptance uses 101 Node tests, disposable browser fixtures and deployed CUA verification. SQLite backup and 21-table fingerprints passed. See `docs/v2/UX_FIXES_2026-09-13.md`.
 - Notifications are durable/transactional and revalidated at delivery. No external email provider is configured.
 - Local clean/demo databases remain separate. Server entry is `scripts/start.sh`; use `TIE_DB_PATH`/`PORT` for isolated QA. Dependencies belong to this project with `pnpm-lock.yaml`.
 

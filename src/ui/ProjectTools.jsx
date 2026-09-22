@@ -16,16 +16,18 @@ export function SectionEditor({section,onClose,onSave}){
 
 export function TableEditor({table,sections=[],rowCount=0,onClose,onSave}){
  const [data,set]=useState({name:'',key:`table_${crypto.randomUUID().slice(0,8)}`,sectionId:sections[0]?.id||'',order:0,archived:false,offline:false,columns:[{id:'title',name:'Название',type:'text'}],...table?.data});
- const [error,setError]=useState('');const [confirmed,confirm]=useState(false);
+ const [error,setError]=useState('');const [confirmed,confirm]=useState(false);const [dragging,setDragging]=useState(null);
  const change=(key,value)=>set({...data,[key]:value});
  const column=(index,key,value)=>change('columns',data.columns.map((c,i)=>i===index?{...c,[key]:value}:c));
  const move=(index,step)=>{const next=[...data.columns];if(!next[index+step])return;[next[index],next[index+step]]=[next[index+step],next[index]];change('columns',next)};
+ const drop=target=>{if(dragging===null||dragging===target){setDragging(null);return}const next=[...data.columns],[item]=next.splice(dragging,1);next.splice(target,0,item);setDragging(null);change('columns',next)};
  const affected=(table?.data.columns||[]).filter(c=>!data.columns.some(n=>n.id===c.id&&n.type===c.type));
  return <Modal wide title="Таблица и колонки" onClose={onClose}><form className="form-stack" onSubmit={async e=>{e.preventDefault();try{await onSave({...data,confirmStructure:confirmed});onClose()}catch(e){setError(e.message)}}}>
  <div className="form-columns"><FormField label="Название"><input required value={data.name} onChange={e=>change('name',e.target.value)}/></FormField><FormField label="Раздел"><select required value={data.sectionId} onChange={e=>change('sectionId',e.target.value)}><option value="">Выберите раздел</option>{sections.map(s=><option key={s.id} value={s.id}>{s.data.name}</option>)}</select></FormField></div>
  <FormField label="Порядок таблицы"><input type="number" value={data.order} onChange={e=>change('order',Number(e.target.value))}/></FormField>
  <div className="button-group"><label className="check-field"><input type="checkbox" checked={data.offline} onChange={e=>change('offline',e.target.checked)}/>Работа со строками без сети</label><label className="check-field"><input type="checkbox" checked={data.archived} onChange={e=>change('archived',e.target.checked)}/>В архиве</label></div>
- <fieldset className="column-editor"><legend>Колонки</legend>{data.columns.map((c,i)=><div key={c.id}>
+ <fieldset className="column-editor"><legend>Колонки</legend><p className="quiet-copy">Перетащите колонки за маркер ⋮⋮ или используйте стрелки.</p>{data.columns.map((c,i)=><div key={c.id} className={`column-row ${dragging===i?'is-dragging':''}`} onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect='move'}} onDrop={e=>{e.preventDefault();drop(i)}}>
+ <span className="column-drag-handle" draggable role="button" tabIndex="0" title="Перетащить колонку" aria-label={`Перетащить колонку ${i+1}`} onDragStart={e=>{setDragging(i);e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(i))}} onDragEnd={()=>setDragging(null)}>⋮⋮</span>
  <input aria-label={`Название колонки ${i+1}`} required value={c.name} onChange={e=>column(i,'name',e.target.value)}/><select aria-label={`Тип колонки ${i+1}`} value={c.type} onChange={e=>{column(i,'type',e.target.value);if(e.target.value==='select')change('columns',data.columns.map((x,n)=>n===i?{...x,type:'select',options:x.options||[]}:x))}}>{Object.entries({text:'Текст',number:'Число',money:'Деньги',date:'Дата',time:'Время',boolean:'Флажок',select:'Варианты',url:'Ссылка',file:'Файл',relation:'Связь',formula:'Вычисление'}).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select>
  {c.type==='select'&&<input aria-label="Варианты через запятую" value={(c.options||[]).join(', ')} onChange={e=>column(i,'options',e.target.value.split(',').map(s=>s.trim()).filter(Boolean))}/>}
  {c.type==='formula'&&<input aria-label="Формула" placeholder="{amount} * {count}" value={c.formula||''} onChange={e=>column(i,'formula',e.target.value)}/>}

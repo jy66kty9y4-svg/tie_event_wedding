@@ -24,6 +24,27 @@ function registered(db,email,name='Участник') {
   return register(db,{slug:'tie',email,name,password:'strong-pass-2'}).user;
 }
 
+test('new weddings start with the shared normal-priority task plan',()=>{
+  const {db,admin}=fixture(),wedding=project(db,admin),tasks=entities(db,admin.agency_id,wedding.id,'task'),invites=tasks.find(row=>row.data.sourceTemplateKey==='invites');
+  const guests=rowTable(db,admin,wedding.id,'guests'),vendorCategories=entities(db,admin.agency_id,null,'vendorCategory');
+  assert.equal(wedding.data.location,'');
+  assert.deepEqual(guests.data.columns.slice(0,8).map(column=>column.name),['ФИО','Фото','Чей гость','Кем приходится','Пищевые аллергии','Алкоголь','Контакт','Приглашение']);
+  assert.equal(guests.data.semanticMap.allergies,'allergies');assert(vendorCategories.some(category=>category.data.name==='Фотограф'));assert(vendorCategories.some(category=>category.data.name==='Видеограф'));
+  assert.equal(tasks.length,25);assert(tasks.every(row=>row.data.priority==='normal'));assert(invites);assert.equal(invites.data.title,'Поиск пригласительных');assert.equal(invites.data.offsetDays,-180);assert.equal(invites.data.dueDate,'2026-12-14');
+  for(const title of ['Поиск площадки','Поиск ведущего','Поиск фотографа','Поиск видеографа','Поиск свадебного торта','Подобрать техническое оборудование','Поиск декоратора','Поиск стилиста','Подготовить раздаточные материалы','Подготовить welcome-зону']) assert(tasks.some(row=>row.data.title===title),title);
+});
+
+test('the couple never receives or changes the organizer budget limit',()=>{
+  const {db,admin}=fixture(),p=project(db,admin),couple=registered(db,'hidden-limit@example.test','Пара');
+  const coupleRole=db.prepare("SELECT id FROM roles WHERE agency_id=? AND key='couple'").get(admin.agency_id);assign(db,admin,couple,[{roleId:coupleRole.id,projectId:p.id,restrictions:{}}]);
+  const organizerState=snapshot(db,admin,p.id),coupleState=snapshot(db,couple,p.id);
+  assert.equal(organizerState.project.data.limit,5000000);assert.equal(organizerState.canViewBudgetLimit,true);assert.equal(organizerState.canManageWeddingDetails,true);
+  assert.equal(Object.hasOwn(coupleState.project.data,'limit'),false);assert.equal(coupleState.canViewBudgetLimit,false);assert.equal(coupleState.canManageWeddingDetails,false);
+  fails(()=>command(db,couple,'entity.edit',{projectId:p.id,entityId:p.id,version:p.version,data:{limit:100}}),403);
+  const edited=command(db,couple,'entity.edit',{projectId:p.id,entityId:p.id,version:p.version,data:{notes:'Заметка пары'}});
+  assert.equal(Object.hasOwn(edited.data,'limit'),false);assert.equal(Object.hasOwn(snapshot(db,couple,p.id),'history'),false);
+});
+
 function role(db,admin,name,permissions) {
   const saved=command(db,admin,'role.save',{name,permissions});
   return db.prepare('SELECT * FROM roles WHERE id=?').get(saved.id);
@@ -202,7 +223,8 @@ test('offline selections are explicit, templates clone independently, files stay
   assert.notEqual(entity(db,template.id).data.tables.find(item=>item.key==='timing').name,firstEdited.data.name);
   const timingRow=addRow(db,admin,first.id,firstEdited,{time:'12:00',title:'Сбор гостей'});
   const selection=command(db,admin,'entity.create',{projectId:first.id,kind:'selection',data:{title:'Ведущий',price:70000,selected:true,terms:'Ведёт вечер',dueDate:'2027-07-01'}});
-  const file=upload(db,admin,first.id,{name:'план.txt',mime:'text/plain',content:Buffer.from('plan').toString('base64')});
+  const file=upload(db,admin,first.id,{name:'план.txt',mime:'text/plain',documentStatus:'pending_signature',content:Buffer.from('plan').toString('base64')});
+  assert.equal(file.data.documentStatus,'pending_signature');
   const offline=snapshot(db,admin,first.id,true);
   for(const id of [firstEdited.id,timingRow.id,selection.id,file.id]) assert(offline.entities.some(item=>item.id===id));
   assert.equal(Object.hasOwn(offline.entities.find(item=>item.id===file.id).data,'content'),false);
@@ -299,6 +321,36 @@ test('finance corrections, deletion and custodian options preserve exact balance
   command(db,admin,'movement.save',{data:{type:'expense',amount:2345,date:'2027-01-02',description:'Расход',source:'direct'}});
   const agencyFinance=snapshot(db,admin).financials;
   assert.equal(agencyFinance.income,12345); assert.equal(agencyFinance.expense,2345); assert.equal(agencyFinance.own,10000);
+});
+
+test('agency commission is organizer-only and rolls up into wedding cash cards',()=>{
+  const {db,admin}=fixture(),p=project(db,admin);
+  const selection=command(db,admin,'entity.create',{projectId:p.id,kind:'selection',data:{title:'Фотограф Иван',price:100000,agencyCommission:12000,selected:true,terms:'Полный день',dueDate:'2027-06-01'}});
+  const honorarium=command(db,admin,'entity.create',{projectId:p.id,kind:'obligation',data:{title:'Гонорар агентства',priceKind:'amount',agreed:50000,planned:null,agencyCommission:null,dueDate:'2027-06-12',fee:true}});
+  const organizerState=snapshot(db,admin,p.id),linked=organizerState.entities.find(row=>row.id===selection.data.obligationId);
+  assert.equal(organizerState.canViewAgencyCommission,true);assert.equal(selection.data.agencyCommission,12000);assert.equal(linked.data.agencyCommission,12000);assert.equal(honorarium.data.fee,true);
+  const couple=registered(db,'commission-couple@example.test','Пара'),coupleRole=db.prepare("SELECT id FROM roles WHERE agency_id=? AND key='couple'").get(admin.agency_id);assign(db,admin,couple,[{roleId:coupleRole.id,projectId:p.id,restrictions:{}}]);
+  const coupleState=snapshot(db,couple,p.id),coupleSelection=coupleState.entities.find(row=>row.id===selection.id),coupleObligation=coupleState.entities.find(row=>row.id===selection.data.obligationId);
+  assert.equal(coupleState.canViewAgencyCommission,false);assert.equal(Object.hasOwn(coupleSelection.data,'agencyCommission'),false);assert.equal(Object.hasOwn(coupleObligation.data,'agencyCommission'),false);
+  fails(()=>command(db,couple,'entity.edit',{projectId:p.id,entityId:selection.id,version:selection.version,data:{agencyCommission:99999}}),403);
+  fails(()=>command(db,couple,'entity.edit',{projectId:p.id,entityId:selection.id,version:selection.version,data:{title:'Фотограф Иван · обновлено'}}),403);assert.equal(Object.hasOwn(snapshot(db,couple,p.id),'history'),false);
+  const cash=snapshot(db,admin).agencyRevenue,card=cash.projects.find(item=>item.projectId===p.id);
+  assert.equal(card.commissionExpected,12000);assert.equal(card.feeExpected,50000);assert.equal(card.totalExpected,62000);assert.equal(card.items.find(item=>item.type==='commission').counterparty,'Фотограф Иван');assert.equal(cash.totalExpected,62000);
+});
+
+test('wedding vendor proposals keep reusable categories and expose final choices without leaking the agency catalog',()=>{
+  const {db,admin}=fixture(),p=project(db,admin);
+  const category=command(db,admin,'entity.create',{kind:'vendorCategory',data:{name:'Фото',archived:false}});
+  const vendor=command(db,admin,'entity.create',{kind:'vendor',data:{name:'Фотограф Анна',categoryId:category.id,price:90000,services:'Полный день'}});
+  const proposal=command(db,admin,'entity.create',{projectId:p.id,kind:'selection',data:{title:'Фотограф Анна',vendorId:vendor.id,price:90000,selected:true,services:'Полный день'}});
+  assert.equal(proposal.data.categoryId,category.id);assert.equal(proposal.data.categoryName,'Фото');
+  const organizerState=snapshot(db,admin,p.id);
+  assert(organizerState.catalog.some(item=>item.id===category.id));assert(organizerState.catalog.some(item=>item.id===vendor.id));
+  const couple=registered(db,'vendor-choice-couple@example.test','Пара'),coupleRole=db.prepare("SELECT id FROM roles WHERE agency_id=? AND key='couple'").get(admin.agency_id);assign(db,admin,couple,[{roleId:coupleRole.id,projectId:p.id,restrictions:{}}]);
+  const coupleState=snapshot(db,couple,p.id),visible=coupleState.entities.find(item=>item.id===proposal.id);
+  assert.deepEqual(coupleState.catalog,[]);assert.equal(visible.data.categoryName,'Фото');assert.equal(visible.data.selected,true);
+  fails(()=>command(db,couple,'entity.edit',{projectId:p.id,entityId:proposal.id,version:proposal.version,data:{terms:'Новые условия'}}),403);
+  const unselected=command(db,couple,'entity.edit',{projectId:p.id,entityId:proposal.id,version:proposal.version,data:{selected:false}});assert.equal(unselected.data.selected,false);
 });
 
 test('selected vendor deletion and restoration keep its estimate obligation consistent',()=>{

@@ -24,7 +24,7 @@ export function FormField({ label, hint, children }) {
 
 export function ConfirmDialog({ title = 'Подтвердите действие', children, confirm = 'Подтвердить', danger = false, onConfirm, onClose }) {
   const [error,setError]=useState(''),[busy,setBusy]=useState(false);
-  return <Modal title={title} onClose={onClose}><div className="dialog-body">{children}{error&&<p className="form-error">{error}</p>}<div className="dialog-actions"><button className="button quiet" onClick={onClose}>Отмена</button><button disabled={busy} className={`button ${danger ? 'danger' : ''}`} onClick={async()=>{setBusy(true);try{await onConfirm()}catch(e){setError(e.message)}finally{setBusy(false)}}}>{busy?'Сохраняем…':confirm}</button></div></div></Modal>;
+  return <Modal title={title} onClose={onClose}><div className="dialog-body">{children}{error&&<p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button className="button quiet" onClick={onClose}>Отмена</button><button disabled={busy} className={`button ${danger ? 'danger' : ''}`} onClick={async()=>{setBusy(true);try{await onConfirm()}catch(e){setError(e.message)}finally{setBusy(false)}}}>{busy?'Сохраняем…':confirm}</button></div></div></Modal>;
 }
 
 export function SafeForm({onSubmit,children,...props}){

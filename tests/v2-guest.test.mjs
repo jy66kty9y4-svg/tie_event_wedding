@@ -4,6 +4,7 @@ import { openDatabase, entity, insert } from '../server/db.mjs';
 import { bootstrap, execute, register } from '../server/service.mjs';
 import { entities } from '../server/db.mjs';
 import { configureGuestHooks, context, exchange, execute as executeGuest, guestInvites, guestList, migrate, redactGuestCommandResult, respond, seatingSnapshot, validateGuestRowMutation, validateGuestSchemaMutation } from '../server/v2/guest/index.mjs';
+import { clampPosition, rotatedExtents, seatPositions, tableOutline } from '../src/v2/guest/geometry.mjs';
 
 let n=0;
 const id=()=>`guestcmd_${++n}`;
@@ -74,7 +75,7 @@ test('specialized organizer RSVP clears a seat, and capacity cannot shrink under
   const plan=v2(db,user,'seatingPlan.save',{projectId:project.id,data:{name:'Зал',widthM:10,heightM:6,guestTableId:table.id}});
   const seat=v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'У окна',shape:'rect',xM:1,yM:1,widthM:2,heightM:1,capacity:2}});
   const seated=v2(db,user,'seating.assign',{projectId:project.id,guestTableId:table.id,schemaVersion:table.version,guestRowId:row.id,rowVersion:row.version,tableId:seat.id,tableVersion:seat.version,seatIndex:1,confirmNonConfirmed:true});
-  failure(()=>v2(db,user,'seatingTable.edit',{projectId:project.id,entityId:seat.id,version:seat.version,guestTableId:table.id,data:{...seat.data,capacity:0}}),400);
+  failure(()=>v2(db,user,'seatingTable.edit',{projectId:project.id,entityId:seat.id,version:seat.version,guestTableId:table.id,data:{...seat.data,capacity:0}}),409);
   const declined=v2(db,user,'guest.rsvp.set',{projectId:project.id,guestTableId:table.id,schemaVersion:table.version,guestRowId:row.id,rowVersion:seated.version,data:{values:{rsvp:'declined'}}});
   assert.equal(declined.data.status,'Отказ'); assert.equal(declined.data.seat_table,'');
 });
@@ -131,10 +132,10 @@ test('invite authorization checks every mapped public field before idempotent re
   const viewer=register(db,{slug:'guest-test',email:'scoped@example.test',name:'Ограниченный',password:'strong-pass-3'}).user;
   const role=v1(db,user,'role.save',{name:'Ограниченный приглашатель',permissions:['read','manageGuestInvites']});
   const grant=(fields)=>{const current=db.prepare('SELECT version FROM users WHERE id=?').get(viewer.id);return v1(db,user,'grants.save',{userId:viewer.id,version:current.version,disabled:false,grants:[{roleId:role.id,projectId:project.id,restrictions:{sections:[table.id],rows:[row.id],fields}}]});};
-  grant(['name','status','meal','contact']);
+  grant(['name','status','meal','allergies','contact']);
   const command={id:'invite_scope_replay',op:'guestInvite.create',projectId:project.id,guestTableId:table.id,schemaVersion:table.version,guestRowIds:[row.id],expiresAt:new Date(Date.now()+86400000).toISOString()};
   const invitation=executeGuest(db,viewer,command); assert.equal(typeof invitation.token,'string');
-  grant(['name','status','meal']);
+  grant(['name','status','meal','allergies']);
   failure(()=>executeGuest(db,viewer,command),403);
   failure(()=>v2(db,viewer,'guestInvite.revoke',{projectId:project.id,inviteId:invitation.inviteId,version:invitation.version}),403);
   assert.deepEqual(guestInvites(db,viewer,project.id,table.id),[]);
@@ -185,10 +186,68 @@ test('guest mapping rejects incompatible columns and invalid RSVP choices before
  assert.equal(entity(db,table.id).version,table.version);
 });
 
+test('issued invitations identify recipients and dates without returning invitation secrets',()=>{
+ const {db,user,project,table,row}=fixture();publishedSite(db,user,project);
+ const invitation=v2(db,user,'guestInvite.create',{projectId:project.id,guestTableId:table.id,schemaVersion:table.version,guestRowIds:[row.id],expiresAt:new Date(Date.now()+86400000).toISOString()});
+ const list=guestInvites(db,user,project.id,table.id);
+ assert.equal(list.length,1);assert.deepEqual(list[0].recipientNames,['Ира']);assert.equal(list[0].guestCount,1);assert.equal(list[0].status,'issued');assert.match(list[0].expiresAt,/T/);assert.match(list[0].createdAt,/T/);assert.equal('token' in list[0],false);assert.equal('digest' in list[0],false);assert.equal(list[0].id,invitation.inviteId);
+});
+
+test('invite managers without read access receive a redacted recipient label',()=>{
+ const {db,user,project,table,row}=fixture();publishedSite(db,user,project);
+ v2(db,user,'guestInvite.create',{projectId:project.id,guestTableId:table.id,schemaVersion:table.version,guestRowIds:[row.id],expiresAt:new Date(Date.now()+86400000).toISOString()});
+ const viewer=register(db,{slug:'guest-test',email:'invite-manager@example.test',name:'Менеджер ссылок',password:'strong-pass-4'}).user;
+ const manager=v1(db,user,'role.save',{name:'Ссылки без чтения',permissions:['manageGuestInvites']});
+ const reader=v1(db,user,'role.save',{name:'Читатель без имени',permissions:['read']});
+ let current=db.prepare('SELECT version FROM users WHERE id=?').get(viewer.id);
+ v1(db,user,'grants.save',{userId:viewer.id,version:current.version,disabled:false,grants:[{roleId:manager.id,projectId:project.id,restrictions:{sections:[table.id],rows:[row.id],fields:['name','status','meal','allergies','contact']}}]});
+ current=db.prepare('SELECT version FROM users WHERE id=?').get(viewer.id);
+ v1(db,user,'grants.save',{userId:viewer.id,version:current.version,disabled:false,grants:[{roleId:manager.id,projectId:project.id,restrictions:{sections:[table.id],rows:[row.id],fields:['name','status','meal','allergies','contact']}},{roleId:reader.id,projectId:project.id,restrictions:{sections:[table.id],rows:[row.id],fields:['status']}}]});
+ const list=guestInvites(db,viewer,project.id,table.id);assert.equal(list.length,1);assert.deepEqual(list[0].recipientNames,['Имя недоступно']);
+});
+
 test('seating geometry validates rotated bounds and safe zone numeric values',()=>{
  const {db,user,project,table}=fixture();const plan=v2(db,user,'seatingPlan.save',{projectId:project.id,data:{name:'Зал',widthM:10,heightM:10,guestTableId:table.id,zones:[]}});
  failure(()=>v2(db,user,'seatingPlan.save',{projectId:project.id,entityId:plan.id,version:plan.version,data:{...plan.data,zones:[{label:'Зона',xM:'\" onload=alert(1)',yM:0,widthM:1,heightM:1}]}}));
  failure(()=>v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'Выход за край',shape:'rect',xM:0,yM:0,widthM:3,heightM:1,rotationDeg:45,capacity:4}}),409);
  const accepted=v2(db,user,'seatingPlan.save',{projectId:project.id,entityId:plan.id,version:plan.version,data:{...plan.data,zones:[{label:'Танцпол',xM:3,yM:3,widthM:2,heightM:2,rotationDeg:45}]}});assert.equal(accepted.data.zones[0].rotationDeg,45);
  const altered={...table,data:{...table.data,columns:table.data.columns.map(c=>c.id==='status'?{...c,options:['Подтвердил']}:c)}};assert.equal(validateGuestSchemaMutation(table,altered).ok,false);
+});
+
+test('seating supports empty tables, extended shapes, and validated custom outlines',()=>{
+ const {db,user,project,table,row}=fixture();const plan=v2(db,user,'seatingPlan.save',{projectId:project.id,data:{name:'Зал',widthM:14,heightM:10,guestTableId:table.id}});
+ const zero=v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'Резерв',shape:'oval',xM:1,yM:1,widthM:2,heightM:1,capacity:0}});assert.equal(zero.data.capacity,0);assert.equal(zero.data.shape,'oval');
+ failure(()=>v2(db,user,'seating.assign',{projectId:project.id,guestTableId:table.id,schemaVersion:table.version,guestRowId:row.id,rowVersion:row.version,tableId:zero.id,tableVersion:zero.version,seatIndex:1,confirmNonConfirmed:true}),400);
+ const square=v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'Квадрат',shape:'square',xM:4,yM:1,widthM:1.4,heightM:1.4,capacity:4}});assert.equal(square.data.shape,'square');
+ const round150=v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'Круглый 150',shape:'round150',xM:10,yM:1,widthM:9,heightM:9,capacity:8}});assert.equal(round150.data.widthM,1.5);assert.equal(round150.data.heightM,1.5);
+ const snake=v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'Змейка',shape:'snakeQuarter',xM:10,yM:4,capacity:10}});assert.equal(snake.data.widthM,2.4);assert.equal(snake.data.heightM,2.4);assert(snake.data.points.length>=8);
+ const outline=[{x:0,y:.15},{x:.75,y:0},{x:1,y:.45},{x:.62,y:1},{x:0,y:.8}];
+ const custom=v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'Своя форма',shape:'custom',points:outline,xM:7,yM:2,widthM:2.3,heightM:1.8,rotationDeg:18,capacity:5}});assert.deepEqual(custom.data.points,outline);assert.equal(custom.data.shape,'custom');
+ const oval=v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'Овал у края',shape:'oval',xM:1,yM:2,widthM:4,heightM:2,rotationDeg:90,capacity:0}});
+ const ovalEdge=clampPosition(oval.data,plan.data,-8,-8);assert.deepEqual(ovalEdge,{x:0,y:1});
+ const editedOval=v2(db,user,'seatingTable.edit',{projectId:project.id,entityId:oval.id,version:oval.version,guestTableId:table.id,data:{...oval.data,xM:ovalEdge.x,yM:ovalEdge.y}});assert.equal(editedOval.data.xM,0);assert.equal(editedOval.data.yM,1);
+ const rotated=v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'Поворотный контур',shape:'custom',points:outline,xM:.07,yM:.57,widthM:2,heightM:1,rotationDeg:45,capacity:0}});assert.equal(rotated.data.capacity,0);
+ failure(()=>v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'Контур за краем',shape:'custom',points:outline,xM:0,yM:0,widthM:2,heightM:1,rotationDeg:45,capacity:0}}),409);
+ failure(()=>v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'Пересечение',shape:'custom',points:[{x:0,y:0},{x:1,y:1},{x:0,y:1},{x:1,y:0}],xM:1,yM:4,widthM:2,heightM:2,capacity:4}}));
+ failure(()=>v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'Линия',shape:'custom',points:[{x:0,y:0},{x:.5,y:0},{x:1,y:0}],xM:1,yM:4,widthM:2,heightM:2,capacity:4}}));
+});
+
+test('shared seating geometry has stable local outlines, seats, extents, and clamping',()=>{
+ const custom={shape:'custom',points:[{x:0,y:0},{x:1,y:0},{x:.8,y:1},{x:0,y:.8}],widthM:2,heightM:1.5,capacity:4,rotationDeg:30};
+ assert.deepEqual(tableOutline(custom),custom.points);assert.equal(tableOutline({...custom,points:[{x:0,y:0},{x:1,y:1},{x:0,y:1},{x:1,y:0}]}),null);
+ assert.equal(seatPositions({...custom,capacity:0}).length,0);const positions=seatPositions(custom);assert.equal(positions.length,4);assert(positions.every(point=>Number.isFinite(point.x)&&Number.isFinite(point.y)));
+ const oval=rotatedExtents({shape:'oval',widthM:4,heightM:2,rotationDeg:90});assert(Math.abs(oval.width-2)<1e-8);assert(Math.abs(oval.height-4)<1e-8);
+ const customBounds=rotatedExtents({...custom,widthM:2,heightM:1,rotationDeg:45});assert(Math.abs(customBounds.width-Math.sqrt(4.5))<1e-8);assert(Math.abs(customBounds.height-Math.sqrt(4.5))<1e-8);
+ assert.deepEqual(clampPosition({shape:'rect',widthM:2,heightM:1,rotationDeg:0},{widthM:10,heightM:8},-2,20),{x:0,y:7});
+ const clamped=clampPosition({...custom,widthM:2,heightM:1,rotationDeg:45},{widthM:10,heightM:8},-2,-2);assert(Math.abs(clamped.x-(Math.sqrt(4.5)/2-1))<1e-8);assert(Math.abs(clamped.y-(Math.sqrt(4.5)/2-.5))<1e-8);
+});
+
+test('zones retain editable custom geometry and oval shape through plan saves',()=>{
+ const {db,user,project,table}=fixture();
+ const points=[{x:0,y:0},{x:1,y:0},{x:1,y:1},{x:.5,y:.6},{x:0,y:1}];
+ const plan=v2(db,user,'seatingPlan.save',{projectId:project.id,data:{widthM:12,heightM:8,guestTableId:table.id,zones:[{id:'custom-zone',label:'Танцпол',shape:'custom',xM:1,yM:1,widthM:3,heightM:2,points},{id:'oval-zone',shape:'oval',label:'Фотозона',xM:6,yM:1,widthM:2,heightM:1}]}});
+ assert.deepEqual(plan.data.zones[0].points,points);assert.equal(plan.data.zones[1].shape,'oval');
+ const renamed=v2(db,user,'seatingPlan.save',{projectId:project.id,entityId:plan.id,version:plan.version,data:{...plan.data,zones:plan.data.zones.map(z=>z.id==='custom-zone'?{...z,label:'Церемония',widthM:4}:z)}});
+ assert.deepEqual(renamed.data.zones[0].points,points);assert.equal(renamed.data.zones[0].widthM,4);
+ failure(()=>v2(db,user,'seatingPlan.save',{projectId:project.id,entityId:renamed.id,version:renamed.version,data:{...renamed.data,zones:[{...renamed.data.zones[0],points:[{x:0,y:0},{x:1,y:1},{x:0,y:1},{x:1,y:0}]}]}}));
 });

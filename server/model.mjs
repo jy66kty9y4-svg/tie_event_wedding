@@ -1,5 +1,6 @@
 import {DEFAULT_TASK_BLUEPRINTS,DEFAULT_TASK_PHASES} from '../src/task-blueprints.js';
-import { assert, entity, entities, insert, uid } from './db.mjs';
+import {DEFAULT_GUEST_COLUMNS,DEFAULT_GUEST_SEMANTIC_MAP} from '../src/guest-blueprint.js';
+import { assert, entity, entities, insert, seedProjectTasks, uid } from './db.mjs';
 import { can, requireAccess } from './auth.mjs';
 import { compute, fieldTypes } from '../src/shared.js';
 
@@ -21,7 +22,7 @@ export const initialTemplate = () => ({name:'Свадьба — основной
   {key:'preparation',name:'Подготовка',order:0},{key:'day',name:'День свадьбы',order:1},{key:'people',name:'Гости и материалы',order:2}
 ], tables:[
   {key:'timing',name:'Тайминг',section:'day',offline:true,columns:[{id:'time',name:'Начало',type:'time'},{id:'end',name:'Окончание',type:'time'},{id:'title',name:'Событие',type:'text'},{id:'place',name:'Место',type:'text'},{id:'audience',name:'Для кого',type:'select',options:['Общее','Пара','Команда']},{id:'people',name:'Участники',type:'text'},{id:'responsible',name:'Ответственный',type:'text'},{id:'done',name:'Выполнено',type:'boolean'}]},
-  {key:'guests',name:'Гости',section:'people',offline:false,columns:[{id:'name',name:'Имя гостя',type:'text'},{id:'side',name:'Сторона',type:'select',options:['Жених','Невеста','Общие']},{id:'status',name:'Приглашение',type:'select',options:['Не отправлено','Приглашён','Подтвердил','Отказ']},{id:'contact',name:'Контакт',type:'text'},{id:'meal',name:'Питание',type:'text'},{id:'day2',name:'Второй день',type:'boolean'},{id:'hotel',name:'Проживание',type:'text'},{id:'transport',name:'Транспорт',type:'text'},{id:'table',name:'Стол',type:'text'},{id:'note',name:'Комментарий',type:'text'}]},
+  {key:'guests',name:'Гости',section:'people',offline:false,columns:structuredClone(DEFAULT_GUEST_COLUMNS),semanticMap:structuredClone(DEFAULT_GUEST_SEMANTIC_MAP)},
   {key:'materials',name:'Заметки и материалы',section:'people',offline:false,columns:[{id:'title',name:'Название',type:'text'},{id:'note',name:'Описание',type:'text'},{id:'link',name:'Ссылка',type:'url'},{id:'file',name:'Файл',type:'file'}]}
 ], offline:['timing','payouts'], categories:['Площадка','Банкет','Фото и видео','Декор','Образ','Команда','Гонорар агентства']});
 
@@ -29,11 +30,12 @@ export function createProject(db,u,data,template=null) {
   const tpl=template?.data || entities(db,u.agency_id,null,'template')[0]?.data || initialTemplate();
   const templateOffline=Array.isArray(tpl.offline)?tpl.offline:[];
   const nativeOffline=templateOffline.filter(key=>['payouts','budget','vendors','files'].includes(key));
-  const p=insert(db,u,'project',{name:text(data.name),date:date(data.date,false),location:data.location?text(data.location,'Место',1,1000):'',status:'planning',timeZone:'Europe/Moscow',readinessPolicy:{},limit:amount(data.limit??null,true),offline:nativeOffline,notes:data.notes?text(data.notes,'Заметка',1,8000):''});
+  const p=insert(db,u,'project',{name:text(data.name),date:date(data.date,false),location:'',status:'planning',timeZone:'Europe/Moscow',readinessPolicy:{},limit:amount(data.limit??null,true),offline:nativeOffline,notes:data.notes?text(data.notes,'Заметка',1,8000):''});
   const sections={}; for(const s of tpl.sections) sections[s.key]=insert(db,u,'section',{name:s.name,order:s.order,archived:false},p.id).id;
-  for(const t of tpl.tables) insert(db,u,'table',{name:t.name,key:t.key,sectionId:sections[t.section]||Object.values(sections)[0],order:tpl.tables.indexOf(t),archived:false,offline:!!t.offline||templateOffline.includes(t.key),columns:structuredClone(t.columns),rowOrder:[]},p.id);
+  for(const t of tpl.tables) insert(db,u,'table',{name:t.name,key:t.key,sectionId:sections[t.section]||Object.values(sections)[0],order:tpl.tables.indexOf(t),archived:false,offline:!!t.offline||templateOffline.includes(t.key),columns:structuredClone(t.columns),...(t.semanticMap?{semanticMap:structuredClone(t.semanticMap)}:{}),rowOrder:[]},p.id);
   for(const name of tpl.categories||[]) insert(db,u,'category',{name,scope:'wedding',archived:false},p.id);
-  // Clone structure only. No source rows, files, guests or paid movements.
+  seedProjectTasks(db,u,p);
+  // Every wedding starts with the shared task plan. No source rows, files, guests or paid movements are cloned.
   return p;
 }
 export function validateColumns(columns) {

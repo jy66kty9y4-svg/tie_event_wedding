@@ -1,5 +1,5 @@
 import { assert, transaction, entities } from '../db.mjs';
-import { can, requireAccess, digest } from '../auth.mjs';
+import { can, canHoldFunds, requireAccess, digest } from '../auth.mjs';
 import { getScoped, projectVisible, date, sectionOf } from '../model.mjs';
 
 export function currentUser(db,user) {
@@ -23,7 +23,7 @@ export function executeModule(db,user,cmd,operations) {
   db.prepare('INSERT INTO commands VALUES(?,?,?,?)').run(cmd.id,u.id,hash,JSON.stringify(saved));return result;
  });}catch(error){if(error.details)error.details=safeCommandResult(db,user,error.details);throw error}
 }
-function safeCommandResult(db,u,value){if(!value||typeof value!=='object')return value;if(Array.isArray(value))return value.map(v=>safeCommandResult(db,u,v));if(value.kind&&value.id&&value.agency_id&&value.data&&typeof value.data==='object'){const project=value.kind==='project'?value.id:value.project_id,section=sectionOf(value);return {...value,data:Object.fromEntries(Object.entries(value.data).filter(([key])=>can(db,u,'read',project,section,value.id,key)))};}return Object.fromEntries(Object.entries(value).map(([key,v])=>[key,safeCommandResult(db,u,v)]));}
+function safeCommandResult(db,u,value){if(!value||typeof value!=='object')return value;if(Array.isArray(value))return value.map(v=>safeCommandResult(db,u,v));if(value.kind&&value.id&&value.agency_id&&value.data&&typeof value.data==='object'){const project=value.kind==='project'?value.id:value.project_id,section=sectionOf(value);return {...value,data:Object.fromEntries(Object.entries(value.data).filter(([key])=>!(value.kind==='project'&&key==='limit'&&!canHoldFunds(db,u,project))&&can(db,u,'read',project,section,value.id,key)))};}return Object.fromEntries(Object.entries(value).map(([key,v])=>[key,safeCommandResult(db,u,v)]));}
 export function projectAccess(db,u,id,action='read',section, row,fields) {
  const p=getScoped(db,u,id,undefined,'project');assert(!p.deleted&&projectVisible(db,u,id),'Проект недоступен',403);
  if(section) requireAccess(db,u,action,id,section,row,fields);return p;

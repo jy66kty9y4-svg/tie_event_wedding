@@ -58,14 +58,16 @@ test('workflow result states enqueue notifications and microsite rotation revoke
  change(db,admin,site,{...site.data,shareId:'b'.repeat(24)});queueChanges(db,admin,siteCursor);assert.equal(db.prepare('SELECT count(*) count FROM guest_sessions').get().count,0);
  db.prepare('INSERT INTO guest_sessions VALUES(?,?,?,?,?,?)').run('session-2','invite',Date.now()+86400000,1,'csrf-2',new Date().toISOString());const unpublished=entity(db,site.id),unpublishCursor=db.prepare('SELECT max(rowid) rowid FROM audit').get().rowid;change(db,admin,unpublished,{...unpublished.data,status:'unpublished',publishedRevisionId:null});queueChanges(db,admin,unpublishCursor);assert.equal(db.prepare('SELECT count(*) count FROM guest_sessions').get().count,0);
 });
-test('empty readiness remains unknown, verified file provenance is required, snooze stays personal',()=>{
- const {db,admin,p,user}=fixture();let report=readiness(db,user,p.id);assert.equal(report.progress.ratio,null);assert.equal(report.checks.find(x=>x.ruleKey==='contract').state,'unknown');assert(!report.checks.some(x=>x.state==='pass'));
+test('baseline readiness stays unverified, verified file provenance is required, snooze stays personal',()=>{
+ const {db,admin,p,user}=fixture();let report=readiness(db,user,p.id);assert.equal(report.progress.ratio,0);assert.equal(report.checks.find(x=>x.ruleKey==='contract').state,'unknown');assert(!report.checks.some(x=>x.state==='pass'));
  const updated=run(db,user,'project.readinessSettings',{projectId:p.id,version:p.version,data:{readinessPolicy:{contract:{required:true},booking:{required:false,reason:'Выбранные услуги не требуют брони'},timing:{required:true},seating:{required:true}}}});
  const file=insert(db,admin,'file',{name:'Документ.pdf'},p.id);report=readiness(db,user,p.id);assert.equal(report.checks.find(x=>x.ruleKey==='contract').state,'warning');
  run(db,user,'file.verify',{projectId:p.id,entityId:file.id,version:file.version,documentKind:'contract',status:'confirmed',note:'Проверен подписанный экземпляр'});assert.equal(readiness(db,user,p.id).checks.find(x=>x.ruleKey==='contract').state,'pass');
- const untilAt=new Date(Date.now()+86400000).toISOString();run(db,user,'readiness.snooze',{projectId:p.id,ruleKey:'tasks',untilAt});assert.equal(readiness(db,user,p.id).checks.find(x=>x.ruleKey==='tasks').snoozedUntil,untilAt);assert.equal(readiness(db,admin,p.id).checks.find(x=>x.ruleKey==='tasks').snoozedUntil,null);assert.equal(readiness(db,user,p.id).checks.find(x=>x.ruleKey==='tasks').state,'unknown');
+ const untilAt=new Date(Date.now()+86400000).toISOString();run(db,user,'readiness.snooze',{projectId:p.id,ruleKey:'tasks',untilAt});assert.equal(readiness(db,user,p.id).checks.find(x=>x.ruleKey==='tasks').snoozedUntil,untilAt);assert.equal(readiness(db,admin,p.id).checks.find(x=>x.ruleKey==='tasks').snoozedUntil,null);assert.equal(readiness(db,user,p.id).checks.find(x=>x.ruleKey==='tasks').state,'warning');
  const overdue=insert(db,admin,'task',{title:'Просроченная задача',dueDate:'2020-01-01',status:'todo',assigneeUserId:user.id},p.id);assert(!readiness(db,user,p.id).attention.some(x=>x.sourceId===overdue.id));assert(readiness(db,admin,p.id).attention.some(x=>x.sourceId===overdue.id));assert(readiness(db,user,p.id,Date.parse(untilAt)+1).attention.some(x=>x.sourceId===overdue.id));
  assert.equal(dashboard(db,user,{projectId:p.id}).metrics.activeProjects,1);
+ const focused=insert(db,admin,'task',{title:'В фокусе организатора',dueDate:'2027-06-01',status:'todo',organizerFocus:true},p.id),home=dashboard(db,admin);
+ assert.equal(home.organizerFocusTotal,1);assert.equal(home.organizerFocus[0].id,focused.id);
 });
 
 test('explicit staff working intervals use the project time zone and remain reversible',()=>{

@@ -1,5 +1,5 @@
 import { assert, audit, change, entities, entity, insert, now, uid, version } from '../../db.mjs';
-import { can, digest, requireAccess } from '../../auth.mjs';
+import { can, digest, grants, requireAccess } from '../../auth.mjs';
 import { amount, date, getScoped, projectVisible, safeUrl, text } from '../../model.mjs';
 import { addDays, listPage, projectAccess, scoped, timeZone, zonedInstant } from '../common.mjs';
 
@@ -10,6 +10,9 @@ const MAX_OFFSET = 1095;
 
 import {DEFAULT_TASK_BLUEPRINTS} from '../../../src/task-blueprints.js';
 export {DEFAULT_TASK_BLUEPRINTS};
+
+function canSeeAgencyCommission(db,u,projectId){return !!u.protected||grants(db,u).some(grant=>grant.role_key!=='couple'&&grant.permissions.includes('finance')&&(grant.project_id===null||grant.project_id===projectId)&&(!grant.restrictions.sections?.length||grant.restrictions.sections.includes('budget'))&&!grant.restrictions.rows?.length&&!grant.restrictions.fields?.length)}
+function privateFinanceRow(db,u,projectId,row){if(canSeeAgencyCommission(db,u,projectId)||!row?.data||!Object.hasOwn(row.data,'agencyCommission'))return row;const data={...row.data};delete data.agencyCommission;return {...row,data}}
 
 function object(value, label='Проверьте данные') { assert(value && typeof value === 'object' && !Array.isArray(value),label); return value; }
 function optionalText(value,label,max=8000) { return value == null || value === '' ? '' : text(value,label,1,max); }
@@ -36,7 +39,7 @@ function validateWorkflowMembers(db,u,projectId,value) {
   assert(value.every(id=>available.has(id)),'Участник больше не имеет доступа к проекту',409); return value;
 }
 function taskSection(row) { return row.kind === 'approval' || row.kind === 'approvalRevision' ? 'approvals' : 'tasks'; }
-function taskDto(db,u,row){return {...row,data:Object.fromEntries(Object.entries(row.data).filter(([key])=>can(db,u,'read',row.project_id,'tasks',row.id,key)))};}
+function taskDto(db,u,row){return {...row,data:Object.fromEntries(Object.entries(row.data).filter(([key])=>can(db,u,'read',row.project_id,'tasks',row.id,key))),canSetOrganizerFocus:can(db,u,'projects',null)&&can(db,u,'edit',row.project_id,'tasks',row.id,'organizerFocus')};}
 function taskRows(db,u,project,{includeDeleted=false}={}) { return entities(db,u.agency_id,project,'task',includeDeleted); }
 function requireTaskAccess(db,u,c,action,row=null,fields=null) { projectAccess(db,u,c.projectId,action,'tasks',row?.id??null,fields); if(row) requireAccess(db,u,'read',c.projectId,taskSection(row),row.id,null); }
 function requireApprovalAccess(db,u,c,action,row=null,fields=null) { projectAccess(db,u,c.projectId,action,'approvals',row?.id??null,fields); if(row) requireAccess(db,u,'read',c.projectId,taskSection(row),row.id,null); }
@@ -67,7 +70,7 @@ function validateDependencies(db,u,project,taskId,dependencyIds) {
   assert(!dependencyIds.some(id=>visit(id)),'Зависимости образуют цикл',409,{dependencyIds:dependencyIds.filter(id=>visit(id))});
   return dependencyIds;
 }
-function taskData(db,u,project,source={},existing={}) {
+export function taskData(db,u,project,source={},existing={}) {
   object(source); const due=normalizedDue(project,source,existing);
   const projectId=typeof project==='string'?project:project.id;
   const assigneeUserId = source.assigneeUserId === undefined ? (existing.assigneeUserId || null) : (source.assigneeUserId || null);
@@ -94,7 +97,10 @@ function taskData(db,u,project,source={},existing={}) {
     sourceTemplateVersion: existing.sourceTemplateVersion||source.sourceTemplateVersion||null,
     sourceTemplateKey: existing.sourceTemplateKey||source.sourceTemplateKey||null,
     skipReason, order: Number.isFinite(source.order) ? Number(source.order) : (existing.order ?? 0),
-    completedAt: existing.completedAt||null, completedBy: existing.completedBy||null
+    completedAt: existing.completedAt||null, completedBy: existing.completedBy||null,
+    organizerFocus: existing.organizerFocus===true,
+    organizerFocusedAt: existing.organizerFocusedAt||null,
+    organizerFocusedBy: existing.organizerFocusedBy||null
   };
 }
 function setTaskStatus(db,u,c) {
@@ -106,8 +112,15 @@ function setTaskStatus(db,u,c) {
     const blocked=(row.data.dependencyIds||[]).map(id=>entity(db,id)).filter(dep=>dep && !dep.deleted && !['done','skipped'].includes(dep.data.status));
     assert(!blocked.length,'Нельзя завершить задачу: не завершены зависимости',409,{code:'task_blocked',dependencies:blocked.map(x=>({id:x.id,title:x.data.title,status:x.data.status,version:x.version}))});
   }
-  const next={...row.data,status,skipReason:status==='skipped'?skipReason:'',completedAt:['done','skipped'].includes(status)?now():null,completedBy:['done','skipped'].includes(status)?u.id:null};
+  const finished=['done','skipped'].includes(status);
+  const next={...row.data,status,skipReason:status==='skipped'?skipReason:'',completedAt:finished?now():null,completedBy:finished?u.id:null,...finished?{organizerFocus:false,organizerFocusedAt:null,organizerFocusedBy:null}:{}};
   return change(db,u,row,next,false,'setStatus');
+}
+function setOrganizerFocus(db,u,c) {
+  const row=requireTask(db,u,c.projectId,c.entityId); version(row,c.version);
+  assert(typeof c.focused==='boolean','Укажите, добавлять ли задачу в актуальные организатора');
+  if(c.focused) assert(['todo','doing'].includes(row.data.status),'В актуальные организатора можно добавить только незавершённую задачу',409);
+  return change(db,u,row,{...row.data,organizerFocus:c.focused,organizerFocusedAt:c.focused?now():null,organizerFocusedBy:c.focused?u.id:null},false,'setOrganizerFocus');
 }
 function approvalOptions(db,u,projectId,value) {
   assert(Array.isArray(value) && value.length>=1 && value.length<=6,'Добавьте от 1 до 6 вариантов');
@@ -211,8 +224,8 @@ export function previewBudgetApplication(db,u,{projectId,id,revisionId,optionId,
   const obligation=readableLink(db,u,projectId,obligationId,'obligation','budget');
   assert(selection.data.obligationId===obligation.id&&obligation.data.selectionId===selection.id,'Услуга и обязательство больше не связаны',409,{code:'budget_link_changed'});
   assert(!option.selectionId||option.selectionId===selection.id,'В согласовании указана другая услуга',409,{code:'approval_selection_changed'});
-  if(option.selectionVersion) assert(option.selectionVersion===selection.version,'Услуга изменилась после отправки согласования. Создайте новую ревизию.',409,{code:'approval_selection_changed',current:selection});
-  if(option.obligationId) assert(option.obligationId===obligation.id&&option.obligationVersion===obligation.version,'Обязательство изменилось после отправки согласования. Создайте новую ревизию.',409,{code:'approval_obligation_changed',current:obligation});
+  if(option.selectionVersion) assert(option.selectionVersion===selection.version,'Услуга изменилась после отправки согласования. Создайте новую ревизию.',409,{code:'approval_selection_changed',current:privateFinanceRow(db,u,projectId,selection)});
+  if(option.obligationId) assert(option.obligationId===obligation.id&&option.obligationVersion===obligation.version,'Обязательство изменилось после отправки согласования. Создайте новую ревизию.',409,{code:'approval_obligation_changed',current:privateFinanceRow(db,u,projectId,obligation)});
   const paid=paidFor(db,projectId,obligation.id), conflict=option.price<paid;
   const payload={approvalId:approval.id,revisionId:row.id,optionId:option.id,selection:{id:selection.id,version:selection.version,title:selection.data.title||'',price:selection.data.price??null},obligation:{id:obligation.id,version:obligation.version,title:obligation.data.title||'',agreed:obligation.data.agreed??null},paid,newPrice:option.price,delta:Number(option.price)-Number(obligation.data.agreed||0),createsPayment:false,conflict};
   return {...payload,digest:digest(JSON.stringify(payload))};
@@ -233,7 +246,7 @@ function applyBudget(db,u,c) {
   selection=change(db,u,selection,{...selection.data,title:option.title,price:option.price,selected:true,terms:option.terms,vendorId:option.vendorId||selection.data.vendorId||null,obligationId:obligation.id,approvalRevisionId:row.id,approvalOptionId:option.id},false,'approvalApply');
   obligation=change(db,u,obligation,{...obligation.data,title:option.title,priceKind:'amount',agreed:option.price,condition:option.terms,selectionId:selection.id,approvalRevisionId:row.id,approvalOptionId:option.id},false,'approvalApply');
   db.prepare('INSERT INTO approval_budget_links(revision_id,option_id,selection_id,obligation_id,applied_by,applied_at) VALUES(?,?,?,?,?,?)').run(row.id,option.id,selection.id,obligation.id,u.id,now());
-  return {selection,obligation,preview,createsPayment:false,link:{revisionId:row.id,optionId:option.id,selectionId:selection.id,obligationId:obligation.id}};
+  return {selection:privateFinanceRow(db,u,c.projectId,selection),obligation:privateFinanceRow(db,u,c.projectId,obligation),preview,createsPayment:false,link:{revisionId:row.id,optionId:option.id,selectionId:selection.id,obligationId:obligation.id}};
 }
 function parentForComment(db,u,c,parentId) { const parent=getScoped(db,u,parentId,c.projectId); assert(!parent.deleted,'Запись удалена',409); assert(['task','approval'].includes(parent.kind),'Комментарий можно добавить только к задаче или согласованию'); projectAccess(db,u,c.projectId,'read',taskSection(parent),parent.id,null); return parent; }
 function commentCreate(db,u,c) { const parent=parentForComment(db,u,c,c.parentId); projectAccess(db,u,c.projectId,'create',taskSection(parent),parent.id); return insert(db,u,'comment',{text:text(c.text,'Комментарий',1,2000),authorId:u.id,createdAt:now(),editedAt:null},c.projectId,parent.id); }
@@ -247,14 +260,35 @@ export function migrate(db) {
     CREATE INDEX IF NOT EXISTS approval_votes_revision ON approval_votes(revision_id);`);
 }
 
-export function listTasks(db,u,{projectId,from,to,assignee,status,phaseKey,mine=false,includeDeleted=false,offset,limit}={}) {
-  if(!projectId){const all=entities(db,u.agency_id,null,'project').filter(p=>projectVisible(db,u,p.id)&&can(db,u,'read',p.id,'tasks')).flatMap(p=>{const collected=[];let cursor=0;do{const page=listTasks(db,u,{projectId:p.id,from,to,assignee,status,phaseKey,mine,includeDeleted,offset:cursor,limit:200});collected.push(...page.items.map(row=>({...row,projectName:p.data.name})));cursor=page.nextOffset;}while(cursor!==null);return collected;});all.sort((a,b)=>(a.data.dueDate||'9999-12-31').localeCompare(b.data.dueDate||'9999-12-31')||a.id.localeCompare(b.id));return listPage(all,{offset,limit});}
+export function listTasks(db,u,{projectId,from,to,assignee,status,phaseKey,query='',focus=false,mine=false,includeDeleted=false,offset,limit}={}) {
+  const taskOrder=(a,b,focusFirst=false)=>{const finished=value=>['done','skipped'].includes(value.data.status)?1:0,byState=finished(a)-finished(b),byFocus=focusFirst?Number(b.data.organizerFocus===true)-Number(a.data.organizerFocus===true):0;return byState||byFocus||(a.data.dueDate||'9999-12-31').localeCompare(b.data.dueDate||'9999-12-31')||Number(a.data.order||0)-Number(b.data.order||0)||a.id.localeCompare(b.id);};
+  const search=String(query||'').trim().toLocaleLowerCase('ru');assert(search.length<=240,'Поисковый запрос слишком длинный');const searchTerms=search.split(/\s+/).filter(Boolean);
+  if(!projectId){const all=entities(db,u.agency_id,null,'project').filter(p=>projectVisible(db,u,p.id)&&can(db,u,'read',p.id,'tasks')).flatMap(p=>{const collected=[];let cursor=0;do{const page=listTasks(db,u,{projectId:p.id,from,to,assignee,status,phaseKey,query,focus:true,mine,includeDeleted,offset:cursor,limit:200});collected.push(...page.items.map(row=>({...row,projectName:p.data.name})));cursor=page.nextOffset;}while(cursor!==null);return collected;});all.sort((a,b)=>taskOrder(a,b,true));return listPage(all,{offset,limit});}
   projectAccess(db,u,projectId,'read','tasks'); if(from) date(from,false); if(to) date(to,false);
   if(includeDeleted===true||includeDeleted==='true') requireAccess(db,u,'history',projectId,'tasks');
   const rows=taskRows(db,u,projectId,{includeDeleted:includeDeleted===true||includeDeleted==='true'}).filter(row=>can(db,u,'read',projectId,'tasks',row.id)).map(row=>taskDto(db,u,row)).filter(row=>
-    (!from||row.data.dueDate>=from)&&(!to||row.data.dueDate<=to)&&(!assignee||row.data.assigneeUserId===assignee)&&(!(mine===true||mine==='true')||(row.data.assigneeUserId===u.id||(row.data.participantUserIds||[]).includes(u.id)))&&(!status||row.data.status===status)&&(!phaseKey||row.data.phaseKey===phaseKey)
-  ).sort((a,b)=>(a.data.dueDate||'9999-12-31').localeCompare(b.data.dueDate||'9999-12-31')||Number(a.data.order||0)-Number(b.data.order||0)||a.id.localeCompare(b.id));
+    (!from||row.data.dueDate>=from)&&(!to||row.data.dueDate<=to)&&(!assignee||row.data.assigneeUserId===assignee)&&(!(mine===true||mine==='true')||(row.data.assigneeUserId===u.id||(row.data.participantUserIds||[]).includes(u.id)))&&(!(focus===true||focus==='true')||row.data.organizerFocus===true)&&(!status||(status==='active'?['todo','doing'].includes(row.data.status):row.data.status===status))&&(!phaseKey||row.data.phaseKey===phaseKey)&&(!searchTerms.length||searchTerms.every(term=>`${row.data.title||''} ${row.data.description||''}`.toLocaleLowerCase('ru').includes(term)))
+  ).sort((a,b)=>taskOrder(a,b));
   return listPage(rows,{offset,limit});
+}
+export function suggestTasks(db,u,{projectId,query='',limit=8}={}) {
+  assert(projectId,'Укажите проект');projectAccess(db,u,projectId,'read','tasks');
+  const search=String(query||'').trim().toLocaleLowerCase('ru');assert(search.length<=240,'Поисковый запрос слишком длинный');
+  const maximum=Math.min(Math.max(Number(limit)||8,1),12),terms=search.split(/\s+/).filter(Boolean),projects=entities(db,u.agency_id,null,'project').filter(project=>project.id!==projectId&&projectVisible(db,u,project.id)&&can(db,u,'read',project.id,'tasks')),projectById=new Map(projects.map(project=>[project.id,project]));
+  const currentRows=taskRows(db,u,projectId),currentTitles=new Set(currentRows.map(row=>String(row.data.title||'').trim().toLocaleLowerCase('ru'))),currentKeys=new Set(currentRows.map(row=>row.data.sourceTemplateKey).filter(Boolean)),grouped=new Map();
+  for(const blueprint of DEFAULT_TASK_BLUEPRINTS) {
+    const titleKey=blueprint.title.toLocaleLowerCase('ru'),haystack=`${blueprint.title} ${blueprint.description||''}`.toLocaleLowerCase('ru');
+    if(terms.length&&!terms.every(term=>haystack.includes(term)))continue;
+    grouped.set(titleKey,{id:`preset:${blueprint.key}`,title:blueprint.title,description:blueprint.description||'',phaseKey:blueprint.phaseKey||'general',offsetDays:Number.isInteger(blueprint.offsetDays)?blueprint.offsetDays:null,usageCount:0,source:'preset',alreadyInProject:currentKeys.has(blueprint.key)||currentTitles.has(titleKey),score:search?(titleKey.startsWith(search)?0:titleKey.includes(search)?1:2):2,order:blueprint.order});
+  }
+  for(const sourceProject of projects) for(const row of taskRows(db,u,sourceProject.id)) {
+    const visible=taskDto(db,u,row).data,title=String(visible.title||'').trim(),description=String(visible.description||'').trim(),titleKey=title.toLocaleLowerCase('ru'),haystack=`${title} ${description}`.toLocaleLowerCase('ru');
+    if(!title||(terms.length&&!terms.every(term=>haystack.includes(term))))continue;
+    const project=projectById.get(row.project_id),derivedOffset=row.data.dueMode==='relative'&&Number.isInteger(row.data.offsetDays)?row.data.offsetDays:row.data.dueDate&&project?.data.date?Math.round((Date.parse(`${row.data.dueDate}T12:00:00Z`)-Date.parse(`${project.data.date}T12:00:00Z`))/86400000):null,score=titleKey.startsWith(search)?0:titleKey.includes(search)?1:2,existing=grouped.get(titleKey);
+    if(existing){existing.usageCount+=1;if(existing.source!=='preset'&&score<existing.score)Object.assign(existing,{description,phaseKey:visible.phaseKey||'general',offsetDays:derivedOffset,score});}
+    else grouped.set(titleKey,{id:`history:${titleKey}`,title,description,phaseKey:visible.phaseKey||'general',offsetDays:derivedOffset,usageCount:1,source:'history',alreadyInProject:currentTitles.has(titleKey),score,order:Number.MAX_SAFE_INTEGER});
+  }
+  return {items:[...grouped.values()].sort((a,b)=>a.score-b.score||Number(a.alreadyInProject)-Number(b.alreadyInProject)||(a.source==='history'?-1:1)-(b.source==='history'?-1:1)||b.usageCount-a.usageCount||a.order-b.order||a.title.localeCompare(b.title,'ru')).slice(0,maximum).map(({score,order,...item})=>item)};
 }
 export function getTask(db,u,{projectId,id,includeDeleted=false}) {
   const deleted=includeDeleted===true||includeDeleted==='true'; if(deleted) requireAccess(db,u,'history',projectId,'tasks');
@@ -332,9 +366,10 @@ export function guardProjectDateEdit(db,u,cmd) {
 
 export const operations = {
   'task.create': {authorize(db,u,c){assert(c.projectId,'Укажите проект');requireTaskAccess(db,u,c,'create');},run(db,u,c){const project=projectAccess(db,u,c.projectId,'read','tasks');return insert(db,u,'task',taskData(db,u,project,c.data||{}),c.projectId);}},
-  'task.edit': {authorize(db,u,c){assert(!Object.hasOwn(c.data||{},'status'),'Статус задачи меняется отдельным действием',409);const row=requireTask(db,u,c.projectId,c.entityId);requireTaskAccess(db,u,c,'edit',row,Object.keys(c.data||{}));},run(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId);version(row,c.version);const project=projectAccess(db,u,c.projectId,'read','tasks');return change(db,u,row,taskData(db,u,project,c.data||{}, {...row.data,id:row.id}),false,'edit');}},
+  'task.edit': {authorize(db,u,c){assert(!Object.hasOwn(c.data||{},'status'),'Статус задачи меняется отдельным действием',409);assert(!['organizerFocus','organizerFocusedAt','organizerFocusedBy'].some(key=>Object.hasOwn(c.data||{},key)),'Список актуальных организатора меняется отдельным действием',409);const row=requireTask(db,u,c.projectId,c.entityId);requireTaskAccess(db,u,c,'edit',row,Object.keys(c.data||{}));},run(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId);version(row,c.version);const project=projectAccess(db,u,c.projectId,'read','tasks');return change(db,u,row,taskData(db,u,project,c.data||{}, {...row.data,id:row.id}),false,'edit');}},
   'task.setStatus': {authorize(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId);requireTaskAccess(db,u,c,'edit',row);},run:setTaskStatus},
-  'task.delete': {authorize(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId);requireTaskAccess(db,u,c,'delete',row);},run(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId);version(row,c.version);const dependents=taskRows(db,u,c.projectId).filter(item=>(item.data.dependencyIds||[]).includes(row.id));assert(!dependents.length,'Сначала уберите эту задачу из зависимостей связанных задач',409,{code:'task_has_dependents',dependents:dependents.map(item=>({id:item.id,title:item.data.title,version:item.version}))});return change(db,u,row,row.data,true,'delete');}},
+  'task.setOrganizerFocus': {authorize(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId);requireAccess(db,u,'projects',null);requireTaskAccess(db,u,c,'edit',row,['organizerFocus']);},run:setOrganizerFocus},
+  'task.delete': {authorize(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId);requireTaskAccess(db,u,c,'delete',row);},run(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId);version(row,c.version);const dependents=taskRows(db,u,c.projectId).filter(item=>(item.data.dependencyIds||[]).includes(row.id));assert(!dependents.length,'Сначала уберите эту задачу из зависимостей связанных задач',409,{code:'task_has_dependents',dependents:dependents.map(item=>({id:item.id,title:item.data.title,version:item.version}))});return change(db,u,row,{...row.data,organizerFocus:false,organizerFocusedAt:null,organizerFocusedBy:null},true,'delete');}},
   'task.restore': {authorize(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId,{deleted:true});requireTaskAccess(db,u,c,'history',row);},run(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId,{deleted:true});version(row,c.version);validateDependencies(db,u,c.projectId,row.id,row.data.dependencyIds||[]);return change(db,u,row,row.data,false,'restore');}},
   'taskTemplate.apply': {authorize(db,u,c){requireTaskAccess(db,u,c,'create');},run:applyTemplate},
   'project.reschedule.apply': {authorize(db,u,c){requireTaskAccess(db,u,c,'edit');},run:applyReschedule},
@@ -351,4 +386,4 @@ export const operations = {
 };
 
 // Root may register these pure functions in the central dispatcher/old project-date guard.
-export const integrationHooks = { previewReschedule, previewTemplateApplication, previewBudgetApplication, listTasks, getTask, listApprovals, getApproval, guardProjectDateEdit };
+export const integrationHooks = { previewReschedule, previewTemplateApplication, previewBudgetApplication, listTasks, suggestTasks, getTask, listApprovals, getApproval, guardProjectDateEdit };
