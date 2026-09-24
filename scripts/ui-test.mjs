@@ -60,7 +60,7 @@ async function openPage(context, name) {
   watch(page, name);
   await page.goto(origin);
   await page.waitForLoadState('networkidle');
-  await page.getByText(/Подготовка, в которой|Сегодня|Все проекты|Входящие обращения/).first().waitFor();
+  await page.getByText(/Ваша история|Сегодня|Все проекты|Входящие обращения/).first().waitFor();
   return page;
 }
 
@@ -147,12 +147,48 @@ try {
   assert.equal(persistedRow.data[moneyColumn.id], 12345);
 
   await couplePage.goto(`${origin}/app/projects/${project.id}/finance/estimate`);
+  await couplePage.getByRole('button', { name: 'Смета пары', exact: true }).waitFor();
+  if (process.env.TIE_BUDGET_SCREENSHOT) await couplePage.screenshot({path:process.env.TIE_BUDGET_SCREENSHOT,fullPage:true});
+  const banquetName = couplePage.getByRole('textbox', { name: 'Название раздела Банкет' });
+  await banquetName.fill('Банкет и площадка UI');
+  await banquetName.press('Tab');
+  const venueEstimate = couplePage.getByRole('textbox', { name: 'Предполагаемые: Аренда площадки' });
+  await venueEstimate.fill('1000.50');
+  await venueEstimate.press('Tab');
+  const budgetSearch=couplePage.getByRole('searchbox',{name:'Поиск по смете'});
+  await budgetSearch.fill('Диджей');
+  await couplePage.getByRole('textbox',{name:'Название статьи Диджей'}).waitFor();
+  assert.equal(await couplePage.getByRole('textbox',{name:'Название статьи Аренда площадки'}).count(),0);
+  await couplePage.getByRole('button',{name:'Сбросить поиск'}).click();
+  const banquetRow=couplePage.getByRole('textbox',{name:'Название раздела Банкет и площадка UI'}).locator('xpath=ancestor::tr');
+  await banquetRow.getByRole('button',{name:'Добавить статью'}).click();
+  await couplePage.getByPlaceholder('Название статьи').fill('Новая статья UI');
+  await couplePage.getByRole('button',{name:'Добавить',exact:true}).click();
+  await couplePage.getByRole('textbox',{name:'Название статьи Новая статья UI'}).waitFor();
+  await couplePage.getByRole('button',{name:'Добавить раздел'}).click();
+  await couplePage.getByPlaceholder('Название раздела').fill('После свадьбы UI');
+  await couplePage.getByRole('button',{name:'Добавить',exact:true}).click();
+  const newSection=couplePage.getByRole('textbox',{name:'Название раздела После свадьбы UI'});
+  await newSection.waitFor();
+  await newSection.fill('После торжества UI');
+  await newSection.press('Tab');
+  const afterRow=couplePage.getByRole('textbox',{name:'Название раздела После торжества UI'}).locator('xpath=ancestor::tr');
+  await afterRow.getByRole('button',{name:'Добавить статью'}).click();
+  await couplePage.getByPlaceholder('Название статьи').fill('Альбом UI');
+  await couplePage.getByRole('button',{name:'Добавить',exact:true}).click();
+  await couplePage.getByRole('textbox',{name:'Название статьи Альбом UI'}).waitFor();
+  const albumActual=couplePage.getByRole('textbox',{name:'Фактические: Альбом UI'});
+  await albumActual.fill('900');await albumActual.press('Tab');
+  const albumPrepaid=couplePage.getByRole('textbox',{name:'Предоплата: Альбом UI'});
+  await albumPrepaid.fill('200');await albumPrepaid.press('Tab');
+  await couplePage.getByRole('textbox',{name:'Название статьи Альбом UI'}).locator('xpath=ancestor::tr').getByText('700',{exact:true}).waitFor();
+  await couplePage.getByRole('button', { name: 'Реестр выплат', exact: true }).click();
   await couplePage.getByRole('heading', { name: 'Смета и выплаты', exact: true }).waitFor();
   await couplePage.locator('.page-header').getByRole('button', { name: 'Статья', exact: true }).click();
   dialog = couplePage.getByRole('dialog', { name: 'Новая статья сметы' });
   await dialog.getByLabel('За что платим', { exact: true }).fill('Фотограф UI');
-  await dialog.getByLabel('Согласовано, ₽', { exact: true }).fill('1000.50');
-  await dialog.getByLabel('Оценка, ₽', { exact: true }).fill('1000.50');
+  await dialog.getByLabel('Стоимость для пары, ₽', { exact: true }).fill('1000.50');
+  await dialog.getByLabel('Оценка для пары, ₽', { exact: true }).fill('1000.50');
   await dialog.getByLabel('Дата выплаты', { exact: true }).fill('2027-07-17');
   await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await dialog.waitFor({ state: 'detached' });
@@ -184,9 +220,17 @@ try {
   await couplePage.waitForLoadState('networkidle');
   await openProjectFromList(couplePage, 'Couple UI Project');
   await couplePage.goto(`${origin}/app/projects/${project.id}/finance/estimate`);
+  await couplePage.getByRole('button', { name: 'Реестр выплат', exact: true }).click();
   await couplePage.getByText('Исправленный платёж UI', { exact: true }).waitFor();
 
   coupleState = await coupleApi.get(`/api/state?project=${project.id}`);
+  const budget=coupleState.entities.find(item=>item.kind==='coupleBudget')?.data;
+  assert.equal(budget.names[8],'Банкет и площадка UI');
+  assert.equal(budget.estimated[9],100050);
+  assert.equal(budget.extraItems[8][0].name,'Новая статья UI');
+  assert.equal(budget.names[budget.extraSections[0].row],'После торжества UI');
+  const albumId=budget.extraSections[0].items[0].row;
+  assert.equal(budget.actual[albumId]-budget.prepaid[albumId],70000);
   const photographer = coupleState.entities.find(item => item.kind === 'obligation' && item.data.title === 'Фотограф UI');
   const payments = coupleState.entities.filter(item => item.kind === 'movement' && item.data.obligationId === photographer.id);
   assert.equal(payments.length, 1);
@@ -213,14 +257,15 @@ try {
   await dialog.getByLabel('Пароль', { exact: true }).fill('applicant-ui-password');
   await dialog.getByRole('button', { name: 'Создать аккаунт', exact: true }).click();
   await dialog.waitFor({ state: 'detached' });
-  dialog = applicantPage.getByRole('dialog', { name: 'Заявка на свадьбу' });
-  await dialog.getByLabel('Как к вам обращаться', { exact: true }).fill('Заявка UI');
-  await dialog.getByLabel('Дата свадьбы', { exact: true }).fill('2027-09-09');
-  await dialog.getByLabel('Почта или телефон', { exact: true }).fill('@applicant-ui');
-  await dialog.getByLabel('Что для вас важно', { exact: true }).fill('Первичная заявка UI');
-  await dialog.getByRole('button', { name: 'Отправить заявку', exact: true }).click();
-  await dialog.getByText(/Заявка отправлена/).waitFor();
-  await dialog.getByRole('button', { name: 'Закрыть' }).click();
+  await applicantPage.getByRole('button', { name: 'Заполнить анкету' }).click();
+  const questionnaire = applicantPage.locator('form.questionnaire-form');
+  await questionnaire.locator('input[type="date"]').fill('2027-09-09');
+  await questionnaire.locator('input[placeholder="Как с вами связаться"]').fill('@applicant-ui');
+  await questionnaire.locator('input[placeholder="Как вас зовут?"]').fill('Заявка UI');
+  for (const answer of await questionnaire.locator('textarea').all()) await answer.fill('Ответ для проверки интерфейса');
+  await questionnaire.locator('.questionnaire-image-options input[type="checkbox"]').first().check();
+  await questionnaire.getByRole('button', { name: /Отправить анкету и заявку/ }).click();
+  await applicantPage.getByRole('heading', { name: 'Спасибо, мы получили вашу заявку.', exact: true }).waitFor();
 
   const adminContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const adminPage = await openPage(adminContext, 'admin');
@@ -234,19 +279,20 @@ try {
   await dialog.getByLabel('Причина или сообщение').fill('Уточните формат церемонии');
   await dialog.getByRole('button', { name: 'Сохранить решение', exact: true }).click();
   await dialog.waitFor({ state: 'detached' });
+  await adminPage.getByRole('tab', { name: /Обработанные/ }).click();
   await applicationRow.getByText(/Нужно уточнение/).waitFor();
 
   await applicantPage.reload();
   await applicantPage.waitForLoadState('networkidle');
-  await applicantPage.getByRole('heading', { name: 'Мои заявки', exact: true }).waitFor();
-  applicationRow = applicantPage.locator('.application-row').filter({ hasText: 'Заявка UI' });
-  await applicationRow.getByRole('button', { name: 'Уточнить заявку', exact: true }).click();
+  await applicantPage.getByRole('heading', { name: 'Организатор ждёт вашего ответа.', exact: true }).waitFor();
+  await applicantPage.getByText('Уточните формат церемонии').waitFor();
+  await applicantPage.getByRole('button', { name: 'Уточнить заявку', exact: true }).click();
   dialog = applicantPage.getByRole('dialog', { name: 'Уточнить заявку' });
   await dialog.getByLabel('Как к вам обращаться', { exact: true }).fill('Заявка UI уточнена');
   await dialog.getByLabel('Что уточнили').fill('Церемония на открытом воздухе');
   await dialog.getByRole('button', { name: 'Отправить уточнение', exact: true }).click();
   await dialog.waitFor({ state: 'detached' });
-  await applicationRow.getByText(/На рассмотрении/).waitFor();
+  await applicantPage.getByRole('heading', { name: 'Спасибо, мы получили вашу заявку.', exact: true }).waitFor();
 
   await adminPage.reload();
   await adminPage.waitForLoadState('networkidle');
@@ -257,6 +303,7 @@ try {
   await dialog.getByLabel('Решение').selectOption('approved');
   await dialog.getByRole('button', { name: 'Сохранить решение', exact: true }).click();
   await dialog.waitFor({ state: 'detached' });
+  await adminPage.getByRole('tab', { name: /Обработанные/ }).click();
   await applicationRow.getByText(/Одобрена/).waitFor();
 
   await applicantContext.close();

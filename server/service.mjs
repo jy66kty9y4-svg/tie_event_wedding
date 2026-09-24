@@ -9,6 +9,8 @@ import {guestInvites,validateGuestSchemaMutation,validateGuestRowMutation} from 
 import { executeModule, members as assignableMembers } from './v2/common.mjs';
 import { queueChanges, notifications } from './v2/calendar/index.mjs';
 import { DEFAULT_VENDOR_CATEGORIES } from '../src/vendor-categories.js';
+import { imageOptions, questionnaireQuestions } from '../src/questionnaire.js';
+import { coupleBudgetFind, coupleBudgetViewGroups, coupleBudgetDefaultName, coupleBudgetDefaultNote, coupleBudgetAmountFields } from '../src/couple-budget.js';
 
 export function bootstrap(db,b,sessionContext = {}) {
   return transaction(db,()=>{
@@ -25,10 +27,29 @@ export function bootstrap(db,b,sessionContext = {}) {
   });
 }
 function email(v) { const e=text(v,'Email',3,200).toLowerCase(); assert(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e),'Проверьте email'); return e; }
+function canManageUsers(db,u){return !!u.protected||can(db,u,'access')||can(db,u,'projects')&&grants(db,u).some(g=>g.project_id===null&&g.role_key==='organizer');}
+function managerPermissions(db,u){return new Set(permissions.filter(permission=>can(db,u,permission)));}
+function canManageAccount(db,u,target,allowed=null){if(!target||target.protected||target.id===u.id||!(allowed||canManageUsers(db,u)))return false;if(u.protected)return true;const granted=allowed||managerPermissions(db,u);return grants(db,target).every(g=>g.role_key!=='admin'&&g.permissions.every(p=>granted.has(p)));}
+function canAssignUserRole(db,u,role,allowed=null){if(!role||role.protected||!(allowed||canManageUsers(db,u)))return false;if(u.protected)return true;const granted=allowed||managerPermissions(db,u);return JSON.parse(role.permissions).every(p=>granted.has(p));}
+function revokeUserSessions(db,userId){db.prepare('DELETE FROM sessions WHERE user_id=?').run(userId);db.prepare('UPDATE orbit_session_registry SET revoked_at=COALESCE(revoked_at,?) WHERE user_id=? AND revoked_at IS NULL').run(now(),userId);}
 function applicationData(data,db,u) {
   assert(data&&typeof data==='object'&&!Array.isArray(data),'Проверьте заявку');
   const source={};for(const [key,kind] of [['sourceCaseId','publicCase'],['sourcePackageId','servicePackage']])if(data[key]){const row=entity(db,data[key]);assert(row&&row.agency_id===u.agency_id&&!row.deleted&&row.kind===kind&&row.data.status==='published'&&row.data.publishedRevisionId,'Публикация больше недоступна. Уберите источник и отправьте обычную заявку.',409);source[key]=row.id;}
-  return {name:text(data.name),date:date(data.date,false),contact:text(data.contact,'Контакт',3,500),message:text(data.message,'Пожелания',1,4000),...source};
+  return {name:text(data.name),date:date(data.date,false),contact:text(data.contact,'Контакт',3,500),message:text(data.message,'Пожелания',1,4000),...source,...(Object.hasOwn(data,'questionnaire')?{questionnaire:validateQuestionnaire(data.questionnaire),questionnaireSubmittedAt:now()}: {})};
+}
+function validateQuestionnaire(value){
+  assert(value&&typeof value==='object'&&!Array.isArray(value),'Проверьте анкету');
+  assert(Object.keys(value).length===questionnaireQuestions.length&&Object.keys(value).every(key=>questionnaireQuestions.some(question=>question.id===key)),'Проверьте вопросы анкеты');
+  const answers={};
+  for(const {id,label} of questionnaireQuestions){
+    if(id==='images'){
+      const selected=value[id];
+      assert(Array.isArray(selected)&&selected.length>=1&&selected.length<=6,'Выберите близкие вам образы');
+      answers[id]=selected.map(answer=>text(answer,label,1,200));
+      assert(new Set(answers[id]).size===answers[id].length&&answers[id].filter(answer=>!imageOptions.includes(answer)).length<=1,'Проверьте выбранные образы');
+    } else answers[id]=text(value[id],label,1,2000);
+  }
+  return answers;
 }
 function settingsData(settings) {
   assert(settings&&typeof settings==='object'&&!Array.isArray(settings),'Проверьте настройки');
@@ -84,7 +105,7 @@ export function publicInfo(db,slug='tie') {
 function filteredRow(db,u,r) {
   const section=sectionOf(r);
   const accessRow=accessRowId(r);
-  const required=r.kind==='obligation'||r.kind==='movement'||r.kind==='category'?['read','finance']:r.kind==='file'?['read','files']:['read'];
+  const required=['obligation','movement','category','coupleBudget'].includes(r.kind)?['read','finance']:r.kind==='file'?['read','files']:['read'];
   if(!can(db,u,required,r.project_id,section,accessRow)) return null;
   const table=r.kind==='row'?entity(db,r.parent_id):null;
   const liveFields=table&&!table.deleted?new Set(table.data.columns.map(column=>column.id)):null;
@@ -154,12 +175,13 @@ export function snapshot(db,u,project=null,offline=false) {
       if(row.kind==='row'&&!tableIds.has(row.parent_id)) continue;
       if(offline) {
         if(row.kind==='row'&&!prepared.includes(row.parent_id)) continue;
-        if(['obligation','category','movement'].includes(row.kind)&&!budget&&!payouts) continue;
+        if(['obligation','category','movement','coupleBudget'].includes(row.kind)&&!budget&&!payouts) continue;
         if(row.kind==='movement'&&!budget) continue;
         if(row.kind==='category'&&!budget) continue;
+        if(row.kind==='coupleBudget'&&!budget) continue;
         if(row.kind==='selection'&&!vendors) continue;
         if(row.kind==='file'&&!files) continue;
-        if(!['row','obligation','category','movement','selection','file','section'].includes(row.kind)) continue;
+        if(!['row','obligation','category','movement','coupleBudget','selection','file','section'].includes(row.kind)) continue;
       }
       const filtered=filteredRow(db,u,row); if(filtered) result.entities.push(filtered);
     }
@@ -206,10 +228,12 @@ export function snapshot(db,u,project=null,offline=false) {
     result.global.push(...fees); result.financials=financials(result.global); result.agencyRevenue=agencyRevenueProjection(db,u,result.projects);
   }
   if(can(db,u,['read','catalog'])) result.vendorHistory=db.prepare("SELECT id,project_id,data FROM entities WHERE agency_id=? AND kind='selection' AND deleted=0").all(u.agency_id).map(r=>({...r,data:JSON.parse(r.data)}));
-  if(can(db,u,'access')) {
-    result.users=db.prepare('SELECT id,agency_id,email,name,protected,disabled,version FROM users WHERE agency_id=?').all(u.agency_id);
-    result.roles=db.prepare('SELECT * FROM roles WHERE agency_id=?').all(u.agency_id).map(r=>({...r,permissions:JSON.parse(r.permissions)}));
-    result.assignments=db.prepare('SELECT * FROM grants WHERE agency_id=?').all(u.agency_id).map(g=>({...g,restrictions:JSON.parse(g.restrictions)}));
+  result.canManageUsers=canManageUsers(db,u);
+  if(result.canManageUsers) {
+    const allowed=u.protected?null:managerPermissions(db,u);
+    result.users=db.prepare('SELECT id,agency_id,email,name,protected,disabled,version FROM users WHERE agency_id=? ORDER BY name,email').all(u.agency_id).map(target=>({...target,manageable:canManageAccount(db,u,target,allowed)}));
+    result.roles=db.prepare('SELECT * FROM roles WHERE agency_id=?').all(u.agency_id).filter(role=>u.protected||canAssignUserRole(db,u,role,allowed)).map(r=>({...r,permissions:JSON.parse(r.permissions)}));
+    if(can(db,u,'access'))result.assignments=db.prepare('SELECT * FROM grants WHERE agency_id=?').all(u.agency_id).map(g=>({...g,restrictions:JSON.parse(g.restrictions)}));
   }
   return result;
 }
@@ -244,6 +268,10 @@ function validateData(db,u,kind,data,p,parent,current=null) {
   }
   if(kind==='row') { const t=getScoped(db,u,parent,p,'table'); assert(!t.deleted,'Таблица удалена',409); validateRow(db,u,t,d); }
   if(kind==='category'||kind==='vendorCategory') { d.archived=!!d.archived; if(p) d.scope='wedding'; }
+  if(kind==='vendorCategory'&&!d.archived&&(!current||d.name!==current.data.name||current.data.archived)) {
+    const key=d.name.toLocaleLowerCase('ru');
+    assert(!entities(db,u.agency_id,null,'vendorCategory').some(category=>category.id!==current?.id&&!category.data.archived&&category.data.name.toLocaleLowerCase('ru')===key),'Категория с таким названием уже есть.',409);
+  }
   if(kind==='vendor') {
     d.contact=d.contact?text(d.contact,'Контакт',1,1000):''; d.portfolio=safeUrl(d.portfolio); d.price=amount(d.price??null,true); d.services=d.services?text(d.services,'Услуги',1,4000):''; d.terms=d.terms?text(d.terms,'Условия',1,8000):''; d.notes=d.notes?text(d.notes,'Заметки',1,8000):''; d.archived=!!d.archived;
     if(d.categoryId) getScoped(db,u,d.categoryId,null,'vendorCategory'); d.updatedOn=date(d.updatedOn||now().slice(0,10));
@@ -302,6 +330,10 @@ export function execute(db,user,cmd) {
       const a=getScoped(db,u,cmd.entityId,null,'application'); assert(a.data.userId===u.id,'Можно изменить только свою заявку',403); version(a,cmd.version);
       assert(['clarification','rejected'].includes(a.data.status),'Эта заявка сейчас не ожидает исправления',409);
       result=change(db,u,a,{...a.data,...applicationData(cmd.data,db,u),status:'review',reason:'',projectId:null},false,'respond');
+    } else if(op==='application.questionnaire') {
+      const a=getScoped(db,u,cmd.entityId,null,'application'); assert(a.data.userId===u.id,'Можно изменить только свою анкету',403); version(a,cmd.version);
+      assert(a.data.status!=='approved','Заявка уже одобрена',409);
+      result=change(db,u,a,{...a.data,questionnaire:validateQuestionnaire(cmd.answers),questionnaireSubmittedAt:now()},false,'questionnaire');
     } else if(op==='application.review') {
       requireAccess(db,u,'applications'); const a=getScoped(db,u,cmd.entityId,null,'application');
       if(a.data.status==='approved'&&cmd.status==='approved') result=a;
@@ -330,7 +362,33 @@ export function execute(db,user,cmd) {
       assert(invite.created_by===u.id||can(db,u,'access'),'Можно отозвать только своё приглашение',403); requireAccess(db,u,'invite',invite.project_id); assert(!invite.used_by,'Приглашение уже принято',409);
       db.prepare('UPDATE invitations SET revoked=1 WHERE digest=?').run(invite.digest); result={id:invite.digest,revoked:true};
     } else if(op==='invite.accept') result=acceptInvitation(db,u,cmd.token);
-    else if(op==='role.save') {
+    else if(op==='user.create') {
+      assert(canManageUsers(db,u),'Недостаточно прав',403);
+      const name=text(cmd.name),address=email(cmd.email),role=db.prepare('SELECT * FROM roles WHERE id=? AND agency_id=?').get(cmd.roleId,u.agency_id);
+      assert(canAssignUserRole(db,u,role),'Эту роль нельзя назначить',403);
+      const scope=cmd.projectId||null;
+      if(['couple','coordinator','contractor'].includes(role.key))assert(scope,'Выберите свадьбу для этой роли');
+      if(role.key==='organizer')assert(!scope,'Организатор работает на уровне агентства');
+      if(scope){const project=getScoped(db,u,scope,undefined,'project');assert(!project.deleted&&projectVisible(db,u,scope),'Свадьба недоступна',403);}
+      assert(!db.prepare('SELECT id FROM users WHERE agency_id=? AND email=?').get(u.agency_id,address),'Этот email уже зарегистрирован',409);
+      const id=uid();db.prepare('INSERT INTO users(id,agency_id,email,name,password) VALUES(?,?,?,?,?)').run(id,u.agency_id,address,name,passwordHash(cmd.password));
+      const created=db.prepare('SELECT * FROM users WHERE id=?').get(id);grant(db,created,role.id,scope);
+      result={id,name,email:address,disabled:false,version:created.version};audit(db,u,{id,kind:'user',project_id:null,data:{name,email:address,roleId:role.id,projectId:scope}},null,'create');
+    } else if(['user.password','user.remove','user.restore'].includes(op)) {
+      const target=db.prepare('SELECT * FROM users WHERE id=? AND agency_id=?').get(cmd.userId,u.agency_id);
+      assert(target,'Пользователь не найден',404);assert(canManageAccount(db,u,target),'Недостаточно прав',403);version(target,cmd.version);
+      if(op==='user.password'){
+        assert(!target.disabled,'Сначала восстановите пользователя',409);
+        db.prepare('UPDATE users SET password=?,version=version+1 WHERE id=?').run(passwordHash(cmd.password),target.id);
+        revokeUserSessions(db,target.id);result={id:target.id,passwordChanged:true};
+      }else{
+        assert(op==='user.remove'?!target.disabled:!!target.disabled,op==='user.remove'?'Пользователь уже удалён':'Пользователь уже активен',409);
+        db.prepare('UPDATE users SET disabled=?,version=version+1 WHERE id=?').run(op==='user.remove'?1:0,target.id);
+        if(op==='user.remove')revokeUserSessions(db,target.id);
+        result={id:target.id,disabled:op==='user.remove'};
+      }
+      audit(db,u,{id:target.id,kind:'user',project_id:null,data:{name:target.name,email:target.email,action:op}},null,op);
+    } else if(op==='role.save') {
       requireAccess(db,u,'access'); assert(Array.isArray(cmd.permissions)&&cmd.permissions.every(x=>permissions.includes(x)),'Неизвестное разрешение'); const name=text(cmd.name),id=cmd.roleId||uid();
       const existing=db.prepare('SELECT * FROM roles WHERE id=? AND agency_id=?').get(id,u.agency_id);
       if(existing) { assert(!existing.protected,'Роль администратора защищена',403); version(existing,cmd.version); db.prepare('UPDATE roles SET name=?,permissions=?,version=version+1 WHERE id=?').run(name,JSON.stringify(cmd.permissions),id); }
@@ -347,7 +405,9 @@ export function execute(db,user,cmd) {
       requireAccess(db,u,'settings'); const a=db.prepare('SELECT * FROM agencies WHERE id=?').get(u.agency_id); version(a,cmd.version);
       const name=text(cmd.name),s=settingsData(cmd.settings);
       db.prepare('UPDATE agencies SET name=?,settings=?,version=version+1 WHERE id=?').run(name,JSON.stringify(s),u.agency_id); result={ok:true,name,settings:s}; audit(db,u,{id:u.agency_id,kind:'settings',project_id:null,data:s},a,'edit');
-    } else if(op==='movement.save'||op==='movement.delete') result=movement(db,u,cmd);
+    } else if(op==='coupleBudget.cell') result=saveCoupleBudgetCell(db,u,cmd);
+    else if(op==='coupleBudget.section.add'||op==='coupleBudget.item.add') result=addCoupleBudgetStructure(db,u,cmd);
+    else if(op==='movement.save'||op==='movement.delete') result=movement(db,u,cmd);
     else if(op==='entity.create'||op==='entity.edit'||op==='entity.delete'||op==='entity.restore') result=mutateEntity(db,u,cmd);
     else assert(false,'Неизвестное действие');
     queueChanges(db,u,beforeAudit);
@@ -359,6 +419,9 @@ function authorizeCommand(db,u,c) {
   const p=c.projectId||null;
   const actions={'project.create':'projects','application.review':'applications','role.save':'access','grants.save':'access','settings.save':'settings','invite.create':'invite'};
   if(actions[c.op]) requireAccess(db,u,actions[c.op],c.op==='invite.create'?p:null);
+  if(c.op.startsWith('user.'))assert(canManageUsers(db,u),'Недостаточно прав',403);
+  if(c.op==='coupleBudget.cell')requireAccess(db,u,['edit','finance'],p,'budget',null,[c.field]);
+  if(c.op==='coupleBudget.section.add'||c.op==='coupleBudget.item.add')requireAccess(db,u,['create','finance'],p,'budget',null,[c.op==='coupleBudget.section.add'?'extraSections':'extraItems']);
   if(c.op.startsWith('movement.')) {
     const old=c.entityId?getScoped(db,u,c.entityId,p,'movement'):null;
     const type=c.data?.type||old?.data.type;
@@ -390,6 +453,55 @@ function authorizeCommand(db,u,c) {
     assert(p || special,'Неизвестная область записи');
   }
 }
+function saveCoupleBudgetCell(db,u,c) {
+  const p=c.projectId,row=c.row,field=c.field;
+  assert(p&&(Number.isInteger(row)||typeof row==='string'&&row.length<100),'Укажите строку сметы');
+  const old=entities(db,u.agency_id,p,'coupleBudget')[0]||null;
+  const data=structuredClone(old?.data||{}),found=coupleBudgetFind(data,row);
+  assert(found && (field==='name'||found.item && (coupleBudgetAmountFields.includes(field)||field==='note'||field==='organizer')),'Поле сметы недоступно',400);
+  if(field==='organizer')assert(![28,51].includes(found.group.row),'Этот раздел уже целиком включён в бюджет организатора',400);
+  for(const key of ['names','notes','estimated','actual','prepaid','organizerRows'])data[key]||={};
+  if(field==='name') {
+    const value=text(c.value,'Название',1,200);
+    if(value===coupleBudgetDefaultName(row,data))delete data.names[row];else data.names[row]=value;
+  } else if(field==='note') {
+    const value=text(c.value,'Примечание',0,500);
+    if(value===coupleBudgetDefaultNote(row,data))delete data.notes[row];else data.notes[row]=value;
+  } else if(field==='organizer') {
+    assert(typeof c.value==='boolean','Проверьте признак бюджета организатора');
+    data.organizerRows[row]=c.value;
+  } else {
+    const value=amount(c.value??null,true);
+    if(value===null)delete data[field][row];else data[field][row]=value;
+  }
+  const saved=old?change(db,u,old,data,false,'edit'):insert(db,u,'coupleBudget',data,p);
+  return filteredRow(db,u,saved);
+}
+function addCoupleBudgetStructure(db,u,c) {
+  const p=c.projectId;
+  assert(p,'Укажите свадьбу');
+  const old=entities(db,u.agency_id,p,'coupleBudget')[0]||null;
+  const data=structuredClone(old?.data||{});
+  let createdId;
+  if(c.op==='coupleBudget.section.add') {
+    assert(coupleBudgetViewGroups(data).length<30,'Не более 30 разделов сметы');
+    const name=text(c.name,'Раздел',1,200);
+    createdId=`section_${uid()}`;
+    data.extraSections=[...(data.extraSections||[]),{row:createdId,name,totalLabel:'Итого по разделу',items:[]}];
+  } else {
+    const group=coupleBudgetViewGroups(data).find(group=>String(group.row)===String(c.sectionId));
+    assert(group,'Раздел сметы не найден',404);
+    assert(coupleBudgetViewGroups(data).reduce((count,section)=>count+section.items.length,0)<500,'Не более 500 статей сметы');
+    const name=text(c.name,'Статья',1,200),note=c.note?text(c.note,'Примечание',1,500):'';
+    assert(typeof c.organizer==='boolean','Проверьте признак бюджета организатора');
+    createdId=`item_${uid()}`;
+    const item={row:createdId,name,note,organizer:c.organizer};
+    if(typeof group.row==='number')data.extraItems={...(data.extraItems||{}),[group.row]:[...(data.extraItems?.[group.row]||[]),item]};
+    else data.extraSections=(data.extraSections||[]).map(section=>section.row===group.row?{...section,items:[...section.items,item]}:section);
+  }
+  const saved=old?change(db,u,old,data,false,'edit'):insert(db,u,'coupleBudget',data,p);
+  return {...filteredRow(db,u,saved),createdId};
+}
 function referencesEntity(db,u,p,row,targetId) {
   if(row.parent_id===targetId) return true;
   for(const key of ['sectionId','vendorId','categoryId','obligationId','selectionId','fileId']) if(row.data[key]===targetId) return true;
@@ -415,6 +527,10 @@ function mutateEntity(db,u,c) {
     assert(table.version===c.schemaVersion,'Структура таблицы изменилась. Проверьте правку перед повтором.',409,{table});
   }
   if(c.op==='entity.delete') {
+    if(kind==='vendorCategory') {
+      const used=db.prepare("SELECT id FROM entities WHERE agency_id=? AND kind IN ('vendor','selection') AND deleted=0 AND json_extract(data,'$.categoryId')=? LIMIT 1").get(u.agency_id,old.id);
+      assert(!used,'Категория используется подрядчиками. Сначала перенесите их в другую категорию.',409);
+    }
     if(kind==='row'){const table=entity(db,old.parent_id),m=table?.data.semanticMap;if(m?.seatingTable&&old.data[m.seatingTable]){requireAccess(db,u,'edit',p,table.id,old.id,[m.seatingTable,m.seatIndex]);return change(db,u,old,{...old.data,[m.seatingTable]:'',[m.seatIndex]:''},true,'delete_unassign');}}
     if(kind==='file'){const linked=entities(db,u.agency_id,p,'approvalRevision',true).some(rev=>(rev.data.options||[]).some(o=>[...(o.fileIds||[]),...(o.imageIds||[])].includes(old.id)));assert(!linked,'Файл включён в историю согласования и должен сохраняться',409);}
     if(kind==='obligation') {
@@ -449,6 +565,11 @@ function mutateEntity(db,u,c) {
     const table=getScoped(db,u,old.parent_id,p,'table'); validateRow(db,u,table,data,Object.keys(c.data||{}));
   } else data=validateData(db,u,kind,data,p,old?.parent_id||c.parentId,old);
   let result=old?change(db,u,old,data,false,c.op==='entity.restore'?'restore':'edit'):insert(db,u,kind,data,p,c.parentId||null);
+  if(kind==='vendorCategory'&&old&&data.name!==old.data.name) {
+    // Wedding prices and terms remain snapshots; a corrected category label is shared.
+    const linked=db.prepare("SELECT id FROM entities WHERE agency_id=? AND kind='selection' AND deleted=0 AND json_extract(data,'$.categoryId')=?").all(u.agency_id,result.id);
+    for(const {id} of linked) {const selection=entity(db,id);change(db,u,selection,{...selection.data,categoryName:data.name},false,'categoryRename');}
+  }
   if(kind==='row'&&entity(db,old?.parent_id||c.parentId)?.data.key==='timing')for(const site of entities(db,u.agency_id,p,'microsite'))if(site.data.status==='published'&&!site.data.dirty)change(db,u,site,{...site.data,dirty:true},false,'timingChanged');
   if(kind==='selection') {
     // Project prices are snapshots. General catalog updates never propagate here.

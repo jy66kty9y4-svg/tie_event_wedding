@@ -251,7 +251,8 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
       }
       if(url.pathname==='/api/v2/calendar/google/callback'&&req.method==='GET') {
         const result=await finishGoogleCalendar(db,url.searchParams.get('state'),url.searchParams.get('code'));
-        res.writeHead(303,securityHeaders({'Location':`/app/projects/${encodeURIComponent(result.projectId)}/calendar?calendarConnected=google`,'Cache-Control':'no-store'}));
+        const target=result.projectId==='agency'?'/app/settings?calendarConnected=google':`/app/projects/${encodeURIComponent(result.projectId)}/calendar?calendarConnected=google`;
+        res.writeHead(303,securityHeaders({'Location':target,'Cache-Control':'no-store'}));
         return res.end();
       }
 

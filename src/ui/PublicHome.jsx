@@ -32,7 +32,7 @@ export function PublicHome({ info, onAuth, onApplication }) {
       <div className={`ui-ph-nav-actions${menuOpen ? ' is-open' : ''}`}>
         <nav aria-label="Основная навигация"><a href="#stories" onClick={closeMenu}>Истории</a><a href="#services" onClick={closeMenu}>Услуги</a><a href="#contact" onClick={closeMenu}>Контакты</a></nav>
         <button className="ui-ph-login" type="button" onClick={() => openAuth('login')}>Войти</button>
-        <button className="ui-ph-nav-cta" type="button" onClick={() => openAuth('register')}>Создать пространство</button>
+        <button className="ui-ph-nav-cta" type="button" onClick={() => openAuth('register')}>Создать аккаунт</button>
       </div>
     </header>
 

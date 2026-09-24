@@ -6,24 +6,34 @@ import { api, command, discardCommand, getOfflineStatus, initClient, loadState, 
 import { dateLabel, money, permissionLabels, permissions, statuses, today } from './shared.js';
 import { PublicHome } from './ui/PublicHome.jsx';
 import { AppShell } from './ui/AppShell.jsx';
+import { ClientWaitingPage } from './ui/ClientWaitingPage.jsx';
+import { QuestionnairePage } from './ui/QuestionnairePage.jsx';
+import { questionnaireSections } from './questionnaire.js';
 import { ConfirmDialog, FormField, Modal, SafeForm } from './ui/Modal.jsx';
 import { Mark, Icon } from './ui/Mark.jsx';
 import { Notice } from './ui/Notice.jsx';
 import { TableWorkspace } from './ui/TableWorkspace.jsx';
 import { findProjectTable } from './ui/project-tables.mjs';
+import { isPastWedding } from './project-date-tabs.mjs';
+import { weddingVendorCategories } from './vendor-category-tabs.mjs';
 import {SectionEditor,TableEditor,InvitationEditor,Payouts,ConflictEditor} from './ui/ProjectTools.jsx';
 import {GrantEditor,TemplateEditor,CategoryEditor} from './ui/ManagementForms.jsx';
+import {UserCreateForm,UserPasswordForm} from './ui/UserAccountForms.jsx';
+import {CoupleBudget} from './ui/CoupleBudget.jsx';
 import {Dashboard,CalendarWorkspace,CalendarIntegrationSettings,NotificationCenter,NotificationPreferences,ReadinessSettings,VerificationPanel} from './v2/calendar/Workspace.jsx';
 import {GuestWorkspace,SeatingWorkspace} from './v2/guest/Workspace.jsx';
 import {TaskWorkspace,ApprovalWorkspace,RescheduleDialog} from './v2/workflow/Workspace.jsx';
 import {MicrositeWorkspace,AgencyPublishingWorkspace} from './v2/publishing/Workspace.jsx';
 import {parseRoute,viewUrl} from './v2/routes.js';
 import {confirmNavigation} from './ui/unsaved-changes.mjs';
-import {DEFAULT_VENDOR_CATEGORIES} from './vendor-categories.js';
 import {downloadBudgetXlsx,downloadTableXlsx} from './export-workbooks.js';
 import './styles.css';
 import './ui/collections.css';
+import './ui/applications.css';
+import './ui/settings-workspace.css';
 const applicationDraftKey='tie:application-draft';
+const adminWorkspaceKey='tie:admin-workspace';
+const initialAdminWorkspace=()=>{try{const saved=sessionStorage.getItem(adminWorkspaceKey);return ['organizer','couple','contractor'].includes(saved)?saved:'organizer'}catch{return 'organizer'}};
 function savedApplication(){try{return JSON.parse(sessionStorage.getItem(applicationDraftKey)||'{}')}catch{return {}}}
 const applicationEntry=new URLSearchParams(location.search).get('application')==='1';
 const incomingSource=Object.fromEntries(['sourceCaseId','sourcePackageId'].map(key=>[key,new URLSearchParams(location.search).get(key)]).filter(([,value])=>value));
@@ -33,6 +43,7 @@ const dataOf = item => item?.data || item || {};
 const byKind = (state, kind) => arr(state?.entities || state?.global).filter(item => item.kind === kind && !item.deleted);
 const agencySlug = () => new URLSearchParams(location.search).get('agency') || 'tie';
 const has = (state, action, projectId = null) => !!state?.user?.protected || arr(state?.grants).some(g=>(g.project_id===null || g.project_id===projectId) && (g.permissions||[]).includes(action));
+const awaitingClientAccess=state=>!!state?.user&&!state.project&&!has(state,'projects')&&!arr(state.projects).length&&!arr(state.grants).some(g=>g.role_key&&g.role_key!=='couple');
 const permitted=(state,action,section,row,field)=>!!state?.user?.protected||arr(state?.grants).some(g=>{
  const actions=Array.isArray(action)?action:[action],r=g.restrictions||{};
  return actions.every(a=>g.permissions.includes(a))&&(g.project_id===null||g.project_id===state?.project?.id)&&(!r.sections?.length||r.sections.includes(section))&&(!r.rows?.length||row===undefined||r.rows.includes(row))&&(!r.fields?.length||field===undefined||(Array.isArray(field)?field:[field]).every(f=>r.fields.includes(f)))&&(!(r.rows?.length||r.fields?.length)||!actions.some(a=>['structure','invite','history'].includes(a)));
@@ -166,11 +177,13 @@ function ProjectForm({
   return <Modal title={project ? 'Данные свадьбы' : 'Новая свадьба'} onClose={onClose}><SafeForm className="form-stack" onSubmit={submit}><FormField label="Название"><input autoFocus required placeholder="Алина и Максим" value={f.name} onChange={e => set('name', e.target.value)} /></FormField><div className="form-columns"><FormField label="Дата"><input required type="date" disabled={!!project} value={f.date} onChange={e => set('date', e.target.value)} />{project&&<button type="button" className="text-button" onClick={onReschedule}>Перенести дату или часовой пояс</button>}</FormField>{showBudgetLimit&&<FormField label="Лимит бюджета, ₽"><input type="number" min="0" step="0.01" value={f.limit} onChange={e => set('limit', e.target.value)} /></FormField>}</div>{project&&<FormField label="Место"><input placeholder="Площадка ещё не выбрана" value={f.location} onChange={e => set('location', e.target.value)} /></FormField>}<FormField label="Заметка для команды"><textarea value={f.notes} onChange={e => set('notes', e.target.value)} /></FormField>{!project&&templates.length>0&&<FormField label="Шаблон"><select value={f.templateId||''} onChange={e=>set('templateId',e.target.value)}><option value="">Основной</option>{templates.map(t=><option value={t.id} key={t.id}>{t.data.name}</option>)}</select></FormField>}{project&&<><FormField label="Состояние проекта"><select value={f.status} onChange={e=>set('status',e.target.value)}>{['planning','confirmed','completed','archived'].map(k=><option value={k} key={k}>{statuses[k]||k}</option>)}</select></FormField><fieldset className="permission-grid"><legend>Доступно без сети после подготовки</legend>{Object.entries({payouts:'Предстоящие выплаты',budget:'Полная смета и журнал',vendors:'Подрядчики',files:'Список файлов'}).map(([key,label])=><label key={key}><input type="checkbox" checked={f.offline.includes(key)} onChange={e=>set('offline',e.target.checked?[...f.offline,key]:f.offline.filter(x=>x!==key))}/>{label}</label>)}</fieldset><p className="quiet-copy">Каждая рабочая таблица включается отдельно в её структуре. Файлы требуют сети для скачивания.</p></>}<FormActions onCancel={onClose} label={project ? 'Сохранить изменения' : 'Создать свадьбу'} busy={busy} /></SafeForm></Modal>;
 }
 function Projects({state,onProject,onCreate,onEdit}) {
-  const [query,setQuery]=useState(''),[status,setStatus]=useState('');
-  const all=arr(state.projects),projects=all.filter(project=>{
+  const [query,setQuery]=useState(''),[status,setStatus]=useState(''),[dateTab,setDateTab]=useState('current');
+  const all=arr(state.projects),now=new Date(),past=all.filter(project=>isPastWedding(project,now)),current=all.filter(project=>!isPastWedding(project,now));
+  const inTab=dateTab==='past'?past:current,projects=inTab.filter(project=>{
     const d=dataOf(project); return (!status||d.status===status)&&JSON.stringify(d).toLocaleLowerCase('ru').includes(query.toLocaleLowerCase('ru'));
   });
-  return <><PageHeader eyebrow="Рабочее пространство" title="Свадьбы" action={has(state,'projects')&&<button className="button" onClick={onCreate}><Icon name="plus"/>Новая свадьба</button>}><p className="subtitle">Все пары, даты и детали подготовки — в одном месте.</p></PageHeader><div className="filters collection-filters"><label className="search"><Icon name="search"/><input aria-label="Поиск свадьбы" placeholder="Найти пару или площадку" value={query} onChange={e=>setQuery(e.target.value)}/></label><select aria-label="Состояние свадьбы" value={status} onChange={e=>setStatus(e.target.value)}><option value="">Все свадьбы</option>{['planning','confirmed','completed','archived'].map(k=><option value={k} key={k}>{statuses[k]||k}</option>)}</select><span className="quiet-copy">Найдено: {projects.length}</span></div><div className="project-grid collection-projects">{projects.map(project=>{const d=dataOf(project);return <article className="project-card" key={project.id}><div className="project-card-top"><span className={`status-badge ${d.status||'planning'}`}><span className={`status-dot ${d.status||'planning'}`}/>{statuses[d.status]||'Подготовка'}</span>{has(state,'projects')&&<button className="icon-button" onClick={()=>onEdit(project)} aria-label={`Изменить свадьбу ${d.name||project.name}`}>•••</button>}</div><button className="project-open" onClick={()=>onProject(project)}><h2>{d.name||project.name}</h2><p><Icon name="calendar"/>{dateLabel(d.date)}</p><p><Icon name="projects"/>{d.location||'Площадка ещё не выбрана'}</p><span className="project-card-foot">Открыть свадьбу <Icon name="arrow"/></span></button></article>})}</div>{!projects.length&&<Empty title={all.length?'Свадьбы не найдены':'Пока нет свадеб'} text={all.length?'Измените запрос или выберите другое состояние.':'Создайте первую свадьбу или одобрьте входящую заявку.'} action={!all.length&&has(state,'projects')?'Новая свадьба':null} onAction={onCreate}/>}</>;
+  const filtered=!!query||!!status;
+  return <><PageHeader eyebrow="Рабочее пространство" title="Свадьбы" action={has(state,'projects')&&<button className="button" onClick={onCreate}><Icon name="plus"/>Новая свадьба</button>}><p className="subtitle">Актуальные свадьбы и прошедшие даты — отдельно.</p></PageHeader><div className="project-date-tabs" role="tablist" aria-label="Свадьбы по дате"><button type="button" role="tab" aria-selected={dateTab==='current'} aria-controls="project-date-panel" className={dateTab==='current'?'active':''} onClick={()=>setDateTab('current')}>Актуальные <span>{current.length}</span></button><button type="button" role="tab" aria-selected={dateTab==='past'} aria-controls="project-date-panel" className={dateTab==='past'?'active':''} onClick={()=>setDateTab('past')}>Завершено <span>{past.length}</span></button></div><p className="project-date-note">Вкладка определяется датой свадьбы. Сегодняшние свадьбы остаются актуальными.</p><div id="project-date-panel" role="tabpanel" className="project-date-panel"><div className="filters collection-filters"><label className="search"><Icon name="search"/><input aria-label="Поиск свадьбы" placeholder="Найти пару или площадку" value={query} onChange={e=>setQuery(e.target.value)}/></label><select aria-label="Состояние свадьбы" value={status} onChange={e=>setStatus(e.target.value)}><option value="">Все свадьбы</option>{['planning','confirmed','completed','archived'].map(k=><option value={k} key={k}>{statuses[k]||k}</option>)}</select><span className="quiet-copy">Найдено: {projects.length}</span></div><div className="project-grid collection-projects">{projects.map(project=>{const d=dataOf(project);return <article className="project-card" key={project.id}><div className="project-card-top"><span className={`status-badge ${d.status||'planning'}`}><span className={`status-dot ${d.status||'planning'}`}/>{statuses[d.status]||'Подготовка'}</span>{has(state,'projects')&&<button className="icon-button" onClick={()=>onEdit(project)} aria-label={`Изменить свадьбу ${d.name||project.name}`}>•••</button>}</div><button className="project-open" onClick={()=>onProject(project)}><h2>{d.name||project.name}</h2><p><Icon name="calendar"/>{dateLabel(d.date)}</p><p><Icon name="projects"/>{d.location||'Площадка ещё не выбрана'}</p><span className="project-card-foot">Открыть свадьбу <Icon name="arrow"/></span></button></article>})}</div>{!projects.length&&<Empty title={filtered?'Свадьбы не найдены':dateTab==='past'?'Завершённых свадеб пока нет':'Актуальных свадеб пока нет'} text={filtered?'Измените запрос или выберите другое состояние.':dateTab==='past'?'Свадьбы появятся здесь на следующий день после даты проведения.':all.length?'Все свадьбы с прошедшими датами находятся во вкладке «Завершено».':'Создайте первую свадьбу или одобрьте входящую заявку.'} action={!all.length&&has(state,'projects')?'Новая свадьба':null} onAction={onCreate}/>}</div></>;
 }
 function PageHeader({
   eyebrow,
@@ -213,7 +226,13 @@ function Metric({
   return <article className="metric"><span>{label}</span><strong>{value}</strong><small>{note}</small></article>;
 }
 function CategoryList({items,onEdit}) { return onEdit?<div className="panel category-list"><div className="button-group">{items.map(c=><button className="button quiet small" key={c.id} onClick={()=>onEdit(c)}>{c.data.name}{c.data.archived?' · Архив':''}</button>)}<button className="text-button" onClick={()=>onEdit()}>+ Категория</button></div></div>:null; }
-function Finance({
+function Finance(props) {
+  const [view,setView]=useState('sheet');
+  useEffect(()=>setView('sheet'),[props.state.project?.id]);
+  if(props.agency)return <FinanceLedger {...props}/>;
+  return <><nav className="v2-cash-tabs" aria-label="Разделы финансов пары"><button className={view==='sheet'?'active':''} aria-current={view==='sheet'?'page':undefined} onClick={()=>setView('sheet')}>Смета пары</button><button className={view==='ledger'?'active':''} aria-current={view==='ledger'?'page':undefined} onClick={()=>setView('ledger')}>Реестр выплат</button></nav>{view==='sheet'?<CoupleBudget state={props.state} onSave={props.onBudgetCell} onStructure={props.onBudgetStructure} onDocuments={props.onDocuments}/>:<FinanceLedger {...props}/>}</>;
+}
+function FinanceLedger({
   state,
   agency = false,
   onMovement,
@@ -329,11 +348,16 @@ function Applications({
   onRespond
 }) {
   const apps = arr(state.applications);
-  return <><PageHeader eyebrow="Заявки" title={onReview?"Входящие обращения":"Мои заявки"} action={!onReview&&!apps.length&&<button className="button" onClick={onCreate}>Оставить заявку</button>}/>{!onReview&&arr(state.notifications).length>0&&<section className="panel"><h2>Уведомления</h2>{state.notifications.map(n=><p key={n.id}>{n.data.message||n.data.title||n.data.text}</p>)}</section>}<section className="panel">{apps.length ? <div className="data-list">{apps.map(item => {
+  const [tab,setTab]=useState('new');
+  const [answersItem,setAnswersItem]=useState(null);
+  const newApps=apps.filter(item=>!dataOf(item).status||dataOf(item).status==='review');
+  const processedApps=apps.filter(item=>dataOf(item).status&&dataOf(item).status!=='review');
+  const visible=onReview?(tab==='new'?newApps:processedApps):apps;
+  return <><PageHeader eyebrow="Заявки" title={onReview?"Входящие обращения":"Мои заявки"} action={!onReview&&!apps.length&&<button className="button" onClick={onCreate}>Оставить заявку</button>}/>{!onReview&&arr(state.notifications).length>0&&<section className="panel"><h2>Уведомления</h2>{state.notifications.map(n=><p key={n.id}>{n.data.message||n.data.title||n.data.text}</p>)}</section>}{onReview&&<div className="application-tabs" role="tablist" aria-label="Заявки на регистрацию"><button type="button" role="tab" aria-selected={tab==='new'} onClick={()=>setTab('new')}>Новые <span>{newApps.length}</span></button><button type="button" role="tab" aria-selected={tab==='processed'} onClick={()=>setTab('processed')}>Обработанные <span>{processedApps.length}</span></button></div>}<section className="panel">{visible.length ? <div className="data-list">{visible.map(item => {
           const d = dataOf(item);
           const needsResponse=['clarification','rejected'].includes(d.status);
-          return <article className="application-row" key={item.id}><div><span className={`status-badge ${d.status || 'review'}`}>{statuses[d.status] || 'На рассмотрении'}</span><h2>{d.name}</h2><p>{dateLabel(d.date)} · {d.contact}</p>{d.message && <p>{d.message}</p>}{d.reason && <p className="reason">Решение: {d.reason}</p>}</div>{onReview && ['review','clarification'].includes(d.status || 'review') && <button className="button quiet" onClick={() => onReview(item)}>Рассмотреть</button>}{!onReview && needsResponse && <button className="button" onClick={()=>onRespond(item)}>Уточнить заявку</button>}{!onReview && d.status==='review' && <span className="quiet-copy">Заявка принята и ожидает решения.</span>}{!onReview && d.status==='approved' && <span className="quiet-copy">Проект открыт в вашем кабинете.</span>}</article>;
-        })}</div> : <Empty title="Новых заявок нет" text="Обращения с публичной страницы появятся здесь." />}</section></>;
+          return <article className="application-row" key={item.id}><div><span className={`status-badge ${d.status || 'review'}`}>{statuses[d.status] || 'На рассмотрении'}</span><h2>{d.name}</h2>{onReview&&<div className="application-questionnaire-status"><span className={d.questionnaire?'is-complete':'is-missing'}>{d.questionnaire?'Анкета заполнена':'Анкета не заполнена'}</span>{d.questionnaire&&<button type="button" className="text-button" onClick={()=>setAnswersItem(item)}>Посмотреть ответы</button>}</div>}<p>{dateLabel(d.date)} · {d.contact}</p>{d.message && <p>{d.message}</p>}{d.reason && <p className="reason">Решение: {d.reason}</p>}</div>{onReview && ['review','clarification'].includes(d.status || 'review') && <button className="button quiet" onClick={() => onReview(item)}>Рассмотреть</button>}{!onReview && needsResponse && <button className="button" onClick={()=>onRespond(item)}>Уточнить заявку</button>}{!onReview && d.status==='review' && <span className="quiet-copy">Заявка принята и ожидает решения.</span>}{!onReview && d.status==='approved' && <span className="quiet-copy">Проект открыт в вашем кабинете.</span>}</article>;
+        })}</div> : <Empty title={onReview&&tab==='processed'?'Обработанных заявок нет':'Новых заявок нет'} text={onReview&&tab==='processed'?'Заявки после решения появятся здесь.':'Обращения с публичной страницы появятся здесь.'} />}</section>{answersItem&&<Modal title={`Анкета — ${dataOf(answersItem).name}`} wide onClose={()=>setAnswersItem(null)}><div className="application-answers"><p className="application-answers-intro">Ответы пары · {dataOf(answersItem).questionnaireSubmittedAt?new Date(dataOf(answersItem).questionnaireSubmittedAt).toLocaleDateString('ru-RU'):'дата не указана'}</p>{questionnaireSections.map(section=><section key={section.title}><h3>{section.title}</h3>{section.questions.map(([id,label])=><div key={id}><strong>{label}</strong><p>{Array.isArray(dataOf(answersItem).questionnaire?.[id])?dataOf(answersItem).questionnaire[id].join(', '):dataOf(answersItem).questionnaire?.[id]||'—'}</p></div>)}</section>)}</div></Modal>}</>;
 }
 function ApplicationResponseForm({ application, onClose, onSave }) { const d=dataOf(application); const [f,set]=useForm({name:d.name||'',date:d.date||'',contact:d.contact||'',message:d.message||''}); const [error,setError]=useState(''); return <Modal title="Уточнить заявку" onClose={onClose}><SafeForm className="form-stack" onSubmit={async e=>{e.preventDefault();try{await onSave(f);onClose();}catch(caught){setError(caught.message||'Не удалось отправить уточнение');}}}><p className="form-intro">Исправьте или дополните данные. Заявка вернётся на рассмотрение.</p><FormField label="Как к вам обращаться"><input required value={f.name} onChange={e=>set('name',e.target.value)}/></FormField><FormField label="Дата свадьбы"><input required type="date" value={f.date} onChange={e=>set('date',e.target.value)}/></FormField><FormField label="Почта или телефон"><input required value={f.contact} onChange={e=>set('contact',e.target.value)}/></FormField><FormField label="Что уточнили"><textarea required value={f.message} onChange={e=>set('message',e.target.value)}/></FormField>{error&&<p className="form-error">{error}</p>}<FormActions onCancel={onClose} label="Отправить уточнение"/></SafeForm></Modal>; }
 function ReviewForm({
@@ -354,18 +378,20 @@ function ReviewForm({
 function Catalog({state,onCategory,projectMode,onVendor}) {
   const [query,setQuery]=useState(''),[archived,setArchived]=useState(false),[categoryTab,setCategoryTab]=useState('all');
   const all=byKind(state,projectMode?'selection':'vendor');
-  const categoryRows=projectMode?(()=>{const rows=all.reduce((map,item)=>{const d=dataOf(item),key=d.categoryId||`name:${d.categoryName||'Без категории'}`;if(!map.has(key))map.set(key,d.categoryName||'Без категории');return map;},new Map());for(const name of DEFAULT_VENDOR_CATEGORIES)if(![...rows.values()].includes(name))rows.set(`name:${name}`,name);return rows})():new Map(byKind(state,'vendorCategory').map(category=>[category.id,category.data.name]));
+  const visibleItems=all.filter(item=>archived||!dataOf(item).archived);
+  const categoryRows=projectMode?weddingVendorCategories(all,archived):new Map(byKind(state,'vendorCategory').map(category=>[category.id,{name:category.data.name,count:visibleItems.filter(item=>item.data.categoryId===category.id).length}]));
+  const activeTab=categoryTab==='selected'||categoryRows.has(categoryTab)?categoryTab:'all';
   const canAdd=!projectMode||has(state,'catalog');
   const vendors=all.filter(v=>{
     const d=dataOf(v),matchesArchive=archived||!d.archived,matchesQuery=JSON.stringify(d).toLocaleLowerCase('ru').includes(query.toLocaleLowerCase('ru'));
     if(!matchesArchive||!matchesQuery)return false;
-    if(categoryTab==='all')return true;
-    if(categoryTab==='selected')return !!d.selected;
-    return (d.categoryId||`name:${d.categoryName||'Без категории'}`)===categoryTab;
+    if(activeTab==='all')return true;
+    if(activeTab==='selected')return !!d.selected;
+    return (d.categoryId||`name:${d.categoryName||'Без категории'}`)===activeTab;
   });
-  const emptyTitle=categoryTab==='selected'?'Пара ещё не сделала итоговый выбор':all.length?'Подрядчики не найдены':'Подборка пока не собрана';
-  const emptyText=categoryTab==='selected'?'Выбранные парой подрядчики появятся здесь автоматически.':all.length?'Измените запрос, категорию или включите архив.':'Организатор добавит сюда подходящие варианты.';
-  return <><PageHeader eyebrow={projectMode?'Подбор подрядчиков':'Справочник агентства'} title="Подрядчики" action={canAdd?<button className="button" onClick={()=>onVendor()}><Icon name="plus"/>Добавить подрядчика</button>:null}><p className="subtitle">{projectMode?'Предложения организатора по категориям и итоговый выбор пары.':'Контакты, услуги и актуальные условия проверенной команды.'}</p></PageHeader><nav className="vendor-category-tabs" aria-label="Категории подрядчиков"><button className={categoryTab==='all'?'active':''} onClick={()=>setCategoryTab('all')}>{projectMode?'Все предложения':'Все подрядчики'} <span>{all.filter(item=>!item.data.archived).length}</span></button>{[...categoryRows].map(([key,name])=><button key={key} className={categoryTab===key?'active':''} onClick={()=>setCategoryTab(key)}>{name} <span>{all.filter(item=>(item.data.categoryId||`name:${item.data.categoryName||'Без категории'}`)===key&&!item.data.archived).length}</span></button>)}{projectMode&&<button className={categoryTab==='selected'?'active':''} onClick={()=>setCategoryTab('selected')}>Итоговый выбор <span>{all.filter(item=>item.data.selected&&!item.data.archived).length}</span></button>}</nav><div className="filters collection-filters"><label className="search"><Icon name="search"/><input aria-label="Поиск подрядчика" placeholder="Имя, услуга или контакт" value={query} onChange={e=>setQuery(e.target.value)}/></label><label className="check-field"><input type="checkbox" checked={archived} onChange={e=>setArchived(e.target.checked)}/>Показать архив</label><span className="quiet-copy">Найдено: {vendors.length}</span></div>{!projectMode&&<CategoryList items={byKind(state,'vendorCategory')} onEdit={onCategory}/>}<div className="collection-vendors">{vendors.map(v=>{const d=dataOf(v),categoryName=d.categoryName||categoryRows.get(d.categoryId)||'Без категории';return <article key={v.id} className="collection-vendor"><header><div className="vendor-monogram">{(d.title||d.name||'?').split(' ').filter(Boolean).slice(0,2).map(n=>n[0]).join('')}</div><span className={`status-badge ${d.selected?'approved':''}`}>{d.archived?'В архиве':projectMode?(d.selected?'Выбор пары':'Предложен'):'В каталоге'}</span></header><small className="vendor-category-label">{categoryName}</small><h2>{d.title||d.name}</h2><p className="vendor-services">{d.services||d.category||'Услуги не указаны'}</p><p className="vendor-contact">{d.contact||'Контакты не указаны'}</p>{!projectMode&&<small className="quiet-copy">Обновлено {dateLabel(d.updatedOn)} · Свадеб: {(state.vendorHistory||[]).filter(h=>h.data.vendorId===v.id).length}</small>}<footer><strong>{d.price!=null?money(d.price):'Цена по запросу'}</strong><span className="vendor-card-actions">{d.portfolio&&<a className="button quiet small" href={d.portfolio} target="_blank" rel="noreferrer">Портфолио <Icon name="arrow"/></a>}<button className="button quiet small" onClick={()=>onVendor(v)}>Открыть</button></span></footer></article>})}</div>{!vendors.length&&<Empty title={emptyTitle} text={emptyText} action={canAdd&&!all.length?'Добавить подрядчика':null} onAction={()=>onVendor()}/>}</>;
+  const emptyTitle=activeTab==='selected'?'Пара ещё не сделала итоговый выбор':all.length?'Подрядчики не найдены':'Подборка пока не собрана';
+  const emptyText=activeTab==='selected'?'Выбранные парой подрядчики появятся здесь автоматически.':all.length?'Измените запрос, категорию или включите архив.':'Организатор добавит сюда подходящие варианты.';
+  return <><PageHeader eyebrow={projectMode?'Подбор подрядчиков':'Справочник агентства'} title="Подрядчики" action={canAdd?<button className="button" onClick={()=>onVendor()}><Icon name="plus"/>Добавить подрядчика</button>:null}><p className="subtitle">{projectMode?'Предложения организатора по категориям и итоговый выбор пары.':'Контакты, услуги и актуальные условия проверенной команды.'}</p></PageHeader><nav className="vendor-category-tabs" aria-label="Категории подрядчиков">{projectMode&&<button type="button" className={`vendor-final-tab ${activeTab==='selected'?'active':''}`} onClick={()=>setCategoryTab('selected')}>Итоговый выбор <span>{visibleItems.filter(item=>item.data.selected).length}</span></button>}<button type="button" className={activeTab==='all'?'active':''} onClick={()=>setCategoryTab('all')}>{projectMode?'Все предложения':'Все подрядчики'} <span>{visibleItems.length}</span></button>{[...categoryRows].map(([key,category])=><button type="button" key={key} className={activeTab===key?'active':''} onClick={()=>setCategoryTab(key)}>{category.name} <span>{category.count}</span></button>)}</nav><div className="filters collection-filters"><label className="search"><Icon name="search"/><input aria-label="Поиск подрядчика" placeholder="Имя, услуга или контакт" value={query} onChange={e=>setQuery(e.target.value)}/></label><label className="check-field"><input type="checkbox" checked={archived} onChange={e=>setArchived(e.target.checked)}/>Показать архив</label><span className="quiet-copy">Найдено: {vendors.length}</span></div>{!projectMode&&<CategoryList items={byKind(state,'vendorCategory')} onEdit={onCategory}/>}<div className="collection-vendors">{vendors.map(v=>{const d=dataOf(v),categoryName=d.categoryName||categoryRows.get(d.categoryId)?.name||'Без категории';return <article key={v.id} className="collection-vendor"><header><div className="vendor-monogram">{(d.title||d.name||'?').split(' ').filter(Boolean).slice(0,2).map(n=>n[0]).join('')}</div><span className={`status-badge ${d.selected?'approved':''}`}>{d.archived?'В архиве':projectMode?(d.selected?'Выбор пары':'Предложен'):'В каталоге'}</span></header><small className="vendor-category-label">{categoryName}</small><h2>{d.title||d.name}</h2><p className="vendor-services">{d.services||d.category||'Услуги не указаны'}</p><p className="vendor-contact">{d.contact||'Контакты не указаны'}</p>{!projectMode&&<small className="quiet-copy">Обновлено {dateLabel(d.updatedOn)} · Свадеб: {(state.vendorHistory||[]).filter(h=>h.data.vendorId===v.id).length}</small>}<footer><strong>{d.price!=null?money(d.price):'Цена по запросу'}</strong><span className="vendor-card-actions">{d.portfolio&&<a className="button quiet small" href={d.portfolio} target="_blank" rel="noreferrer">Портфолио <Icon name="arrow"/></a>}<button className="button quiet small" onClick={()=>onVendor(v)}>Открыть</button></span></footer></article>})}</div>{!vendors.length&&<Empty title={emptyTitle} text={emptyText} action={canAdd&&!all.length?'Добавить подрядчика':null} onAction={()=>onVendor()}/>}</>;
 }
 function VendorForm({vendor,projectMode,categories=[],catalog=[],showAgencyCommission=false,readOnly=false,onSelect,onCreateCategory,onDelete,onClose,onSave}) {
  const d=dataOf(vendor),categoryOptions=d.categoryId&&!categories.some(c=>c.id===d.categoryId)?[...categories,{id:d.categoryId,data:{name:d.categoryName||'Текущая категория'}}]:categories;const [f,set]=useForm({name:d.name||d.title||'',contact:d.contact||'',services:d.services||'',price:d.price==null?'':d.price/100,terms:d.terms||'',notes:d.notes||'',portfolio:d.portfolio||'',updatedOn:d.updatedOn||today(),categoryId:d.categoryId||'',newCategoryName:'',vendorId:d.vendorId||'',selected:!!d.selected,dueDate:d.dueDate||'',workingTime:d.workingTime||'',archived:!!d.archived,...(projectMode&&showAgencyCommission?{agencyCommission:d.agencyCommission==null?'':d.agencyCommission/100}:{})});const [error,setError]=useState('');
@@ -382,17 +408,21 @@ function VendorForm({vendor,projectMode,categories=[],catalog=[],showAgencyCommi
 function Roles({
   state,
   onRole,
-  onGrant
+  onGrant,
+  onCreateUser,
+  onPassword,
+  onRemove,
+  onRestore
 }) {
   const roles = arr(state.roles);
   const users = arr(state.users);
-  return <><PageHeader eyebrow="Доступ" title="Роли и назначения" action={<div className="button-group"><button className="button quiet" onClick={() => onGrant()}>Назначить доступ</button><button className="button" onClick={() => onRole()}><Icon name="plus" />Роль</button></div>} /><div className="split-grid"><section className="panel"><div className="panel-header"><h2>Роли</h2></div><div className="data-list">{roles.map(role => {
+  const canEditRoles=has(state,'access');
+  const [query,setQuery]=useState('');
+  const filtered=users.filter(user=>`${user.name||''} ${user.email||''}`.toLocaleLowerCase('ru').includes(query.trim().toLocaleLowerCase('ru')));
+  return <><div className="settings-section-heading"><div><span>Люди и роли</span><h2>Доступ к агентству</h2><p>Здесь видны все зарегистрированные пользователи. Управлять чужим доступом можно только в пределах своих прав.</p></div><div className="button-group">{canEditRoles&&<button className="button quiet" onClick={() => onGrant()}>Назначить доступ</button>}{canEditRoles&&<button className="button quiet" onClick={() => onRole()}><Icon name="plus" />Роль</button>}<button className="button" onClick={onCreateUser}><Icon name="plus"/>Пользователь</button></div></div><div className={canEditRoles?'split-grid user-management-layout':undefined}>{canEditRoles&&<section className="panel"><div className="panel-header"><h2>Роли</h2></div><div className="data-list">{roles.map(role => {
             const d = dataOf(role);
             return <button className="data-row" key={role.id} onClick={() => onRole(role)}><div><strong>{d.name}</strong><small>{arr(d.permissions).map(p => permissionLabels[p] || p).join(' · ') || 'Нет прав'}</small></div><Icon name="arrow" /></button>;
-          })}</div></section><section className="panel"><div className="panel-header"><h2>Участники</h2></div><div className="data-list">{users.map(user => {
-            const d = dataOf(user);
-            return <button className="data-row" key={user.id} onClick={() => onGrant(user)}><div><strong>{d.name || d.email}</strong><small>{d.email}</small></div><span>{d.disabled ? 'Отключён' : 'Настроить доступ'}</span><Icon name="arrow" /></button>;
-          })}</div></section></div></>;
+          })}</div></section>}<section className="panel"><div className="panel-header"><h2>Пользователи <span className="settings-count">{filtered.length}</span></h2></div><label className="settings-user-search"><Icon name="search"/><input type="search" value={query} onChange={event=>setQuery(event.target.value)} placeholder="Поиск по имени или почте" aria-label="Поиск пользователей"/></label><div className="user-management-list">{filtered.map(user => <div className={`user-management-row${user.disabled?' is-disabled':''}`} key={user.id}><div className="user-management-identity"><span className="user-management-initial" aria-hidden="true">{(user.name||user.email).slice(0,1).toUpperCase()}</span><div><strong>{user.name||user.email}</strong><small>{user.email}</small></div></div><span className={`user-management-status${user.disabled?'':' is-active'}`}>{user.disabled?'Удалён':user.protected?'Защищён':'Активен'}</span>{user.manageable&&<div className="user-management-actions">{canEditRoles&&<button type="button" className="text-button" onClick={()=>onGrant(user)}>Доступ</button>}{user.disabled?<button type="button" className="text-button" onClick={()=>onRestore(user)}>Восстановить</button>:<><button type="button" className="text-button" onClick={()=>onPassword(user)}>Сменить пароль</button><button type="button" className="text-button danger-text" onClick={()=>onRemove(user)}>Удалить</button></>}</div>}</div>)}{!filtered.length&&<p className="settings-user-empty">Пользователи не найдены. Попробуйте другое имя или адрес почты.</p>}</div></section></div></>;
 }
 function RoleForm({
   role,
@@ -415,8 +445,7 @@ function RoleForm({
 
 function Settings({
   state,
-  onSave,
-  onTemplate
+  onSave
 }) {
   const d = dataOf(state.agency);
   const [f, set] = useForm({
@@ -426,7 +455,7 @@ function Settings({
     contact: d.settings?.contact || '',
     services: arr(d.settings?.services).join('\n'), portfolio:arr(d.settings?.portfolio)
   });
-  return <><PageHeader eyebrow="Агентство" title="Настройки" /><section className="settings-layout"><SafeForm className="panel form-stack" onSubmit={async e => {
+  return <><div className="settings-section-heading"><div><span>Публичная страница</span><h2>Сайт агентства</h2><p>Название, описание и контакты, которые увидят будущие пары.</p></div></div><section className="settings-site-layout"><SafeForm className="panel form-stack" onSubmit={async e => {
         e.preventDefault();
         await onSave({
           name: f.name,
@@ -438,7 +467,36 @@ function Settings({
             portfolio: f.portfolio
           }
         });
-      }}><FormField label="Название агентства"><input required value={f.name} onChange={e => set('name', e.target.value)} /></FormField><FormField label="Фраза на публичной странице"><input value={f.tagline} onChange={e => set('tagline', e.target.value)} /></FormField><FormField label="Описание"><textarea value={f.description} onChange={e => set('description', e.target.value)} /></FormField><FormField label="Контакт"><input value={f.contact} onChange={e => set('contact', e.target.value)} /></FormField><FormField label="Услуги, по одной в строке"><textarea value={f.services} onChange={e => set('services', e.target.value)} /></FormField><fieldset className="form-stack"><legend>Портфолио публичного сайта</legend>{f.portfolio.map((item,i)=><div key={i} className="form-stack"><FormField label="Название истории"><input required value={item.title} onChange={e=>set('portfolio',f.portfolio.map((x,n)=>n===i?{...x,title:e.target.value}:x))}/></FormField><FormField label="Изображение (ссылка)"><input required type="url" value={item.image} onChange={e=>set('portfolio',f.portfolio.map((x,n)=>n===i?{...x,image:e.target.value}:x))}/></FormField><FormField label="Описание истории"><textarea value={item.description||''} onChange={e=>set('portfolio',f.portfolio.map((x,n)=>n===i?{...x,description:e.target.value}:x))}/></FormField><button type="button" className="text-button danger-text" onClick={()=>set('portfolio',f.portfolio.filter((_,n)=>n!==i))}>Удалить историю</button></div>)}<button type="button" className="text-button" onClick={()=>set('portfolio',[...f.portfolio,{title:'',image:'',description:''}])}>+ История</button></fieldset><div><button className="button">Сохранить настройки</button></div></SafeForm><section className="panel"><p className="eyebrow">Шаблоны</p><h2>Стартовая структура свадеб</h2><p>Изменения шаблона применяются только при создании новых проектов.</p><div className="data-list">{byKind(state,'template').map(t=><button className="data-row" key={t.id} onClick={()=>onTemplate(t)}><strong>{t.data.name}</strong><span>{t.data.tables.length} таблиц</span></button>)}</div><button className="button quiet" onClick={()=>onTemplate()}>Создать шаблон</button></section></section></>;
+      }}><FormField label="Название агентства"><input required value={f.name} onChange={e => set('name', e.target.value)} /></FormField><FormField label="Фраза на публичной странице"><input value={f.tagline} onChange={e => set('tagline', e.target.value)} /></FormField><FormField label="Описание"><textarea value={f.description} onChange={e => set('description', e.target.value)} /></FormField><FormField label="Контакт"><input value={f.contact} onChange={e => set('contact', e.target.value)} /></FormField><FormField label="Услуги, по одной в строке"><textarea value={f.services} onChange={e => set('services', e.target.value)} /></FormField><fieldset className="form-stack"><legend>Портфолио публичного сайта</legend>{f.portfolio.map((item,i)=><div key={i} className="form-stack"><FormField label="Название истории"><input required value={item.title} onChange={e=>set('portfolio',f.portfolio.map((x,n)=>n===i?{...x,title:e.target.value}:x))}/></FormField><FormField label="Изображение (ссылка)"><input required type="url" value={item.image} onChange={e=>set('portfolio',f.portfolio.map((x,n)=>n===i?{...x,image:e.target.value}:x))}/></FormField><FormField label="Описание истории"><textarea value={item.description||''} onChange={e=>set('portfolio',f.portfolio.map((x,n)=>n===i?{...x,description:e.target.value}:x))}/></FormField><button type="button" className="text-button danger-text" onClick={()=>set('portfolio',f.portfolio.filter((_,n)=>n!==i))}>Удалить историю</button></div>)}<button type="button" className="text-button" onClick={()=>set('portfolio',[...f.portfolio,{title:'',image:'',description:''}])}>+ История</button></fieldset><div><button className="button">Сохранить настройки</button></div></SafeForm><aside className="settings-site-note"><span>tie.event</span><p>Эти данные используются на публичной странице агентства. Истории, пакеты услуг и частые вопросы редактируются ниже, в разделе публикаций.</p><a href="/" target="_blank" rel="noreferrer">Открыть сайт ↗</a></aside></section></>;
+}
+function SettingsDirectories({state,onTemplate,onVendor,onVendorCategory,onFinanceCategory}){
+  const options=[
+    ...(has(state,'catalog')?[['vendors','Подрядчики'],['vendorCategories','Категории подрядчиков']]:[]),
+    ...(has(state,'templates')?[['templates','Шаблоны свадеб']]:[]),
+    ...(has(state,'agencyFinance')?[['financeCategories','Категории агентства']]:[])
+  ];
+  const [selected,setSelected]=useState(options[0]?.[0]||'vendors');
+  const current=options.some(([id])=>id===selected)?selected:options[0]?.[0];
+  const categoryKind=current==='vendorCategories'?'vendorCategory':'category';
+  const categories=byKind(state,categoryKind);
+  const heading=current==='vendorCategories'?'Категории подрядчиков':'Категории агентства';
+  return <><div className="settings-section-heading"><div><span>Структура работы</span><h2>Справочники</h2><p>Общие записи агентства для новых и действующих свадеб.</p></div></div><nav className="settings-subtabs" aria-label="Справочники">{options.map(([id,label])=><button key={id} type="button" className={current===id?'active':''} aria-current={current===id?'page':undefined} onClick={()=>setSelected(id)}>{label}</button>)}</nav>
+    {current==='vendors'&&<Catalog state={state} onCategory={onVendorCategory} onVendor={onVendor}/>}
+    {current==='templates'&&<section className="panel settings-directory-panel"><div className="panel-header"><div><h2>Шаблоны свадеб</h2><p>Изменения применятся только к новым проектам.</p></div><button className="button" onClick={()=>onTemplate()}>Создать шаблон</button></div><div className="data-list">{byKind(state,'template').map(item=><button className="data-row" key={item.id} onClick={()=>onTemplate(item)}><div><strong>{item.data.name}</strong><small>{arr(item.data.tables).length} таблиц</small></div><Icon name="arrow"/></button>)}</div></section>}
+    {['vendorCategories','financeCategories'].includes(current)&&<section className="panel settings-directory-panel"><div className="panel-header"><div><h2>{heading}</h2><p>{current==='vendorCategories'?'Откройте категорию, чтобы переименовать, архивировать или удалить её.':'Используйте категории для единообразных подборок и записей.'}</p></div><button className="button" onClick={()=>current==='vendorCategories'?onVendorCategory():onFinanceCategory()}>Добавить категорию</button></div><div className="data-list">{categories.map(item=><button className="data-row" key={item.id} onClick={()=>current==='vendorCategories'?onVendorCategory(item):onFinanceCategory(item)}><div><strong>{item.data.name}</strong><small>{item.data.archived?'В архиве':'Активна'}</small></div><Icon name="arrow"/></button>)}{!categories.length&&<p className="settings-user-empty">Категорий пока нет.</p>}</div></section>}
+  </>;
+}
+function SettingsWorkspace({state,workspaceMode,onWorkspace,site,publication,access,integrations,directories}){
+  const tabs=[...(site||publication?[['site','Сайт']]:[]),...(access?[['access','Доступ']]:[]),['integrations','Интеграции'],...(directories?[['directories','Справочники']]:[])];
+  const [selected,setSelected]=useState(tabs[0]?.[0]||'integrations');
+  const [siteSection,setSiteSection]=useState(site?'details':'publication');
+  const tab=tabs.some(([id])=>id===selected)?selected:tabs[0][0];
+  return <div className="settings-workspace"><PageHeader eyebrow="Агентство" title="Настройки"/><div className="settings-workspace-top"><div><span>Центр управления</span><p>Сайт, люди, подключения и общие справочники — в одном месте.</p></div>{onWorkspace&&<label className="settings-workspace-select"><span>Рабочее пространство</span><select aria-label="Рабочее пространство" value={workspaceMode} onChange={event=>onWorkspace(event.target.value)}><option value="organizer">Организаторы</option><option value="couple">Молодожёны</option><option value="contractor">Подрядчики</option></select></label>}</div><nav className="settings-workspace-tabs" role="tablist" aria-label="Разделы настроек">{tabs.map(([id,label])=><button key={id} type="button" role="tab" aria-selected={tab===id} onClick={()=>setSelected(id)}>{label}</button>)}</nav><div className="settings-workspace-body" role="tabpanel">
+    {tab==='site'&&<>{site&&publication&&<nav className="settings-subtabs" aria-label="Разделы сайта"><button type="button" className={siteSection==='details'?'active':''} onClick={()=>setSiteSection('details')}>О сайте</button><button type="button" className={siteSection==='publication'?'active':''} onClick={()=>setSiteSection('publication')}>Публикации</button></nav>}{siteSection==='details'&&site?site:publication||site}</>}
+    {tab==='access'&&access}
+    {tab==='integrations'&&<><div className="settings-section-heading"><div><span>Подключения</span><h2>Интеграции</h2><p>Календарь и уведомления, которые помогают команде не терять важное.</p></div></div>{integrations}</>}
+    {tab==='directories'&&directories}
+  </div></div>;
 }
 function Offline({
   project,
@@ -473,7 +531,7 @@ function Workspace({
   offlineActions,
   onFile,
   onInvite,
-  onRestore, onCategory, onDeleteObligation, runV2
+  onRestore, onCategory, onDeleteObligation, onBudgetCell, onBudgetStructure, runV2
 }) {
   const [, tab = 'overview', targetTableId] = view.split(':');
   const [timingMode,setTimingMode]=useState('timeline'),[timingRow,setTimingRow]=useState(null);
@@ -495,7 +553,7 @@ function Workspace({
     fileName:`${dataOf(state.project).name} — ${audience==='Пара'?'тайминг пары':audience==='Команда'?'тайминг команды':dataOf(table).name}`
   });
   let content;
-  if (tab === 'payouts' || (state.offline && !state.financials && ['overview','estimate'].includes(tab))) content=<Payouts state={state} onPay={onMovement}/>;else if(tab==='offline')content=<PageHeader eyebrow="Работа без сети" title="Данные на этом устройстве"/>;else if (tab === 'overview') content = <Overview state={state} onProjectEdit={onProjectEdit} openTab={key => setView(`project:${key}`)} onMovement={onMovement} />;else if (tab === 'estimate') content = <Finance state={state} onCategory={onCategory} onDeleteObligation={onDeleteObligation} onMovement={onMovement} onAddObligation={onAddObligation} onEditObligation={onEditObligation} onEditMovement={onEditMovement} onDeleteMovement={onDeleteMovement} />;else if (tab === 'catalog') content = <Catalog state={state} projectMode onVendor={onVendor} />;else if (tab === 'files') content = <Files state={state} onFile={onFile} />;else if (tab === 'history') content = <History state={state} onRestore={onRestore} />;else if (tab === 'tables') content = <><PageHeader eyebrow="Структура проекта" title="Все рабочие таблицы" action={<button className="button" onClick={onCreateTable}><Icon name="plus"/>Таблица</button>}/><TableLibrary tables={tables} sections={entities.filter(e=>e.kind==='section'&&!e.deleted)} setView={setView} onSection={onSection} onTable={(item,action)=>action==='delete'?onTable('delete',item):onTable('structure',item)}/></>;else content = <>{!tab.startsWith('timing')&&<PageHeader eyebrow="Рабочая таблица" title={dataOf(table).name || (tab === 'guests' ? 'Гости и рассадка' : 'Тайминг дня')} action={<button className="button quiet" onClick={onInvite}><Icon name="plus" />Пригласить участника</button>} />}{tab.startsWith('timing')&&runV2&&!state.offline&&<details className="v2-timing-details"><summary>Настройка календаря и ответственных</summary><TimingSetup state={state} projectId={state.project.id} table={table} run={runV2}/></details>}{tab.startsWith('timing')&&<div className="collection-view-toggle" aria-label="Вид тайминга"><button className={timingMode==='timeline'?'active':''} aria-pressed={timingMode==='timeline'} onClick={()=>setTimingMode('timeline')}>Программа дня</button><button className={timingMode==='table'?'active':''} aria-pressed={timingMode==='table'} onClick={()=>{setTimingRow(null);setTimingMode('table')}}>Рабочая таблица</button></div>}{tab.startsWith('timing')&&timingMode==='timeline'?<TimingView table={table} rows={rows} members={state.assignableMembers||state.members||[]} audience={audience} onExport={tableExport} canCreate={permitted(state,'create',table?.id,null,null)} canEditRow={row=>(table?.data?.columns||[]).some(col=>permitted(state,'edit',table?.id,row.id,col.id))} onEditRow={row=>{setTimingRow(row.id);setTimingMode('table')}} onAddRow={async()=>{await onTable('add',table);setTimingRow(null);setTimingMode('table')}}/>:<TableWorkspace initialEditRowId={timingRow} members={state.assignableMembers||state.members||[]} key={table?.id} relationRows={entities.filter(e=>['row','seatingTable'].includes(e.kind))} table={table} rows={rows} files={entities.filter(e=>e.kind==='file'&&!e.deleted)} audience={audience} onExport={tableExport} canEdit={has(state,'edit',state.project.id)} canCreate={permitted(state,'create',table?.id,null,null)} canStructure={permitted(state,['edit','structure'],table?.id,table?.id,null)} canEditField={(row,col)=>permitted(state,'edit',table?.id,row.id,col.id)} canDeleteRow={row=>permitted(state,'delete',table?.id,row.id,null)} onEditRow={(row, data) => onTable('edit', row, data)} onAddRow={() => onTable('add', table)} onEditTable={() => onTable('structure', table)} onDeleteRow={row => onTable('delete', row)} onReorder={rowOrder=>onTable('reorder',table,rowOrder)} />}</>;
+  if (tab === 'payouts' || (state.offline && !state.financials && ['overview','estimate'].includes(tab))) content=<Payouts state={state} onPay={onMovement}/>;else if(tab==='offline')content=<PageHeader eyebrow="Работа без сети" title="Данные на этом устройстве"/>;else if (tab === 'overview') content = <Overview state={state} onProjectEdit={onProjectEdit} openTab={key => setView(`project:${key}`)} onMovement={onMovement} />;else if (tab === 'estimate') content = <Finance state={state} onBudgetCell={onBudgetCell} onBudgetStructure={onBudgetStructure} onDocuments={()=>setView('project:files')} onCategory={onCategory} onDeleteObligation={onDeleteObligation} onMovement={onMovement} onAddObligation={onAddObligation} onEditObligation={onEditObligation} onEditMovement={onEditMovement} onDeleteMovement={onDeleteMovement} />;else if (tab === 'catalog') content = <Catalog state={state} projectMode onVendor={onVendor} />;else if (tab === 'files') content = <Files state={state} onFile={onFile} />;else if (tab === 'history') content = <History state={state} onRestore={onRestore} />;else if (tab === 'tables') content = <><PageHeader eyebrow="Структура проекта" title="Все рабочие таблицы" action={<button className="button" onClick={onCreateTable}><Icon name="plus"/>Таблица</button>}/><TableLibrary tables={tables} sections={entities.filter(e=>e.kind==='section'&&!e.deleted)} setView={setView} onSection={onSection} onTable={(item,action)=>action==='delete'?onTable('delete',item):onTable('structure',item)}/></>;else content = <>{!tab.startsWith('timing')&&<PageHeader eyebrow="Рабочая таблица" title={dataOf(table).name || (tab === 'guests' ? 'Гости и рассадка' : 'Тайминг дня')} action={<button className="button quiet" onClick={onInvite}><Icon name="plus" />Пригласить участника</button>} />}{tab.startsWith('timing')&&runV2&&!state.offline&&<details className="v2-timing-details"><summary>Настройка календаря и ответственных</summary><TimingSetup state={state} projectId={state.project.id} table={table} run={runV2}/></details>}{tab.startsWith('timing')&&<div className="collection-view-toggle" aria-label="Вид тайминга"><button className={timingMode==='timeline'?'active':''} aria-pressed={timingMode==='timeline'} onClick={()=>setTimingMode('timeline')}>Программа дня</button><button className={timingMode==='table'?'active':''} aria-pressed={timingMode==='table'} onClick={()=>{setTimingRow(null);setTimingMode('table')}}>Рабочая таблица</button></div>}{tab.startsWith('timing')&&timingMode==='timeline'?<TimingView table={table} rows={rows} members={state.assignableMembers||state.members||[]} audience={audience} onExport={tableExport} canCreate={permitted(state,'create',table?.id,null,null)} canEditRow={row=>(table?.data?.columns||[]).some(col=>permitted(state,'edit',table?.id,row.id,col.id))} onEditRow={row=>{setTimingRow(row.id);setTimingMode('table')}} onAddRow={async()=>{await onTable('add',table);setTimingRow(null);setTimingMode('table')}}/>:<TableWorkspace initialEditRowId={timingRow} members={state.assignableMembers||state.members||[]} key={table?.id} relationRows={entities.filter(e=>['row','seatingTable'].includes(e.kind))} table={table} rows={rows} files={entities.filter(e=>e.kind==='file'&&!e.deleted)} audience={audience} onExport={tableExport} canEdit={has(state,'edit',state.project.id)} canCreate={permitted(state,'create',table?.id,null,null)} canStructure={permitted(state,['edit','structure'],table?.id,table?.id,null)} canEditField={(row,col)=>permitted(state,'edit',table?.id,row.id,col.id)} canDeleteRow={row=>permitted(state,'delete',table?.id,row.id,null)} onEditRow={(row, data) => onTable('edit', row, data)} onAddRow={() => onTable('add', table)} onEditTable={() => onTable('structure', table)} onDeleteRow={row => onTable('delete', row)} onReorder={rowOrder=>onTable('reorder',table,rowOrder)} />}</>;
   return <>{content}{['files','catalog'].includes(tab)&&runV2&&<VerificationPanel state={state} projectId={state.project.id} run={runV2} type={tab==='files'?'file':'selection'}/>}{(tab==='offline'||offline?.pending||arr(offline?.conflicts).length>0)&&<Offline project={state.project} status={offline} {...offlineActions} />}</>;
 }
 const documentSections=[['personal','Личные'],['pending_signature','На подпись'],['signed','Подписано']];
@@ -511,7 +569,7 @@ const historyIgnored=new Set(['id','version','updated_at','organizerFocusedAt','
 const historyParse=value=>{try{return JSON.parse(value||'null')}catch{return null}};
 const historyOptions={status:{todo:'К выполнению',doing:'В работе',done:'Готово',skipped:'Не требуется',planning:'Подготовка',confirmed:'Подтверждено',completed:'Завершено',archived:'Архив'},priceKind:{amount:'Согласованная сумма',unknown:'Цена неизвестна',included:'Включено'},documentStatus:{personal:'Личные',pending_signature:'На подпись',signed:'Подписано'},shape:{round150:'Круглый 150 см',round:'Круглый 180 см',rect:'Прямоугольный 180 × 90 см',snakeQuarter:'Змейка ¼ круга',custom:'Своя форма'},priority:{normal:'Обычный',high:'Высокий'},dueMode:{relative:'От даты свадьбы',fixed:'Фиксированная дата'}};
 const historyValue=(key,value,state)=>{if(value===null||value===undefined||value==='')return 'Не указано';if(historyOptions[key]?.[value])return historyOptions[key][value];if(['agreed','planned','agencyCommission','limit'].includes(key)&&Number.isFinite(Number(value)))return money(Number(value));if(typeof value==='boolean')return value?'Да':'Нет';const references=[...(state.entities||[]),...(state.global||[]),...(state.assignableMembers||[]),...(state.members||[])],resolve=id=>{const found=references.find(item=>item.id===id),data=dataOf(found);return data.title||data.name||data.label||found?.name||null};if(Array.isArray(value))return value.length?value.map(item=>resolve(item)||'Выбрано').join(', '):'Нет';if(key.endsWith('Id'))return resolve(value)||'Выбрано';if(typeof value==='object')return 'Состав списка изменён';return String(value)};
-const historyCategory=(kind,keys)=>keys.some(key=>['dueDate','fixedDate','offsetDays','date'].includes(key))?'Дедлайны':['obligation','movement','category'].includes(kind)||keys.some(key=>['agreed','planned','agencyCommission','priceKind','limit'].includes(key))?'Смета':['task','comment'].includes(kind)?'Задачи':['vendor','vendorCategory','selection'].includes(kind)?'Подрядчики':['seatingPlan','seatingTable'].includes(kind)?'Рассадка':kind==='file'?'Документы':['row','table'].includes(kind)?'Гости':'Общее';
+const historyCategory=(kind,keys)=>keys.some(key=>['dueDate','fixedDate','offsetDays','date'].includes(key))?'Дедлайны':['obligation','movement','category','coupleBudget'].includes(kind)||keys.some(key=>['agreed','planned','agencyCommission','priceKind','limit'].includes(key))?'Смета':['task','comment'].includes(kind)?'Задачи':['vendor','vendorCategory','selection'].includes(kind)?'Подрядчики':['seatingPlan','seatingTable'].includes(kind)?'Рассадка':kind==='file'?'Документы':['row','table'].includes(kind)?'Гости':'Общее';
 function historyDetails(item,state){const beforeRow=historyParse(item.before_json),afterRow=historyParse(item.after_json),before=beforeRow?.data||{},after=afterRow?.data||{},record=(state.entities||[]).find(row=>row.id===item.entity_id),table=(state.entities||[]).find(row=>row.id===(record?.parent_id||afterRow?.parent_id||beforeRow?.parent_id)),columns=new Map((table?.data?.columns||[]).map(column=>[column.id,column.name])),keys=[...new Set([...Object.keys(before),...Object.keys(after)])].filter(key=>!historyIgnored.has(key)&&JSON.stringify(before[key])!==JSON.stringify(after[key]));return {category:historyCategory(item.kind,keys),changes:keys.slice(0,12).map(key=>({label:historyFields[key]||columns.get(key)||'Данные записи',before:historyValue(key,before[key],state),after:historyValue(key,after[key],state)}))};}
 function History({
   state,
@@ -529,20 +587,24 @@ function App() {
     [notice, setNotice] = useState(null),
     [offline, setOffline] = useState(null),
     [selected, setSelected] = useState(null),
-    [catalogCache,setCatalogCache]=useState([]);
+    [catalogCache,setCatalogCache]=useState([]),
+    [availableProjects,setAvailableProjects]=useState([]),
+    [workspaceMode,setWorkspaceMode]=useState(initialAdminWorkspace);
   const flash = (text, kind = 'success') => setNotice({
     text,
     kind
   });
   const refresh = useCallback(async projectId => {
     const next = await loadState(projectId);
+    if(Array.isArray(next.projects))setAvailableProjects(next.projects);
     setState(next);
     return next;
   }, []);
-  const activeProject = useRef(null);
+  const activeProject = useRef(null),workspaceModeRef=useRef(workspaceMode);
+  const saveWorkspaceMode=next=>{workspaceModeRef.current=next;setWorkspaceMode(next);try{sessionStorage.setItem(adminWorkspaceKey,next)}catch{}};
   const historyIndex=useRef(history.state?.tieIndex??0),ignorePop=useRef(false),scrollRestore=useRef(null),restoringScroll=useRef(false);
   const clearScrollRestore=()=>{scrollRestore.current=null;restoringScroll.current=false};
-  const rememberScroll=()=>{if(restoringScroll.current)return;history.replaceState({...history.state,tieIndex:historyIndex.current,scrollX:window.scrollX,scrollY:window.scrollY},'',location.href)};
+  const rememberScroll=()=>{if(restoringScroll.current)return;history.replaceState({...history.state,tieIndex:historyIndex.current,workspaceMode:workspaceModeRef.current,scrollX:window.scrollX,scrollY:window.scrollY},'',location.href)};
   const setView=(next,{skipGuard=false,replace=false}={})=>{
     const targetPath=viewUrl(next,activeProject.current);
     if(next===view&&location.pathname===targetPath)return true;
@@ -551,33 +613,35 @@ function App() {
     setViewState(next);
     const path=targetPath;
     if(location.pathname!==path){
-      if(replace)history.replaceState({...history.state,tieIndex:historyIndex.current,scrollX:0,scrollY:0},'',path);
-      else {historyIndex.current+=1;history.pushState({tieIndex:historyIndex.current,scrollX:0,scrollY:0},'',path);}
+      if(replace)history.replaceState({...history.state,tieIndex:historyIndex.current,workspaceMode:workspaceModeRef.current,scrollX:0,scrollY:0},'',path);
+      else {historyIndex.current+=1;history.pushState({tieIndex:historyIndex.current,workspaceMode:workspaceModeRef.current,scrollX:0,scrollY:0},'',path);}
     }
     window.scrollTo({top:0,left:0,behavior:'auto'});
     return true;
   };
-  const navigate=async path=>{const route=parseRoute(new URL(path,location.origin).pathname);if(!route||!confirmNavigation())return;try{clearScrollRestore();rememberScroll();const next=await loadState(route.projectId);activeProject.current=route.projectId;setState(next);setSelected(next.project||null);setViewState(route.view);historyIndex.current+=1;history.pushState({tieIndex:historyIndex.current,scrollX:0,scrollY:0},'',path);window.scrollTo({top:0,left:0,behavior:'auto'});setOffline(await getOfflineStatus(route.projectId));}catch(error){flash(error.message,'error')}};
-  useEffect(()=>{const previousScrollRestoration=history.scrollRestoration;history.scrollRestoration='manual';if(history.state?.tieIndex===undefined)history.replaceState({...(history.state||{}),tieIndex:historyIndex.current,scrollX:window.scrollX,scrollY:window.scrollY},'',location.href);const pop=async event=>{const route=parseRoute(location.pathname);if(!route)return;const targetIndex=event.state?.tieIndex;if(ignorePop.current){ignorePop.current=false;return;}if(!confirmNavigation()){clearScrollRestore();if(Number.isInteger(targetIndex)){const delta=historyIndex.current-targetIndex;if(delta){ignorePop.current=true;history.go(delta);}}else history.pushState({tieIndex:historyIndex.current,scrollX:window.scrollX,scrollY:window.scrollY},'',viewUrl(view,activeProject.current));return;}scrollRestore.current={x:Number(event.state?.scrollX)||0,y:Number(event.state?.scrollY)||0};restoringScroll.current=true;try{const next=await loadState(route.projectId);activeProject.current=route.projectId;historyIndex.current=Number.isInteger(targetIndex)?targetIndex:historyIndex.current;setSelected(next.project||null);setState(next);setViewState(route.view);setMode('app');}catch(error){clearScrollRestore();if(error.status===401)setMode('public');else flash(error.message,'error')}};window.addEventListener('popstate',pop);return()=>{window.removeEventListener('popstate',pop);history.scrollRestoration=previousScrollRestoration}},[view]);
+  const navigate=async path=>{const route=parseRoute(new URL(path,location.origin).pathname);if(!route||!confirmNavigation())return;try{clearScrollRestore();rememberScroll();const next=await loadState(route.projectId);activeProject.current=route.projectId;if(Array.isArray(next.projects))setAvailableProjects(next.projects);setState(next);setSelected(next.project||null);setViewState(route.view);historyIndex.current+=1;history.pushState({tieIndex:historyIndex.current,workspaceMode:workspaceModeRef.current,scrollX:0,scrollY:0},'',path);window.scrollTo({top:0,left:0,behavior:'auto'});setOffline(await getOfflineStatus(route.projectId));}catch(error){flash(error.message,'error')}};
+  useEffect(()=>{const previousScrollRestoration=history.scrollRestoration;history.scrollRestoration='manual';if(history.state?.tieIndex===undefined)history.replaceState({...(history.state||{}),tieIndex:historyIndex.current,workspaceMode:workspaceModeRef.current,scrollX:window.scrollX,scrollY:window.scrollY},'',location.href);const pop=async event=>{const route=parseRoute(location.pathname);if(!route)return;const targetIndex=event.state?.tieIndex;if(ignorePop.current){ignorePop.current=false;return;}if(!confirmNavigation()){clearScrollRestore();if(Number.isInteger(targetIndex)){const delta=historyIndex.current-targetIndex;if(delta){ignorePop.current=true;history.go(delta);}}else history.pushState({tieIndex:historyIndex.current,workspaceMode:workspaceModeRef.current,scrollX:window.scrollX,scrollY:window.scrollY},'',viewUrl(view,activeProject.current));return;}scrollRestore.current={x:Number(event.state?.scrollX)||0,y:Number(event.state?.scrollY)||0};restoringScroll.current=true;try{const next=await loadState(route.projectId);activeProject.current=route.projectId;historyIndex.current=Number.isInteger(targetIndex)?targetIndex:historyIndex.current;if(['organizer','couple','contractor'].includes(event.state?.workspaceMode))saveWorkspaceMode(event.state.workspaceMode);if(Array.isArray(next.projects))setAvailableProjects(next.projects);setSelected(next.project||null);setState(next);setViewState(route.view);setMode('app');}catch(error){clearScrollRestore();if(error.status===401)setMode('public');else flash(error.message,'error')}};window.addEventListener('popstate',pop);return()=>{window.removeEventListener('popstate',pop);history.scrollRestoration=previousScrollRestoration}},[view]);
   useEffect(()=>{if(!scrollRestore.current)return;let frame=0;const restore=()=>{const target=scrollRestore.current;if(!target)return;window.scrollTo({top:target.y,left:target.x,behavior:'auto'});if(Math.abs(window.scrollY-target.y)<=1&&Math.abs(window.scrollX-target.x)<=1)clearScrollRestore();};const schedule=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(restore)};const observer=typeof ResizeObserver==='undefined'?null:new ResizeObserver(schedule);observer?.observe(document.documentElement);schedule();return()=>{cancelAnimationFrame(frame);observer?.disconnect()}},[view,state?.project?.id,state?.entities?.length]);
   useEffect(()=>{const parts=view.split(':'),target=parts[2];if(!target)return;if(['estimate','payouts','catalog','files'].includes(parts[1])){const row=state?.entities?.find(r=>r.id===target);if(!row)return;if(row.kind==='obligation')setModal({type:'obligation',item:row});if(row.kind==='selection')setModal({type:'vendor',item:row,project:true});}},[view,state?.project?.id]);
   useEffect(()=>{let frame=0;const save=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(rememberScroll)};window.addEventListener('scroll',save,{passive:true});return()=>{cancelAnimationFrame(frame);window.removeEventListener('scroll',save)}},[view]);
   const acceptState = useCallback(async next => {
+    if(Array.isArray(next.projects))setAvailableProjects(next.projects);
     let requested=parseRoute(location.pathname);
-    if(requested?.projectId&&!next.project){try{if(Array.isArray(next.projects)&&!next.projects.some(p=>p.id===requested.projectId)){const error=new Error('Доступ к свадьбе отозван');error.status=403;throw error;}next=await loadState(requested.projectId)}catch(error){if(![403,404].includes(error.status))throw error;requested=null;history.replaceState(null,'','/app/applications');flash('Доступ к свадьбе отозван','error');}}
+    if(requested?.projectId&&!next.project){try{if(Array.isArray(next.projects)&&!next.projects.some(p=>p.id===requested.projectId)){const error=new Error('Доступ к свадьбе отозван');error.status=403;throw error;}next=await loadState(requested.projectId)}catch(error){if(![403,404].includes(error.status))throw error;requested=null;history.replaceState(null,'',awaitingClientAccess(next)?'/app/waiting':'/app/applications');flash('Доступ к свадьбе отозван','error');}}
+    if(Array.isArray(next.projects))setAvailableProjects(next.projects);
     let project=next.project;
     const staff=has(next,'projects');
     if(!project && !staff && arr(next.projects).length===1) project=next.projects[0];
     if(!project && next.offline && arr(next.projects).length===1) project=next.projects[0];
-    if(project) { next=next.project?next:await loadState(project.id); activeProject.current=project.id; setSelected(next.project); setView(next.offline?'project:payouts':requested?.projectId===project.id?requested.view:'project:overview'); setOffline(await getOfflineStatus(project.id)); }
-    else { activeProject.current=null; setSelected(null);setView(staff?(requested?.projectId? 'today':requested?.view||'today'):'applications'); }
+    if(project) { next=next.project?next:await loadState(project.id); activeProject.current=project.id; setSelected(next.project); const contractorLanding=workspaceModeRef.current==='contractor'||!staff&&arr(next.grants).some(g=>g.role_key==='contractor')&&!arr(next.grants).some(g=>g.role_key==='couple');setView(next.offline?'project:payouts':requested?.projectId===project.id?requested.view:contractorLanding?'project:tasks':'project:overview'); setOffline(await getOfflineStatus(project.id)); }
+    else { activeProject.current=null; setSelected(null);setView(staff?(requested?.view==='settings'?'settings':workspaceModeRef.current==='organizer'?(requested?.projectId?'today':requested?.view||'today'):'projects'):awaitingClientAccess(next)?'waiting':'applications'); }
     setState(next);setMode(next.user?'app':'public');return next;
   },[]);
   useEffect(() => {
     let alive=true;
     (async()=>{try{await initClient();let next=await loadState();const invite=new URLSearchParams(location.search).get('invite');if(invite&&navigator.onLine){try{await command({op:'invite.accept',token:invite});const url=new URL(location.href);url.searchParams.delete('invite');history.replaceState(null,'',url);next=await loadState();}catch(error){flash(error.message,'error');}}if(alive){await acceptState(next);if(applicationEntry||Object.keys(incomingSource).length)setModal({type:'application'});}}catch{try{const info=await api(`/api/public?agency=${encodeURIComponent(agencySlug())}`);if(alive)setPublicInfo(info);}catch{}if(alive){setMode('public');if(applicationEntry||Object.keys(incomingSource).length)setModal({type:'auth',mode:'login',next:'application'});}}})();
-    const off=subscribe(async()=>{try{const next=await loadState(activeProject.current);if(alive){setState(next);setOffline(await getOfflineStatus(activeProject.current));}}catch(error){if(error.status===401&&alive){setState(null);setMode('public');}else if(error.status===403&&alive){activeProject.current=null;await acceptState(await loadState());}}});
-    const timer=setInterval(async()=>{if(!navigator.onLine||document.visibilityState!=='visible')return;try{const next=await loadState(activeProject.current);if(alive){if(!activeProject.current&&!has(next,'projects')&&next.projects?.length===1)await acceptState(next);else setState(next);}}catch{}},15000);
+    const off=subscribe(async()=>{try{const next=await loadState(activeProject.current);if(alive){if(Array.isArray(next.projects))setAvailableProjects(next.projects);if(!activeProject.current&&!has(next,'projects')&&next.projects?.length===1)await acceptState(next);else setState(next);setOffline(await getOfflineStatus(activeProject.current));}}catch(error){if(error.status===401&&alive){setState(null);setMode('public');}else if(error.status===403&&alive){activeProject.current=null;await acceptState(await loadState());}}});
+    const timer=setInterval(async()=>{if(!navigator.onLine||document.visibilityState!=='visible')return;try{const next=await loadState(activeProject.current);if(alive){if(Array.isArray(next.projects))setAvailableProjects(next.projects);if(!activeProject.current&&!has(next,'projects')&&next.projects?.length===1)await acceptState(next);else setState(next);}}catch{}},15000);
     return()=>{alive=false;off();clearInterval(timer)};
   },[acceptState]);
   const run = async (body, projectId) => {
@@ -596,25 +660,36 @@ function App() {
       throw err;
     }
   };
-  const openProject = async project => {
-    if(!confirmNavigation())return;
+  const openProject = async (project,targetView='project:overview') => {
+    if(!confirmNavigation())return false;
     try {
       if(!state?.project)setCatalogCache(arr(state?.global).filter(item=>['vendor','vendorCategory'].includes(item.kind)&&!item.deleted));
       const fresh=await refresh(project.id);
       activeProject.current=project.id;
       setSelected(fresh.project);
-      setView('project:overview',{skipGuard:true});
+      setView(targetView,{skipGuard:true});
       setOffline(await getOfflineStatus(project.id));
+      return true;
     } catch (err) {
       flash(err.message, 'error');
+      return false;
     }
   };
   const openAgency = async nextView => {
-    if(!confirmNavigation())return;
-    activeProject.current=null;
-    await refresh(null);
-    setSelected(null);
-    setView(nextView,{skipGuard:true});
+    if(!confirmNavigation())return false;
+    try{
+      activeProject.current=null;
+      await refresh(null);
+      setSelected(null);
+      setView(nextView,{skipGuard:true});
+      return true;
+    }catch(error){flash(error.message,'error');return false}
+  };
+  const switchWorkspace=async next=>{
+    if(next===workspaceModeRef.current)return;
+    const target=next==='organizer'?'today':activeProject.current?(next==='contractor'?'project:tasks':'project:overview'):'projects';
+    const opened=target.startsWith('project:')?setView(target):await openAgency(target);
+    if(opened){saveWorkspaceMode(next);history.replaceState({...history.state,workspaceMode:next},'',location.href)}
   };
   const authDone = async () => {
     const nextModal=modal?.next;setModal(null);
@@ -622,6 +697,22 @@ function App() {
     if(invitation){await command({op:'invite.accept',token:invitation});const url=new URL(location.href);url.searchParams.delete('invite');history.replaceState(null,'',url);}
     await acceptState(await loadState());
     if(nextModal==='application'||savedApplication().sourceCaseId||savedApplication().sourcePackageId)setModal({type:'application'});
+  };
+  const manageUser=async(body,message)=>{
+    const result=await command({id:crypto.randomUUID(),...body});
+    await refresh(null);
+    flash(message);
+    return result;
+  };
+  const signOut=async()=>{
+    await logout();
+    activeProject.current=null;
+    saveWorkspaceMode('organizer');
+    setAvailableProjects([]);
+    setPublicInfo(await api(`/api/public?agency=${encodeURIComponent(agencySlug())}`).catch(()=>publicInfo));
+    setState(null);
+    setMode('public');
+    setView('projects');
   };
   if (mode === 'loading') return <div className="loading"><Mark /><span>Открываем tie</span></div>;
   if (mode === 'public') return <><PublicHome info={publicInfo} onAuth={type => setModal({
@@ -631,9 +722,20 @@ function App() {
       type: 'auth',
       mode: publicInfo?.setup ? 'setup' : 'register',
       next: 'application'
-    })} />{modal?.type === 'auth' && <AuthDialog mode={modal.mode} onClose={() => setModal(null)} onAuth={authDone} />} {modal?.type === 'application' && <ApplicationDialog onClose={() => setModal(null)} onSent={async()=>{await refresh(null);setView('applications')}} />}<Notice notice={notice} onDismiss={() => setNotice(null)} /></>;
+    })} />{modal?.type === 'auth' && <AuthDialog mode={modal.mode} onClose={() => setModal(null)} onAuth={authDone} />} {modal?.type === 'application' && <ApplicationDialog onClose={() => setModal(null)} onSent={async()=>{await refresh(null);setView('waiting')}} />}<Notice notice={notice} onDismiss={() => setNotice(null)} /></>;
+  if(awaitingClientAccess(state)){
+    const application=arr(state.applications).filter(item=>item.data?.userId===state.user.id).sort((a,b)=>String(b.updated_at||b.created_at||'').localeCompare(String(a.updated_at||a.created_at||'')))[0];
+    if(modal?.type==='questionnaire')return <QuestionnairePage state={state} application={application} onBack={()=>setModal(null)} onLogout={signOut} onSubmit={async({answers,contact,date})=>{
+      if(application)await api('/api/command',{method:'POST',body:JSON.stringify({id:crypto.randomUUID(),op:'application.questionnaire',entityId:application.id,version:application.version,answers})});
+      else {const source=savedApplication();await api('/api/command',{method:'POST',body:JSON.stringify({id:crypto.randomUUID(),op:'application.create',data:{name:answers.names,date,contact,message:'Анкета пары заполнена.',questionnaire:answers,...Object.fromEntries(['sourceCaseId','sourcePackageId'].filter(key=>source[key]).map(key=>[key,source[key]]))}})});sessionStorage.removeItem(applicationDraftKey);}
+      await refresh(null);setModal(null);flash('Анкета отправлена');
+    }}/>;
+    return <><ClientWaitingPage state={state} application={application} onQuestionnaire={()=>setModal({type:'questionnaire'})} onRespond={()=>setModal({type:'applicationResponse',item:application})} onCheckAccess={async()=>acceptState(await loadState())} onLogout={signOut}/><Notice notice={notice} onDismiss={()=>setNotice(null)}/>{modal?.type==='applicationResponse'&&<ApplicationResponseForm application={modal.item} onClose={()=>setModal(null)} onSave={async data=>{await command({id:crypto.randomUUID(),op:'application.respond',entityId:modal.item.id,version:modal.item.version,data});await refresh(null);flash('Уточнение отправлено');}}/>}</>;
+  }
   const projectId = state?.project?.id;
   const workspace = view.startsWith('project:');
+  const adminCanSwitch=state.user.protected||arr(state.grants).some(g=>g.project_id===null&&g.role_key==='admin');
+  const effectiveWorkspace=adminCanSwitch?workspaceMode:!has(state,'projects')&&arr(state.grants).some(g=>g.role_key==='contractor')&&!arr(state.grants).some(g=>g.role_key==='couple')?'contractor':'couple';
   const saveProject = async values => {
     if (modal?.project) await run({
       op: 'entity.edit',
@@ -714,12 +816,12 @@ function App() {
     if(view==='notifications')return <NotificationCenter {...moduleProps}/>;
     if(view==='profile')return <><NotificationPreferences {...moduleProps}/><CalendarIntegrationSettings state={state}/></>;
     if(view==='project:history'&&!has(state,'history',projectId))return <><PageHeader eyebrow="Закрытый раздел" title="История изменений"/><p className="quiet-copy">История доступна только агентству и организаторам.</p></>;
-    if(view==='project:more')return <><PageHeader eyebrow="Наша свадьба" title="Ещё в проекте"/><div className="v2-more-grid project-tools-grid">{[['site','Сайт свадьбы','Приглашение, программа и ответы гостей'],['tables','Все таблицы','Рабочие списки и структура проекта'],...(has(state,'history',projectId)?[['history','История изменений','Кто, что и когда поменял']]:[]),['members','Участники','Команда и доступ к подготовке'],['offline','Офлайн','Подготовить данные для работы без сети'],['calendar','Календарь','Встречи, сроки и события проекта'],['settings','Данные свадьбы','Дата, бюджет и правила готовности']].map(([key,label,description])=><button key={key} onClick={()=>setView('project:'+key)}><Icon name={key==='site'?'content':key==='tables'?'templates':key}/><strong>{label}</strong><small>{description}</small></button>)}</div></>;
+    if(view==='project:more')return <><PageHeader eyebrow="Наша свадьба" title="Ещё в проекте"/><div className="v2-more-grid project-tools-grid">{(effectiveWorkspace==='contractor'?[['tables','Рабочие таблицы','Задания и материалы проекта'],['calendar','Календарь','Сроки и события проекта'],['offline','Офлайн','Подготовить данные для работы без сети']]:[['site','Сайт свадьбы','Приглашение, программа и ответы гостей'],['tables','Все таблицы','Рабочие списки и структура проекта'],...(has(state,'history',projectId)?[['history','История изменений','Кто, что и когда поменял']]:[]),['members','Участники','Команда и доступ к подготовке'],['offline','Офлайн','Подготовить данные для работы без сети'],['calendar','Календарь','Встречи, сроки и события проекта'],['settings','Данные свадьбы','Дата, бюджет и правила готовности']]).map(([key,label,description])=><button key={key} onClick={()=>setView('project:'+key)}><Icon name={key==='site'?'content':key==='tables'?'templates':key}/><strong>{label}</strong><small>{description}</small></button>)}</div></>;
     if(view==='project:settings')return <ReadinessSettings {...moduleProps} onEditProject={state.canManageWeddingDetails?()=>setModal({type:'project',project:state.project}):null}/>;
     if(view==='project:members')return <><PageHeader eyebrow="Участники проекта" title="Вместе над свадьбой"/><div className="panel project-people"><div className="data-list">{state.assignableMembers?.map(u=><article className="data-row static" key={u.id}><span className="avatar">{u.name.split(' ').slice(0,2).map(n=>n[0]).join('')}</span><div><strong>{u.name}</strong><small>Участник проекта</small></div></article>)}</div><button className="button quiet" onClick={()=>setModal({type:'invite'})}><Icon name="plus"/>Пригласить участника</button></div></>;
     if(view==='templates')return <><PageHeader eyebrow="Структура и подготовка" title="Шаблоны свадеб" action={<button className="button" onClick={()=>setModal({type:'template'})}>Новый шаблон</button>}/><div className="panel data-list">{byKind(state,'template').map(item=><button key={item.id} className="data-row" onClick={()=>setModal({type:'template',item})}>{item.data.name}<span>Изменить →</span></button>)}</div></>;
 
-    if (workspace) return <Workspace runV2={moduleProps.run} state={state} view={view} setView={setView} onProjectEdit={state.canManageWeddingDetails?() => setModal({
+    if (workspace) return <Workspace runV2={moduleProps.run} state={state} view={view} setView={setView} onBudgetCell={(row,field,value)=>run({op:'coupleBudget.cell',projectId,row,field,value},projectId)} onBudgetStructure={(kind,data)=>run({op:`coupleBudget.${kind}.add`,projectId,...data},projectId)} onProjectEdit={state.canManageWeddingDetails?() => setModal({
       type: 'project',
       project: state.project
     }):null} onMovement={obligation => setModal({type:'movement',agency:false,item:obligation?.kind==='obligation'?{data:{type:obligation.data.fee?'fee':'payment',obligationId:obligation.id,amount:obligation.due??obligation.data.due??Math.max(0,(obligation.data.agreed||0)-(state.financials?.paid?.[obligation.id]||0)),description:obligation.data.title,source:'custody'}}:undefined})} onAddObligation={() => setModal({
@@ -769,7 +871,7 @@ function App() {
     }} onInvite={() => setModal({
       type: 'invite'
     })} />;
-    if (view === 'projects') return <Projects state={state} onProject={openProject} onCreate={() => setModal({
+    if (view === 'projects') return <Projects state={state} onProject={project=>openProject(project,effectiveWorkspace==='contractor'?'project:tasks':'project:overview')} onCreate={() => setModal({
       type: 'project'
     })} onEdit={p => setModal({
       type: 'project',
@@ -784,28 +886,23 @@ function App() {
       type: 'movement',
       agency: true
     })} onEditMovement={async item=>{if(item.project_id){await openProject({id:item.project_id});setView('project:estimate');}setModal({type:'movement',agency:!item.project_id,item})}} onDeleteMovement={item=>setModal({type:'confirmMovementDelete',item})}/>;
-    if (view === 'access') return <Roles state={state} onRole={item => setModal({
+    const accessPanel=state.canManageUsers&&<Roles state={state} onCreateUser={()=>setModal({type:'userCreate'})} onPassword={item=>setModal({type:'userPassword',item})} onRemove={item=>setModal({type:'userRemove',item})} onRestore={item=>manageUser({op:'user.restore',userId:item.id,version:item.version},'Пользователь восстановлен').catch(error=>flash(error.message,'error'))} onRole={item => setModal({
       type: 'role',
       item
     })} onGrant={item => setModal({
       type: 'grant',
       item: item || state.users?.find(u=>!u.protected)
     })} />;
-    if (view === 'settings') return <><Settings state={state} onSave={values => run({
+    if (view === 'access'&&state.canManageUsers) return accessPanel;
+    if (view === 'settings' && (has(state,'projects')||has(state,'settings')||state.canManageUsers)) return <SettingsWorkspace state={state} workspaceMode={workspaceMode} onWorkspace={adminCanSwitch?switchWorkspace:null} site={has(state,'settings')?<Settings state={state} onSave={values => run({
       op: 'settings.save',
       version: state.agency?.version,
       ...values
-    })} onTemplate={item => setModal({type:'template',item})} /><CalendarIntegrationSettings state={state}/></>;
+    })}/>:null} publication={has(state,'publishAgencySite')?<AgencyPublishingWorkspace {...moduleProps}/>:null} access={accessPanel} integrations={<><CalendarIntegrationSettings state={state}/><NotificationPreferences {...moduleProps}/></>} directories={has(state,'catalog')||has(state,'templates')||has(state,'agencyFinance')?<SettingsDirectories state={state} onTemplate={item=>setModal({type:'template',item})} onVendor={item=>setModal({type:'vendor',item})} onVendorCategory={item=>setModal({type:'category',item,kind:'vendorCategory',projectId:null})} onFinanceCategory={item=>setModal({type:'category',item,kind:'category',projectId:null})}/>:null}/>;
     return null;
   };
-  return <><AppShell state={state} view={view} setView={nextView => view.startsWith('project:') && !nextView.startsWith('project:') ? openAgency(nextView) : setView(nextView)} selectedProject={selected} onProject={openProject} onMenu={() => {}} onLogout={async () => {
-      await logout();
-      activeProject.current=null;
-      setPublicInfo(await api(`/api/public?agency=${encodeURIComponent(agencySlug())}`).catch(()=>publicInfo));
-      setState(null);
-      setMode('public');
-      setView('projects');
-    }}>{renderMain()}</AppShell><Notice notice={notice} onDismiss={() => setNotice(null)} />{modal?.type === 'application' && <ApplicationDialog onClose={()=>setModal(null)} onSent={async()=>{await refresh(null);setView('applications')}}/>}{modal?.type === 'project' && <ProjectForm project={modal.project} templates={byKind(state,'template')} showBudgetLimit={!modal.project||has(state,'projects')} onClose={() => setModal(null)} onSave={saveProject} onReschedule={()=>setModal({type:'reschedule'})} />} {modal?.type==='reschedule'&&<RescheduleDialog {...moduleProps} currentDate={state.project.data.date} currentTimeZone={state.project.data.timeZone} onDone={()=>refresh(projectId)} onClose={()=>setModal(null)}/>} {modal?.type === 'obligation' && <ObligationForm obligation={modal.item} categories={byKind(state,"category")} users={state.members||state.custodians||[]} showAgencyCommission={state.canViewAgencyCommission} onClose={() => setModal(null)} onSave={data => run(modal.item ? {
+  const userModals=<>{modal?.type==='userCreate'&&<UserCreateForm roles={state.roles} projects={state.projects} onClose={()=>setModal(null)} onSave={data=>manageUser({op:'user.create',...data},'Пользователь создан')}/>}{modal?.type==='userPassword'&&<UserPasswordForm user={modal.item} onClose={()=>setModal(null)} onSave={password=>manageUser({op:'user.password',userId:modal.item.id,version:modal.item.version,password},'Пароль изменён')}/>}{modal?.type==='userRemove'&&<ConfirmDialog title="Удалить пользователя" confirm="Удалить пользователя" danger onClose={()=>setModal(null)} onConfirm={async()=>{await manageUser({op:'user.remove',userId:modal.item.id,version:modal.item.version},'Пользователь удалён');setModal(null)}}><p>Учётная запись {modal.item.name} будет отключена, открытые сеансы завершатся. История работы сохранится, а пользователя можно будет восстановить.</p></ConfirmDialog>}</>;
+  return <><AppShell state={state} view={view} setView={nextView => view.startsWith('project:') && !nextView.startsWith('project:') ? openAgency(nextView) : setView(nextView)} selectedProject={selected} onProject={openProject} workspaceMode={workspaceMode} onWorkspace={switchWorkspace} availableProjects={availableProjects} onLogout={signOut}>{renderMain()}</AppShell>{userModals}<Notice notice={notice} onDismiss={() => setNotice(null)} />{modal?.type === 'application' && <ApplicationDialog onClose={()=>setModal(null)} onSent={async()=>{await refresh(null);setView('waiting')}}/>}{modal?.type === 'project' && <ProjectForm project={modal.project} templates={byKind(state,'template')} showBudgetLimit={!modal.project||has(state,'projects')} onClose={() => setModal(null)} onSave={saveProject} onReschedule={()=>setModal({type:'reschedule'})} />} {modal?.type==='reschedule'&&<RescheduleDialog {...moduleProps} currentDate={state.project.data.date} currentTimeZone={state.project.data.timeZone} onDone={()=>refresh(projectId)} onClose={()=>setModal(null)}/>} {modal?.type === 'obligation' && <ObligationForm obligation={modal.item} categories={byKind(state,"category")} users={state.members||state.custodians||[]} showAgencyCommission={state.canViewAgencyCommission} onClose={() => setModal(null)} onSave={data => run(modal.item ? {
       op: 'entity.edit',
       projectId,
       entityId: modal.item.id,
@@ -846,7 +943,7 @@ function App() {
       op: 'invite.create',
       projectId,
       ...f
-    }, projectId)} />} {modal?.type === 'section' && <SectionEditor section={modal.item} onClose={()=>setModal(null)} onSave={data=>run(modal.item ? {op:'entity.edit',projectId,entityId:modal.item.id,version:modal.item.version,data:{...dataOf(modal.item),...data}} : {op:'entity.create',projectId,kind:'section',data:{...data,order:entities.filter(e=>e.kind==='section').length}},projectId)}/>} {modal?.type === 'confirmSectionDelete' && <ConfirmDialog title="Удалить раздел?" danger confirm="Удалить" onClose={()=>setModal(null)} onConfirm={async()=>{await run({op:'entity.delete',projectId,entityId:modal.item.id,version:modal.item.version,confirm:true},projectId);setModal(null)}}><p>Будут скрыты таблицы: {entities.filter(e=>e.kind==='table'&&e.data.sectionId===modal.item.id).map(e=>e.data.name).join(', ')||'в разделе пока нет таблиц'}. Верните раздел через историю, чтобы снова открыть их.</p></ConfirmDialog>} {modal?.type === 'table' && <TableEditor table={modal.table} rowCount={entities.filter(e=>e.parent_id===modal.table?.id).length} sections={entities.filter(e => e.kind === 'section' && !e.deleted)} onClose={() => setModal(null)} onSave={data => run(modal.create ? { op: 'entity.create', projectId, kind: 'table', data: {...data, columns:data.columns.length ? data.columns : [{id:'title',name:'Название',type:'text'}]} } : {op: 'entity.edit', projectId, entityId: modal.table.id, version: modal.table.version, data}, projectId)} />} {modal?.type === 'template' && <TemplateEditor onClose={() => setModal(null)} template={modal.item} defaults={byKind(state,'template')[0]?.data} onSave={data=>run(modal.item?{op:'entity.edit',entityId:modal.item.id,version:modal.item.version,data}:{op:'entity.create',kind:'template',data},null)} />} {modal?.type==='category'&&<CategoryEditor category={modal.item} onClose={()=>setModal(null)} onSave={data=>run(modal.item?{op:'entity.edit',projectId:modal.projectId,entityId:modal.item.id,version:modal.item.version,data}:{op:'entity.create',projectId:modal.projectId,kind:modal.kind,data},modal.projectId)}/>} {modal?.type==='conflict'&&<ConflictEditor conflict={modal.item} state={state} onClose={()=>setModal(null)} onSave={async replacements=>{await retryCommand(modal.item.id,replacements);setOffline(await getOfflineStatus(projectId));flash('Правка подготовлена. Нажмите «Синхронизировать».')}}/>} {modal?.type==='confirmMovementDelete'&&<ConfirmDialog title="Удалить движение?" confirm="Удалить" danger onClose={()=>setModal(null)} onConfirm={async()=>{await run({op:'movement.delete',projectId:modal.item.project_id,entityId:modal.item.id,version:modal.item.version},workspace?modal.item.project_id:null);setModal(null)}}><p>Сумма будет исключена из остатков и оплат. История сохранится.</p></ConfirmDialog>} {modal?.type === 'confirmDelete'  && <ConfirmDialog title="Удалить запись?" danger confirm="Удалить" onClose={() => setModal(null)} onConfirm={async () => {
+    }, projectId)} />} {modal?.type === 'section' && <SectionEditor section={modal.item} onClose={()=>setModal(null)} onSave={data=>run(modal.item ? {op:'entity.edit',projectId,entityId:modal.item.id,version:modal.item.version,data:{...dataOf(modal.item),...data}} : {op:'entity.create',projectId,kind:'section',data:{...data,order:entities.filter(e=>e.kind==='section').length}},projectId)}/>} {modal?.type === 'confirmSectionDelete' && <ConfirmDialog title="Удалить раздел?" danger confirm="Удалить" onClose={()=>setModal(null)} onConfirm={async()=>{await run({op:'entity.delete',projectId,entityId:modal.item.id,version:modal.item.version,confirm:true},projectId);setModal(null)}}><p>Будут скрыты таблицы: {entities.filter(e=>e.kind==='table'&&e.data.sectionId===modal.item.id).map(e=>e.data.name).join(', ')||'в разделе пока нет таблиц'}. Верните раздел через историю, чтобы снова открыть их.</p></ConfirmDialog>} {modal?.type === 'table' && <TableEditor table={modal.table} rowCount={entities.filter(e=>e.parent_id===modal.table?.id).length} sections={entities.filter(e => e.kind === 'section' && !e.deleted)} onClose={() => setModal(null)} onSave={data => run(modal.create ? { op: 'entity.create', projectId, kind: 'table', data: {...data, columns:data.columns.length ? data.columns : [{id:'title',name:'Название',type:'text'}]} } : {op: 'entity.edit', projectId, entityId: modal.table.id, version: modal.table.version, data}, projectId)} />} {modal?.type === 'template' && <TemplateEditor onClose={() => setModal(null)} template={modal.item} defaults={byKind(state,'template')[0]?.data} onSave={data=>run(modal.item?{op:'entity.edit',entityId:modal.item.id,version:modal.item.version,data}:{op:'entity.create',kind:'template',data},null)} />} {modal?.type==='category'&&<CategoryEditor category={modal.item} onClose={()=>setModal(null)} onDelete={modal.kind==='vendorCategory'&&modal.item?()=>setModal({type:'confirmVendorCategoryDelete',item:modal.item}):null} onSave={data=>run(modal.item?{op:'entity.edit',projectId:modal.projectId,entityId:modal.item.id,version:modal.item.version,data}:{op:'entity.create',projectId:modal.projectId,kind:modal.kind,data},modal.projectId)}/>} {modal?.type==='confirmVendorCategoryDelete'&&<ConfirmDialog title="Удалить категорию подрядчиков?" danger confirm="Удалить категорию" onClose={()=>setModal(null)} onConfirm={async()=>{await run({op:'entity.delete',projectId:null,entityId:modal.item.id,version:modal.item.version},null);setModal(null)}}><p>Категория «{modal.item.data.name}» исчезнет из справочника. Если к ней привязаны подрядчики, сначала перенесите их в другую категорию.</p></ConfirmDialog>} {modal?.type==='conflict'&&<ConflictEditor conflict={modal.item} state={state} onClose={()=>setModal(null)} onSave={async replacements=>{await retryCommand(modal.item.id,replacements);setOffline(await getOfflineStatus(projectId));flash('Правка подготовлена. Нажмите «Синхронизировать».')}}/>} {modal?.type==='confirmMovementDelete'&&<ConfirmDialog title="Удалить движение?" confirm="Удалить" danger onClose={()=>setModal(null)} onConfirm={async()=>{await run({op:'movement.delete',projectId:modal.item.project_id,entityId:modal.item.id,version:modal.item.version},workspace?modal.item.project_id:null);setModal(null)}}><p>Сумма будет исключена из остатков и оплат. История сохранится.</p></ConfirmDialog>} {modal?.type === 'confirmDelete'  && <ConfirmDialog title="Удалить запись?" danger confirm="Удалить" onClose={() => setModal(null)} onConfirm={async () => {
       await run({
         op: 'entity.delete',
         projectId,

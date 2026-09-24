@@ -1,3 +1,5 @@
+import {coupleBudgetFind, coupleBudgetAmountFields, coupleBudgetDefaultName, coupleBudgetDefaultNote} from './couple-budget.js';
+
 const DB_NAME = 'tie-private-v1';
 const DB_VERSION = 1;
 const LOGOUT_TOMBSTONE = 'tie:pending-server-logout';
@@ -207,6 +209,13 @@ function allowedByGrant(snapshot, action, section, row = null, fields = []) {
 }
 
 function allowedOffline(command, snapshot) {
+  if (command.op === 'coupleBudget.cell') {
+    const row=command.row,field=command.field;
+    const data=snapshot.entities?.find(item=>item.kind==='coupleBudget'&&!item.deleted)?.data||{};
+    const found=coupleBudgetFind(data,row);
+    const valid=!!found&&(field==='name'||found.item&&(coupleBudgetAmountFields.includes(field)||field==='note'||field==='organizer'&&![28,51].includes(found.group.row)));
+    return valid && snapshot.project?.data?.offline?.includes('budget') && allowedByGrant(snapshot,'edit','budget',null,[field]) && allowedByGrant(snapshot,'finance','budget',null,[field]);
+  }
   if (command.op === 'movement.save') {
     const obligation = snapshot.entities?.find(entity => entity.id === command.data?.obligationId && entity.kind === 'obligation');
     return !!obligation && ['payment', 'fee'].includes(command.data?.type) && command.obligationVersion === obligation.version &&
@@ -222,7 +231,15 @@ function allowedOffline(command, snapshot) {
 
 function optimistic(snapshot, command) {
   const next = structuredClone(snapshot);
-  if (command.op === 'entity.edit') {
+  if (command.op === 'coupleBudget.cell') {
+    let row=next.entities.find(item=>item.kind==='coupleBudget'&&!item.deleted);
+    if(!row){row={id:`offline:${command.id}`,agency_id:next.agency.id,project_id:command.projectId,kind:'coupleBudget',parent_id:null,data:{names:{},estimated:{},actual:{},prepaid:{}},version:0,deleted:false,updated_at:new Date().toISOString()};next.entities.push(row);}
+    const field=command.field==='name'?'names':command.field==='note'?'notes':command.field==='organizer'?'organizerRows':command.field;
+    row.data[field]={...(row.data[field]||{})};
+    if(command.value===null || command.field==='name'&&command.value===coupleBudgetDefaultName(command.row,row.data) || command.field==='note'&&command.value===coupleBudgetDefaultNote(command.row,row.data))delete row.data[field][command.row];
+    else row.data[field][command.row]=command.value;
+    row.version+=1;
+  } else if (command.op === 'entity.edit') {
     const row = next.entities.find(x => x.id === command.entityId);
     if (row) { row.data = { ...row.data, ...command.data }; row.version += 1; row.updated_at = new Date().toISOString(); }
   } else if (command.op === 'movement.save') {

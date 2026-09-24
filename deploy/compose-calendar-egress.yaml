@@ -1,0 +1,39 @@
+services:
+  app:
+    image: ${TIE_IMAGE:?Set TIE_IMAGE to the verified release image}
+    container_name: tie-event
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 384m
+    pids_limit: 128
+    environment:
+      TIE_CALENDAR_SECRET: ${TIE_CALENDAR_SECRET:?Set TIE_CALENDAR_SECRET}
+      TIE_PUBLIC_ORIGIN: ${TIE_PUBLIC_ORIGIN:-https://tie-event.cabinpxrn.ru}
+      GOOGLE_CALENDAR_CLIENT_ID: ${GOOGLE_CALENDAR_CLIENT_ID:-}
+      GOOGLE_CALENDAR_CLIENT_SECRET: ${GOOGLE_CALENDAR_CLIENT_SECRET:-}
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    volumes:
+      - data:/data
+    networks:
+      proxy:
+        aliases: [tie-event]
+      egress: {}
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+volumes:
+  data:
+    name: tie-event-data
+    external: true
+networks:
+  proxy:
+    external: true
+    name: ptitsa-plus-cloud_proxy
+  egress:
+    driver: bridge

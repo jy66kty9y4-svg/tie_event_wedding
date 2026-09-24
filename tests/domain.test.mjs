@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase, entity, entities, uid } from '../server/db.mjs';
-import { defaults, grant, passwordHash, createSession, userSession } from '../server/auth.mjs';
+import { defaults, grant, passwordHash, checkPassword, createSession, userSession } from '../server/auth.mjs';
 import { bootstrap, register, snapshot, execute, upload, download } from '../server/service.mjs';
 import { validateColumns } from '../server/model.mjs';
 import { compute } from '../src/shared.js';
+import { questionnaireQuestions } from '../src/questionnaire.js';
+import { coupleBudgetGroups, coupleBudgetItemCount } from '../src/couple-budget.js';
 
 let commandNumber=0;
 const command=(db,user,op,body={})=>execute(db,user,{id:`command_${++commandNumber}`,op,...body});
@@ -15,6 +17,35 @@ function fixture() {
   const setup=bootstrap(db,{slug:'tie',agencyName:'Тестовое агентство',email:'owner@example.test',name:'Владелец',password:'strong-pass-1'});
   return {db,admin:setup.user};
 }
+
+test('couple questionnaire is validated, private, and survives application clarification',()=>{
+  const {db,admin}=fixture();
+  const couple=registered(db,'questionnaire@example.test','Анна');
+  const stranger=registered(db,'stranger@example.test','Посторонний');
+  const basic={name:'Анна и Иван',date:'2027-07-17',contact:'anna@example.test',message:'Свадьба'};
+  const answers=Object.fromEntries(questionnaireQuestions.map(question=>[question.id,question.id==='images'?['закат/рассвет','свечи/огни']:`Ответ на ${question.id}`]));
+  const incomplete={...answers};delete incomplete.futureLetter;
+  fails(()=>command(db,couple,'application.create',{data:{...basic,questionnaire:incomplete}}));
+  const application=command(db,couple,'application.create',{data:basic});
+  assert.equal(application.data.questionnaire,undefined);
+  fails(()=>command(db,stranger,'application.questionnaire',{entityId:application.id,version:application.version,answers}),403);
+  fails(()=>command(db,couple,'application.questionnaire',{entityId:application.id,version:application.version,answers:{...answers,images:[]}}));
+  const filled=command(db,couple,'application.questionnaire',{entityId:application.id,version:application.version,answers});
+  assert.deepEqual(filled.data.questionnaire,answers);
+  assert(filled.data.questionnaireSubmittedAt);
+  assert.equal(snapshot(db,admin).applications.find(item=>item.id===application.id).data.questionnaire.futureLetter,answers.futureLetter);
+  const organizer=registered(db,'questionnaire-manager@example.test','Организатор');
+  const organizerRole=db.prepare("SELECT id FROM roles WHERE agency_id=? AND key='organizer'").get(admin.agency_id);
+  assign(db,admin,organizer,[{roleId:organizerRole.id,projectId:null,restrictions:{}}]);
+  assert.equal(snapshot(db,organizer).applications.find(item=>item.id===application.id).data.questionnaire.futureLetter,answers.futureLetter);
+  assert.equal(snapshot(db,stranger).applications.some(item=>item.id===application.id),false);
+  fails(()=>command(db,couple,'application.questionnaire',{entityId:application.id,version:application.version,answers}),409);
+  const clarification=command(db,admin,'application.review',{entityId:filled.id,version:filled.version,status:'clarification',reason:'Уточните дату'});
+  const revised=command(db,couple,'application.respond',{entityId:clarification.id,version:clarification.version,data:{...basic,date:'2027-07-18'}});
+  assert.deepEqual(revised.data.questionnaire,answers);
+  command(db,admin,'application.review',{entityId:revised.id,version:revised.version,status:'approved',reason:''});
+  fails(()=>command(db,couple,'application.questionnaire',{entityId:revised.id,version:revised.version+1,answers}),409);
+});
 
 function project(db,admin,name='Анна и Илья') {
   return command(db,admin,'project.create',{data:{name,date:'2027-06-12',location:'Москва',limit:5000000}});
@@ -45,6 +76,55 @@ test('the couple never receives or changes the organizer budget limit',()=>{
   assert.equal(Object.hasOwn(edited.data,'limit'),false);assert.equal(Object.hasOwn(snapshot(db,couple,p.id),'history'),false);
 });
 
+test('couple budget follows the template and persists editable cells within one wedding',()=>{
+  const {db,admin}=fixture(),p=project(db,admin),other=project(db,admin,'Другая свадьба');
+  const couple=registered(db,'budget-couple@example.test','Пара'),stranger=registered(db,'budget-stranger@example.test','Посторонний');
+  const coupleRole=db.prepare("SELECT id FROM roles WHERE agency_id=? AND key='couple'").get(admin.agency_id);
+  assign(db,admin,couple,[{roleId:coupleRole.id,projectId:p.id,restrictions:{}}]);
+  assert.equal(coupleBudgetGroups.length,7);
+  assert.equal(coupleBudgetItemCount,96);
+  assert.deepEqual(coupleBudgetGroups.map(group=>group.name),['Банкет','Подрядчики','Декор','Невеста','Жених','Гости','Дополнительно']);
+  const send=(user,row,field,value,projectId=p.id)=>command(db,user,'coupleBudget.cell',{projectId,row,field,value});
+  send(couple,8,'name','Площадка и банкет');
+  send(couple,9,'name','Аренда зала');
+  send(couple,9,'estimated',12000000);
+  send(couple,9,'actual',11000000);
+  send(couple,9,'prepaid',5000000);
+  send(admin,10,'estimated',3000000);
+  const sheet=snapshot(db,couple,p.id).entities.find(row=>row.kind==='coupleBudget');
+  assert.equal(sheet.data.names[8],'Площадка и банкет');
+  assert.equal(sheet.data.names[9],'Аренда зала');
+  assert.equal(sheet.data.estimated[9],12000000);
+  assert.equal(sheet.data.actual[9]-sheet.data.prepaid[9],6000000);
+  assert.equal(sheet.data.estimated[10],3000000);
+  assert.equal(snapshot(db,admin,other.id).entities.some(row=>row.kind==='coupleBudget'),false);
+  const limited=registered(db,'budget-limited@example.test','Сметчик');
+  const limitedRole=role(db,admin,'Только план сметы',['read','edit','finance']);
+  assign(db,admin,limited,[{roleId:limitedRole.id,projectId:p.id,restrictions:{sections:['budget'],fields:['estimated']}}]);
+  const limitedResult=send(limited,11,'estimated',2000000);
+  assert.deepEqual(Object.keys(limitedResult.data),['estimated']);
+  fails(()=>send(limited,11,'actual',2000000),403);
+  const extraItem=command(db,couple,'coupleBudget.item.add',{projectId:p.id,sectionId:8,name:'Свет на площадке',note:'Уточнить монтаж',organizer:true});
+  assert(extraItem.createdId.startsWith('item_'));
+  send(couple,extraItem.createdId,'actual',150000);
+  send(couple,extraItem.createdId,'note','Монтаж подтверждён');
+  const extraSection=command(db,couple,'coupleBudget.section.add',{projectId:p.id,name:'После свадьбы'});
+  assert(extraSection.createdId.startsWith('section_'));
+  const sectionItem=command(db,couple,'coupleBudget.item.add',{projectId:p.id,sectionId:extraSection.createdId,name:'Альбом',note:'',organizer:false});
+  send(couple,extraSection.createdId,'name','После торжества');
+  send(couple,sectionItem.createdId,'estimated',100000);
+  assert.equal(snapshot(db,couple,p.id).entities.find(row=>row.kind==='coupleBudget').data.extraSections[0].items[0].name,'Альбом');
+  fails(()=>command(db,stranger,'coupleBudget.section.add',{projectId:p.id,name:'Чужой раздел'}),403);
+  fails(()=>command(db,couple,'coupleBudget.item.add',{projectId:p.id,sectionId:'wrong',name:'Нет раздела',organizer:false}),404);
+  fails(()=>send(stranger,9,'actual',1),403);
+  fails(()=>send(couple,500,'estimated',1));
+  fails(()=>send(couple,8,'estimated',1));
+  fails(()=>send(couple,9,'actual',-1));
+  fails(()=>send(couple,9,'name',''));
+  send(couple,9,'estimated',null);
+  assert.equal(snapshot(db,couple,p.id).entities.find(row=>row.kind==='coupleBudget').data.estimated[9],undefined);
+});
+
 function role(db,admin,name,permissions) {
   const saved=command(db,admin,'role.save',{name,permissions});
   return db.prepare('SELECT * FROM roles WHERE id=?').get(saved.id);
@@ -61,6 +141,46 @@ function rowTable(db,admin,projectId,key='timing') {
 function addRow(db,user,projectId,table,data) {
   return command(db,user,'entity.create',{projectId,kind:'row',parentId:table.id,schemaVersion:table.version,data});
 }
+
+test('admin and organizer manage accounts without escalating organizer privileges',()=>{
+  const {db,admin}=fixture(),wedding=project(db,admin);
+  const organizer=registered(db,'manager@example.test','Менеджер');
+  const organizerRole=db.prepare("SELECT * FROM roles WHERE agency_id=? AND key='organizer'").get(admin.agency_id);
+  const coupleRole=db.prepare("SELECT * FROM roles WHERE agency_id=? AND key='couple'").get(admin.agency_id);
+  const adminRole=db.prepare("SELECT * FROM roles WHERE agency_id=? AND key='admin'").get(admin.agency_id);
+  assign(db,admin,organizer,[{roleId:organizerRole.id,projectId:null,restrictions:{}}]);
+  assert.equal(snapshot(db,organizer).canManageUsers,true);
+  assert.equal(snapshot(db,organizer).users.find(user=>user.id===admin.id)?.manageable,false);
+  assert.equal(snapshot(db,organizer).roles.some(role=>role.id===adminRole.id),false);
+  const created=command(db,organizer,'user.create',{name:'Новая пара',email:'new-couple@example.test',password:'new-couple-password',roleId:coupleRole.id,projectId:wedding.id});
+  assert.equal(Object.hasOwn(created,'password'),false);
+  const account=()=>db.prepare('SELECT * FROM users WHERE id=?').get(created.id);
+  assert(checkPassword('new-couple-password',account().password));
+  assert.equal(snapshot(db,account()).projects.length,1);
+  fails(()=>command(db,organizer,'user.create',{name:'Админ',email:'bad-admin@example.test',password:'strong-password',roleId:adminRole.id}),403);
+  fails(()=>command(db,organizer,'user.create',{name:'Без свадьбы',email:'no-project@example.test',password:'strong-password',roleId:coupleRole.id}));
+  fails(()=>command(db,account(),'user.password',{userId:organizer.id,version:account().version,password:'another-password'}),403);
+  fails(()=>command(db,organizer,'user.password',{userId:admin.id,version:db.prepare('SELECT version FROM users WHERE id=?').get(admin.id).version,password:'another-password'}),403);
+  const session=createSession(db,account());
+  command(db,organizer,'user.password',{userId:created.id,version:account().version,password:'changed-password'});
+  assert.equal(userSession(db,session),null);
+  assert(checkPassword('changed-password',account().password));
+  fails(()=>command(db,organizer,'user.remove',{userId:created.id,version:created.version}),409);
+  const freshSession=createSession(db,account());
+  command(db,organizer,'user.remove',{userId:created.id,version:account().version});
+  assert.equal(userSession(db,freshSession),null);
+  assert.equal(account().disabled,1);
+  fails(()=>command(db,organizer,'user.create',{name:'Дубликат',email:'new-couple@example.test',password:'strong-password',roleId:coupleRole.id,projectId:wedding.id}),409);
+  command(db,admin,'user.restore',{userId:created.id,version:account().version});
+  assert.equal(account().disabled,0);
+  assert.equal(snapshot(db,account()).projects.length,1);
+  const powerful=registered(db,'powerful@example.test','Расширенный доступ');
+  const elevated=role(db,admin,'Редактор доступа',['access']);
+  assign(db,admin,powerful,[{roleId:elevated.id,projectId:null,restrictions:{}}]);
+  assert.equal(snapshot(db,powerful).canManageUsers,true);
+  fails(()=>command(db,organizer,'user.remove',{userId:powerful.id,version:db.prepare('SELECT version FROM users WHERE id=?').get(powerful.id).version}),403);
+  assert.equal(snapshot(db,organizer).users.find(user=>user.id===powerful.id)?.manageable,false);
+});
 
 test('registration stays private until one idempotent approval and invitations join two distinct accounts',()=>{
   const {db,admin}=fixture();
@@ -351,6 +471,24 @@ test('wedding vendor proposals keep reusable categories and expose final choices
   assert.deepEqual(coupleState.catalog,[]);assert.equal(visible.data.categoryName,'Фото');assert.equal(visible.data.selected,true);
   fails(()=>command(db,couple,'entity.edit',{projectId:p.id,entityId:proposal.id,version:proposal.version,data:{terms:'Новые условия'}}),403);
   const unselected=command(db,couple,'entity.edit',{projectId:p.id,entityId:proposal.id,version:proposal.version,data:{selected:false}});assert.equal(unselected.data.selected,false);
+});
+
+test('contractor categories cannot duplicate active names or delete linked records',()=>{
+  const {db,admin}=fixture(),wedding=project(db,admin);
+  const wrong=command(db,admin,'entity.create',{kind:'vendorCategory',data:{name:'Ошибочная категория',archived:false}});
+  const correct=command(db,admin,'entity.create',{kind:'vendorCategory',data:{name:'Правильная категория',archived:false}});
+  fails(()=>command(db,admin,'entity.create',{kind:'vendorCategory',data:{name:'ошибочная категория',archived:false}}),409);
+  let vendor=command(db,admin,'entity.create',{kind:'vendor',data:{name:'Подрядчик',categoryId:wrong.id}});
+  let selection=command(db,admin,'entity.create',{projectId:wedding.id,kind:'selection',data:{title:'Подрядчик',categoryId:wrong.id}});
+  fails(()=>command(db,admin,'entity.delete',{entityId:wrong.id,version:wrong.version,confirm:true}),409);
+  vendor=command(db,admin,'entity.edit',{entityId:vendor.id,version:vendor.version,data:{categoryId:correct.id}});
+  selection=command(db,admin,'entity.edit',{projectId:wedding.id,entityId:selection.id,version:selection.version,data:{categoryId:correct.id}});
+  assert.equal(selection.data.categoryName,'Правильная категория');
+  assert.equal(vendor.data.categoryId,correct.id);
+  command(db,admin,'entity.edit',{entityId:correct.id,version:correct.version,data:{name:'Переименованная категория'}});
+  assert.equal(entities(db,admin.agency_id,wedding.id,'selection').find(item=>item.id===selection.id).data.categoryName,'Переименованная категория');
+  command(db,admin,'entity.delete',{entityId:wrong.id,version:wrong.version});
+  assert.equal(entities(db,admin.agency_id,null,'vendorCategory').some(category=>category.id===wrong.id),false);
 });
 
 test('selected vendor deletion and restoration keep its estimate obligation consistent',()=>{

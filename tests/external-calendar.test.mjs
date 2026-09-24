@@ -44,3 +44,23 @@ test('Apple Calendar discovers iCloud CalDAV and imports an event',async t=>{
  assert(entities(db,admin.agency_id,project.id,'task').some(task=>task.data.title==='Задача из Apple'));
  const stored=db.prepare("SELECT secret_json FROM calendar_connections WHERE provider='apple'").get().secret_json;assert(!stored.includes('abcd-efgh'));
 });
+
+test('organizer calendar combines all weddings and routes imported tasks by wedding name',async t=>{
+ const previous={...process.env};t.after(()=>{for(const key of ['TIE_CALENDAR_SECRET','TIE_PUBLIC_ORIGIN','GOOGLE_CALENDAR_CLIENT_ID','GOOGLE_CALENDAR_CLIENT_SECRET'])previous[key]===undefined?delete process.env[key]:process.env[key]=previous[key];});
+ Object.assign(process.env,{TIE_CALENDAR_SECRET:'01234567890123456789012345678901',TIE_PUBLIC_ORIGIN:'http://localhost:4199',GOOGLE_CALENDAR_CLIENT_ID:'client-id',GOOGLE_CALENDAR_CLIENT_SECRET:'client-secret'});
+ const {db,admin,project}=fixture(),second=execute(db,admin,{id:uid(),op:'project.create',data:{name:'Мария и Пётр',date:'2027-08-21'}}),started=beginGoogleCalendar(db,admin,'agency'),state=new URL(started.url).searchParams.get('state'),written=[];let remote=[];
+ const fetchImpl=async(url,options={})=>{const value=String(url),method=options.method||'GET';
+  if(value.includes('oauth2.googleapis.com/token'))return json({access_token:'access',refresh_token:'refresh',expires_in:3600});
+  if(value.endsWith('/calendars')&&method==='POST')return json({id:'agency-calendar',summary:'tie · Календарь организатора'});
+  if(value.includes('/events')&&method==='GET')return json({items:remote,nextSyncToken:'agency-sync'});
+  if(value.includes('/events')&&method==='POST'){const body=JSON.parse(options.body);written.push(body);return json({id:`agency-${written.length}`,etag:`etag-${written.length}`,updated:'2026-09-23T09:00:00.000Z',...body});}
+  throw new Error(`Unexpected Google request: ${method} ${value}`);
+ };
+ await finishGoogleCalendar(db,state,'code',{fetchImpl});
+ const first=await syncExternalCalendar(db,admin,{projectId:'agency',provider:'google'},{fetchImpl});assert(first.exported>0);
+ assert(written.some(event=>event.summary.startsWith(`${project.data.name} — `)));assert(written.some(event=>event.summary.startsWith(`${second.data.name} — `)));
+ assert(written.every(event=>event.extendedProperties.private.tieProjectId));
+ remote=[{id:'outside-agency',summary:'Мария и Пётр — Задача из общего календаря',start:{date:'2027-02-10'},end:{date:'2027-02-11'},updated:'2026-09-23T10:00:00.000Z',etag:'outside-etag'}];
+ const imported=await syncExternalCalendar(db,admin,{projectId:'agency',provider:'google'},{fetchImpl});assert.equal(imported.imported,1);
+ assert(entities(db,admin.agency_id,second.id,'task').some(task=>task.data.title==='Задача из общего календаря'));
+});

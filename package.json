@@ -17,7 +17,10 @@
     "test:management": "node scripts/management-ui-test.mjs",
     "test:offline-ui": "node scripts/offline-ui-test.mjs",
     "test:v2-browser": "node scripts/v2-browser-test.mjs",
-    "test:v2-entry": "node scripts/v2-entry-test.mjs"
+    "test:v2-entry": "node scripts/v2-entry-test.mjs",
+    "test:workspaces": "node scripts/workspace-switch-test.mjs",
+    "test:client-waiting": "node scripts/client-waiting-test.mjs",
+    "test:users": "node scripts/user-management-test.mjs"
   },
   "dependencies": {
     "react": "19.2.6",

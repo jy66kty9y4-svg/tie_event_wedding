@@ -177,7 +177,8 @@ export function TemplateEditor({
 export function CategoryEditor({
   category,
   onClose,
-  onSave
+  onSave,
+  onDelete
 }) {
   const d = dataOf(category);
   const [name, setName] = useState(d.name || '');
@@ -194,5 +195,5 @@ export function CategoryEditor({
       } catch (caught) {
         setError(caught.message || 'Не удалось сохранить категорию');
       }
-    }}><FormField label="Название"><input autoFocus required value={name} onChange={e => setName(e.target.value)} /></FormField><label className="check-field"><input type="checkbox" checked={archived} onChange={e => setArchived(e.target.checked)} /> Архивировать категорию</label>{error && <p className="form-error">{error}</p>}<div className="dialog-actions"><button type="button" className="button quiet" onClick={onClose}>Отмена</button><button className="button">Сохранить</button></div></form></Modal>;
+    }}><FormField label="Название"><input autoFocus required value={name} onChange={e => setName(e.target.value)} /></FormField><label className="check-field"><input type="checkbox" checked={archived} onChange={e => setArchived(e.target.checked)} /> Архивировать категорию</label>{error && <p className="form-error">{error}</p>}{onDelete&&<button type="button" className="text-button danger-text" onClick={onDelete}>Удалить категорию</button>}<div className="dialog-actions"><button type="button" className="button quiet" onClick={onClose}>Отмена</button><button className="button">Сохранить</button></div></form></Modal>;
 }

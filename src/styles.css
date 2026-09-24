@@ -57,6 +57,24 @@
 
 .v2-project-header h1{margin:0 0 8px}.v2-project-header p{margin:0;font-size:13px;line-height:1.5}.v2-project-header{padding-bottom:12px}.v2-project-back{padding-bottom:10px}.v2-project-tabs{margin-bottom:20px}
 
+/* Admin workspace switcher uses the existing rose palette and sidebar rhythm. */
+.v2-space-switch{padding:8px 0 16px;border-bottom:1px solid var(--border)}
+.v2-space-switch>small,.v2-space-project>span{display:block;padding:0 12px 8px;color:var(--muted);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+.v2-space-switch button{width:100%;min-height:40px;display:flex;align-items:center;gap:10px;padding:8px 11px;border:1px solid transparent;border-radius:9px;background:transparent;text-align:left;color:var(--muted);font:500 12px var(--sans);cursor:pointer}
+.v2-space-switch button:hover{background:#f9f3f5;color:var(--ink)}
+.v2-space-switch button.active{background:var(--rose-pale);border-color:#eac9d4;color:var(--plum-dark);font-weight:700}
+.v2-space-switch button .icon{flex:0 0 18px}
+.v2-space-switch button span:nth-child(2){min-width:0;flex:1}
+.v2-space-check{font-size:13px}
+.v2-space-project{display:block;padding:16px 0 10px;border-bottom:1px solid var(--border)}
+.v2-space-project select{width:100%;min-height:40px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--ink);padding:7px 8px;font:500 12px var(--sans)}
+.v2-space-intro{border-left:3px solid var(--rose);padding:4px 0 4px 15px;margin:0 0 26px}
+.v2-space-intro span{font:600 15px var(--sans);color:var(--ink)}
+.v2-space-intro p{margin:5px 0 0;color:var(--muted);font-size:13px}
+.v2-space-switch button:focus-visible,.v2-space-project select:focus-visible{outline:3px solid #ad4e6c66;outline-offset:2px}
+@media(min-width:768px) and (max-width:1279px){.v2-space-switch>small,.v2-space-switch button span,.v2-space-project{display:none}.v2-space-switch{padding:8px 0 12px}.v2-space-switch button{justify-content:center;padding:8px 0}.v2-space-switch button .icon{flex:0 0 18px}}
+@media(max-width:767px){.v2-shell .sidebar.v2-menu-open .v2-space-switch,.v2-shell .sidebar.v2-menu-open .v2-space-project{display:block}.v2-space-switch button{min-height:44px}.v2-space-project select{min-height:44px}}
+
 /* Calendar cards must accommodate real event titles within their column. */
 .v2-upcoming a{flex:1;min-width:0;white-space:normal;overflow-wrap:anywhere}
 

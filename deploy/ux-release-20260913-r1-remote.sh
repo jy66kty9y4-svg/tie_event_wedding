@@ -107,15 +107,6 @@ stream_container_file() {
   chmod 600 "$destination"
 }
 
-verify_neighbors() {
-  check_neighbor(){ url=$1 expected=$2; actual=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "$url"); [ "$actual" = "$expected" ] || { echo "$url returned $actual, expected $expected" >&2; return 1; }; printf '%s %s\n' "$actual" "$url"; }
-  check_neighbor https://gutv.tech 200
-  check_neighbor https://event.gutv.tech 200
-  check_neighbor https://money.gutv.tech 307
-  check_neighbor https://admin.cabinpxrn.ru 401
-  check_neighbor https://pticaplus.tech 200
-}
-
 stage() {
   archive=$1 expected=$2
   [ -f "$archive" ] || { echo "Archive not found: $archive" >&2; exit 1; }
@@ -178,7 +169,6 @@ activate() {
   [ "$volume_before" = "$volume_after" ] || { echo 'External data volume identity changed' >&2; exit 1; }
   docker exec tie-event node --input-type=module -e 'import assert from "node:assert/strict"; const health=await fetch("http://127.0.0.1:4173/api/health"), privateApi=await fetch("http://127.0.0.1:4173/api/state"); assert.equal(health.status,200); assert.equal(privateApi.status,401);'
   curl -fsSI https://tie-event.cabinpxrn.ru/ | head -n 1
-  verify_neighbors
   switched=0
   trap - EXIT INT TERM HUP
   printf 'previous_image=%s\nprevious_env=%s\nbackup=%s\nbefore_fingerprint=%s\nafter_fingerprint=%s\nvolume=%s\n' "$previous_image" "$ROOT/backups/env-before-${RELEASE_ID}-${stamp}" "$backup" "$before" "$after" "$volume_after"

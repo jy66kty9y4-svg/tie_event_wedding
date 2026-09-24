@@ -11,7 +11,7 @@ export function safeUrl(v) { assert(!v || /^https?:\/\//.test(v),'Ссылка �
 export function getScoped(db,u,id,p=undefined,kind=undefined) {
   const row=entity(db,id); assert(row && row.agency_id===u.agency_id && (p===undefined || row.project_id===p) && (!kind || row.kind===kind),'Запись не найдена',404); return row;
 }
-export function sectionOf(row) { return ({obligation:'budget',movement:'budget',selection:'vendors',file:'files',task:'tasks',approval:'approvals',approvalRevision:'approvals',meeting:'calendar',seatingPlan:'seating',seatingTable:'seating',microsite:'microsite',micrositeRevision:'microsite'})[row.kind] || (row.kind==='row'?row.parent_id:row.kind==='table'?row.id:row.kind==='section'?'structure':row.kind); }
+export function sectionOf(row) { return ({obligation:'budget',movement:'budget',coupleBudget:'budget',selection:'vendors',file:'files',task:'tasks',approval:'approvals',approvalRevision:'approvals',meeting:'calendar',seatingPlan:'seating',seatingTable:'seating',microsite:'microsite',micrositeRevision:'microsite'})[row.kind] || (row.kind==='row'?row.parent_id:row.kind==='table'?row.id:row.kind==='section'?'structure':row.kind); }
 export function accessRowId(row) { return row.kind==='movement' && row.data.obligationId ? row.data.obligationId : row.id; }
 export function projectVisible(db,u,id) {
   const p=entity(db,id); if (!p || p.agency_id!==u.agency_id || p.deleted) return false;
