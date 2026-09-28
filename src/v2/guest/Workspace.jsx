@@ -5,6 +5,7 @@ import { seatPositions } from './geometry.mjs';
 import { tableShapes, tableFromPreset, tablePresetKey, nextTableNumber, batchTables, pointOnPlan, dragPosition, drawnTable, geometryDraft, outlineOnPlan, removeContourPoint } from './interaction.mjs';
 import { readableGuestField } from './readable.mjs';
 import {downloadGuestsXlsx,downloadSeatingXlsx} from '../../export-workbooks.js';
+import {GuestRegistrySheet} from './GuestRegistrySheet.jsx';
 
 const labels={guestName:'Имя гостя',rsvpStatus:'Ответ RSVP',diet:'Питание',allergies:'Ограничения',transfer:'Трансфер',accommodation:'Проживание',contact:'Контакт',comment:'Комментарий',invitationStatus:'Статус ссылки',seatingTable:'Стол',seatIndex:'Место'};
 const rsvpLabel={unanswered:'Нет ответа',confirmed:'Приду',declined:'Не смогу',tentative:'Пока не знаю'};
@@ -30,6 +31,12 @@ export function GuestMappingWizard({state,projectId,run,refresh,can=()=>false}){
 }
 
 export function GuestWorkspace({state,projectId,run,refresh,navigate,sourceId,can=()=>false}){
+ const table=guestTable(state);
+ if(!table)return <GuestMappingWizard {...{state,projectId,run,refresh,can}}/>;
+ return <GuestRegistrySheet {...{state,projectId,run,refresh,navigate,sourceId,can}} table={table} mappingSetup={<GuestMappingWizard {...{state,projectId,run,refresh,can}}/>}/>;
+}
+
+function GuestWorkspaceLegacy({state,projectId,run,refresh,navigate,sourceId,can=()=>false}){
  const table=guestTable(state),map=table?.data?.semanticMap||{},all=rows(state,table),[filter,setFilter]=useState('all'),[query,setQuery]=useState(''),[unseatedOnly,setUnseatedOnly]=useState(false),[chosen,setChosen]=useState(new Set()),[plus,setPlus]=useState(new Set()),[expiry,setExpiry]=useState(''),[link,setLink]=useState(''),[copyStatus,setCopyStatus]=useState(''),[error,setError]=useState(''),[local,setLocal]=useState([]),[confirmInvite,setConfirmInvite]=useState(null),focusRef=useRef(null);const canViewRsvp=all.some(row=>readable(can,table,row,map.rsvpStatus)),canViewSeats=all.some(row=>readable(can,table,row,map.seatingTable)),canManageInvites=Array.isArray(state.guestInvites),source=sourceId||state?.sourceId||state?.sourceID||null;const shown=all.filter(r=>{const name=String(r.data[map.guestName]||'').toLowerCase();return (!query||name.includes(query.toLowerCase()))&&(filter==='all'||(readable(can,table,r,map.rsvpStatus)&&status(r,map)===filter))&&(!unseatedOnly||(readable(can,table,r,map.seatingTable)&&!r.data[map.seatingTable]));}),invites=state.guestInvites||local,toggle=(setter,id)=>setter(s=>{const next=new Set(s);next.has(id)?next.delete(id):next.add(id);return next});
  useEffect(()=>{if(!source)return;const target=all.find(row=>row.id===source);if(!target)return;setQuery(String(target.data[map.guestName]||''));setTimeout(()=>{focusRef.current?.focus();focusRef.current?.scrollIntoView?.({block:'center'});},0)},[source,table?.id]);
  if(!table||!map.rsvpStatus)return <GuestMappingWizard {...{state,projectId,run,refresh,can}}/>;

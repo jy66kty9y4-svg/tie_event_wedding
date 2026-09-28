@@ -301,7 +301,7 @@ function validateData(db,u,kind,data,p,parent,current=null) {
     d.sections=d.sections.map((section,index)=>({key:text(section?.key,'Ключ раздела'),name:text(section?.name,'Название раздела'),order:Number(section?.order??index)}));
     const keys=new Set(); for(const s of d.sections) { assert(/^[a-zA-Z0-9_-]{1,80}$/.test(s.key),'Ключ раздела: латинские буквы, цифры, дефис или подчёркивание'); assert(Number.isFinite(s.order),'Проверьте порядок раздела'); assert(!keys.has(s.key),'Ключ раздела повторяется'); keys.add(s.key); }
     const tableKeys=new Set();
-    d.tables=d.tables.map(table=>({key:text(table?.key,'Ключ таблицы'),name:text(table?.name,'Название таблицы'),section:text(table?.section,'Раздел таблицы'),offline:!!table?.offline,columns:structuredClone(table?.columns)}));
+    d.tables=d.tables.map(table=>({key:text(table?.key,'Ключ таблицы'),name:text(table?.name,'Название таблицы'),section:text(table?.section,'Раздел таблицы'),offline:!!table?.offline,columns:structuredClone(table?.columns),...(table?.semanticMap&&typeof table.semanticMap==='object'&&!Array.isArray(table.semanticMap)?{semanticMap:structuredClone(table.semanticMap)}:{})}));
     for(const t of d.tables) { assert(/^[a-zA-Z0-9_-]{1,80}$/.test(t.key),'Ключ таблицы: латинские буквы, цифры, дефис или подчёркивание'); assert(!tableKeys.has(t.key),'Ключ таблицы повторяется'); tableKeys.add(t.key); assert(keys.has(t.section),'Раздел таблицы не найден'); validateColumns(t.columns); }
     assert(d.categories.length<=100,'Проверьте категории'); d.categories=[...new Set(d.categories.map(category=>text(category,'Категория',1,120)))];
     d.offline=[...new Set(d.offline.map(key=>text(key,'Офлайн-раздел',1,80)))];

@@ -7,7 +7,7 @@ import { migrate as migratePublishing, migrateLegacyDrafts } from './v2/publishi
 import { migrate as migrateWorkflow } from './v2/workflow/index.mjs';
 import { migrate as migrateCalendar } from './v2/calendar/index.mjs';
 import { DEFAULT_TASK_BLUEPRINTS } from '../src/task-blueprints.js';
-import { DEFAULT_GUEST_SEMANTIC_MAP, mergeGuestColumns } from '../src/guest-blueprint.js';
+import { DEFAULT_GUEST_SEMANTIC_MAP, mergeGuestColumns, normalizeGuestRegistry } from '../src/guest-blueprint.js';
 import { DEFAULT_VENDOR_CATEGORIES } from '../src/vendor-categories.js';
 
 export const uid = () => randomUUID();
@@ -173,6 +173,21 @@ export function openDatabase(path) {
       );
     `);
     db.prepare("INSERT INTO migrations VALUES(11,datetime('now'))").run();
+  });
+  if(!db.prepare('SELECT version FROM migrations WHERE version=12').get()) transaction(db,()=>{
+    for(const agency of db.prepare('SELECT id FROM agencies').all()) {
+      const user=db.prepare('SELECT * FROM users WHERE agency_id=? AND protected=1 AND disabled=0 ORDER BY id LIMIT 1').get(agency.id);
+      if(!user) continue;
+      for(const template of entities(db,agency.id,null,'template')) {
+        const tables=(template.data.tables||[]).map(table=>table.key==='guests'?{...table,...normalizeGuestRegistry(table.columns,table.semanticMap)}:table);
+        if(JSON.stringify(tables)!==JSON.stringify(template.data.tables||[]))change(db,user,template,{...template.data,tables},false,'guest_columns_v12');
+      }
+      for(const table of db.prepare("SELECT * FROM entities WHERE agency_id=? AND kind='table' AND deleted=0 AND json_extract(data,'$.key')='guests'").all(agency.id).map(decode)) {
+        const next={...table.data,...normalizeGuestRegistry(table.data.columns,table.data.semanticMap)};
+        if(JSON.stringify(next)!==JSON.stringify(table.data))change(db,user,table,next,false,'guest_columns_v12');
+      }
+    }
+    db.prepare("INSERT INTO migrations VALUES(12,datetime('now'))").run();
   });
   return db;
 }

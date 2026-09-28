@@ -7,6 +7,7 @@ import { validateColumns } from '../server/model.mjs';
 import { compute } from '../src/shared.js';
 import { questionnaireQuestions } from '../src/questionnaire.js';
 import { coupleBudgetGroups, coupleBudgetItemCount } from '../src/couple-budget.js';
+import { normalizeGuestRegistry } from '../src/guest-blueprint.js';
 
 let commandNumber=0;
 const command=(db,user,op,body={})=>execute(db,user,{id:`command_${++commandNumber}`,op,...body});
@@ -59,10 +60,31 @@ test('new weddings start with the shared normal-priority task plan',()=>{
   const {db,admin}=fixture(),wedding=project(db,admin),tasks=entities(db,admin.agency_id,wedding.id,'task'),invites=tasks.find(row=>row.data.sourceTemplateKey==='invites');
   const guests=rowTable(db,admin,wedding.id,'guests'),vendorCategories=entities(db,admin.agency_id,null,'vendorCategory');
   assert.equal(wedding.data.location,'');
-  assert.deepEqual(guests.data.columns.slice(0,8).map(column=>column.name),['ФИО','Фото','Чей гость','Кем приходится','Пищевые аллергии','Алкоголь','Контакт','Приглашение']);
+  assert.deepEqual(guests.data.columns.map(column=>column.name),['ФИО','Чей гость','Кем приходится','Пищевые аллергии','Алкоголь','Контакт','Приглашение']);
   assert.equal(guests.data.semanticMap.allergies,'allergies');assert(vendorCategories.some(category=>category.data.name==='Фотограф'));assert(vendorCategories.some(category=>category.data.name==='Видеограф'));
   assert.equal(tasks.length,25);assert(tasks.every(row=>row.data.priority==='normal'));assert(invites);assert.equal(invites.data.title,'Поиск пригласительных');assert.equal(invites.data.offsetDays,-180);assert.equal(invites.data.dueDate,'2026-12-14');
   for(const title of ['Поиск площадки','Поиск ведущего','Поиск фотографа','Поиск видеографа','Поиск свадебного торта','Подобрать техническое оборудование','Поиск декоратора','Поиск стилиста','Подготовить раздаточные материалы','Подготовить welcome-зону']) assert(tasks.some(row=>row.data.title===title),title);
+});
+
+test('guest registry normalization keeps the seven requested fields and hidden seating links',()=>{
+  const legacy=[
+    {id:'name',name:'Имя',type:'text'},
+    {id:'photo',name:'Фото',type:'file'},
+    {id:'side',name:'Сторона',type:'select',options:['Невеста','Жених']},
+    {id:'relation',name:'Родство',type:'text'},
+    {id:'allergies',name:'Аллергии',type:'text'},
+    {id:'alcohol',name:'Напитки',type:'text'},
+    {id:'contact',name:'Телефон',type:'text'},
+    {id:'rsvp_status',name:'RSVP',type:'select',options:['Не отправлено','Приглашён','Подтвердил','Отказ']},
+    {id:'meal',name:'Питание',type:'text'},
+    {id:'seat_table',name:'Стол',type:'relation',targetKind:'seatingTable'},
+    {id:'seat_index',name:'Место',type:'number'}
+  ];
+  const normalized=normalizeGuestRegistry(legacy,{guestName:'name',rsvpStatus:'rsvp_status',diet:'meal',allergies:'allergies',contact:'contact',seatingTable:'seat_table',seatIndex:'seat_index',rsvpValues:{unanswered:'Не отправлено',tentative:'Приглашён',confirmed:'Подтвердил',declined:'Отказ'}});
+  assert.deepEqual(normalized.columns.slice(0,7).map(column=>column.name),['ФИО','Чей гость','Кем приходится','Пищевые аллергии','Алкоголь','Контакт','Приглашение']);
+  assert.deepEqual(normalized.columns.slice(7).map(column=>column.id),['seat_table','seat_index']);
+  assert.equal(normalized.semanticMap.rsvpStatus,'rsvp_status');
+  assert.equal(Object.hasOwn(normalized.semanticMap,'diet'),false);
 });
 
 test('the couple never receives or changes the organizer budget limit',()=>{
@@ -574,6 +596,13 @@ test('custom template keys are normalized before project structure is cloned',()
   const sections=entities(db,admin.agency_id,p.id,'section'),table=rowTable(db,admin,p.id);
   assert.equal(sections.find(section=>section.id===table.data.sectionId).data.name,'День');
   assert.equal(table.data.offline,true);
+});
+
+test('template edits preserve guest semantic mappings',()=>{
+  const {db,admin}=fixture();
+  const guestTable={key:'guests',name:'Гости',section:'people',columns:[{id:'name',name:'ФИО',type:'text'},{id:'status',name:'Приглашение',type:'select',options:['Не отправлено','Приглашён','Подтвердил','Отказ']}],semanticMap:{guestName:'name',rsvpStatus:'status',rsvpValues:{unanswered:'Не отправлено',tentative:'Приглашён',confirmed:'Подтвердил',declined:'Отказ'}}};
+  const template=command(db,admin,'entity.create',{kind:'template',data:{name:'Шаблон гостей',sections:[{key:'people',name:'Гости',order:0}],tables:[guestTable],categories:[],offline:[]}});
+  assert.deepEqual(template.data.tables[0].semanticMap,guestTable.semanticMap);
 });
 
 test('movement participant details and agency category totals remain explicit',()=>{

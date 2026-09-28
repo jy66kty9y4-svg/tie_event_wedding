@@ -23,7 +23,7 @@ function fixture() {
   const db=openDatabase(':memory:'); const {user}=bootstrap(db,{slug:'guest-test',agencyName:'Тест',email:'owner@example.test',name:'Владелец',password:'strong-pass-1'}); migrate(db);
   const project=v1(db,user,'project.create',{data:{name:'Ира и Макс',date:'2027-08-14',location:'Москва'}});
   let table=entities(db,user.agency_id,project.id,'table').find(item=>item.data.key==='guests');
-  table=v1(db,user,'entity.edit',{projectId:project.id,entityId:table.id,version:table.version,data:{...table.data,columns:[...table.data.columns,{id:'seat_table',name:'Стол (ID)',type:'relation',targetKind:'seatingTable'},{id:'seat_index',name:'Место',type:'number'}]}});
+  table=v1(db,user,'entity.edit',{projectId:project.id,entityId:table.id,version:table.version,data:{...table.data,columns:[...table.data.columns,{id:'meal',name:'Пожелания по питанию',type:'text'},{id:'seat_table',name:'Стол (ID)',type:'relation',targetKind:'seatingTable'},{id:'seat_index',name:'Место',type:'number'}]}});
   const row=v1(db,user,'entity.create',{projectId:project.id,kind:'row',parentId:table.id,schemaVersion:table.version,data:{name:'Ира',status:'Приглашён',meal:'',contact:'',seat_table:'',seat_index:''}});
   table=v2(db,user,'guestMapping.save',{projectId:project.id,guestTableId:table.id,schemaVersion:table.version,data:{semanticMap:{guestName:'name',rsvpStatus:'status',diet:'meal',contact:'contact',seatingTable:'seat_table',seatIndex:'seat_index',rsvpValues:{unanswered:'Не отправлено',confirmed:'Подтвердил',declined:'Отказ',tentative:'Приглашён'}}},confirm:true});
   return {db,user,project,table,row};

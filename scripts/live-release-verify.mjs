@@ -50,10 +50,16 @@ try{
   await page.getByText('По вашему запросу ничего не найдено.').waitFor();
   await page.getByRole('button',{name:'Сбросить поиск'}).click();
   await page.getByRole('button',{name:'Добавить раздел'}).waitFor();
+  await page.goto(`${origin}/app/projects/${encodeURIComponent(projectId)}/guests`,{waitUntil:'networkidle'});
+  await page.getByRole('heading',{name:'Гости',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Добавить гостя'}).waitFor();
+  await page.getByRole('button',{name:'Колонки',exact:true}).waitFor();
+  await page.locator('.guest-sheet-table').waitFor();
+  await page.getByRole('columnheader',{name:/Для ссылки/}).waitFor();
   await page.setViewportSize({width:390,height:844});
   await page.reload({waitUntil:'networkidle'});
   const mobileOverflow=await page.evaluate(()=>({page:document.documentElement.scrollWidth,viewport:innerWidth,wide:[...document.querySelectorAll('body *')].filter(element=>element.getBoundingClientRect().right>innerWidth+1&&!element.closest('.couple-budget-scroll')).slice(0,8).map(element=>({tag:element.tagName,className:typeof element.className==='string'?element.className:'',right:element.getBoundingClientRect().right,parent:element.parentElement?.className}))}));
   assert.equal(mobileOverflow.page>mobileOverflow.viewport,false,JSON.stringify(mobileOverflow));
   assert.deepEqual(errors,[]);
-  console.log('Live release: login, settings, access search, directories, integrations, site, application tabs, budget search and inline controls, mobile width PASS');
+  console.log('Live release: login, settings, applications, budget, guest sheet and mobile width PASS');
 }finally{await browser.close()}
