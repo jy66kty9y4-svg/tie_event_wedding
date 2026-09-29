@@ -1,6 +1,6 @@
 {
   "work_id": "requirements-roles-0929",
-  "status": "in_progress",
+  "status": "complete",
   "owner": "root",
   "updated": "2026-09-29",
   "release_id": "requirements-roles-20260929-r2",
@@ -9,5 +9,13 @@
     "build": "passed"
   },
   "blocker": null,
-  "previous_attempt": "r1 rolled back automatically after orbit_session_registry changed during activation"
+  "previous_attempt": "r1 rolled back automatically after orbit_session_registry changed during activation",
+  "production": {
+    "image": "tie-event:requirements-roles-20260929-r2",
+    "health": "healthy",
+    "restart_count": 0,
+    "backup": "/opt/tie-event/backups/before-requirements-roles-20260929-r2-20260929T092213Z.sqlite",
+    "browser_acceptance": "passed",
+    "sample_weddings": 3
+  }
 }
