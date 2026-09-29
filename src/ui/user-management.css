@@ -7,5 +7,9 @@
 .user-management-identity>div{min-width:0}.user-management-identity strong,.user-management-identity small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-management-identity strong{font-size:13px}.user-management-identity small{margin-top:4px;color:var(--muted);font-size:11px}
 .user-management-status{color:var(--muted);font-size:11px;white-space:nowrap}.user-management-status.is-active{color:var(--green)}
 .user-management-actions{grid-column:1/-1;display:flex;align-items:center;gap:8px 15px;flex-wrap:wrap;justify-content:flex-start;padding-left:51px}.user-management-actions .text-button{font-size:11px;white-space:nowrap}
+.user-management-archive{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+.user-management-archive-toggle{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:10px 12px;border:1px solid #e3d9dd;border-radius:8px;background:#fbf7f8;color:#5f5057;font-size:12px;font-weight:700;text-align:left}
+.user-management-archive-toggle>span:first-child{display:flex;align-items:center;gap:9px;min-width:0;flex:1}.user-management-archive-toggle>.icon:last-child{transition:transform .16s}.user-management-archive-toggle[aria-expanded="true"]>.icon:last-child{transform:rotate(90deg)}
+.user-management-disabled-list{margin-top:8px;border-top:0;padding:0 12px}.user-management-disabled-list .user-management-row:last-child{border-bottom:0}
 @media(max-width:900px){.user-management-layout{grid-template-columns:1fr}}
-@media(max-width:760px){.user-management-actions .text-button{min-height:34px}}
+@media(max-width:760px){.user-management-actions .text-button{min-height:34px}.user-management-disabled-list{padding:0}}

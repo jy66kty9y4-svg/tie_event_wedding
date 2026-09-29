@@ -62,8 +62,12 @@ try{
  dialog=page.getByRole('dialog',{name:'Удалить пользователя'});
  await dialog.getByRole('button',{name:'Удалить пользователя'}).click();
  await dialog.waitFor({state:'detached'});
- await row.getByText('Удалён').waitFor();
+ await page.getByRole('button',{name:/Деактивированные/}).click();
+ await row.getByText('Деактивирован').waitFor();
+ const activeList=page.getByRole('heading',{name:/Активные пользователи/}).locator('xpath=ancestor::section[1]').locator('.user-management-list:not(.user-management-disabled-list)');
+ assert.equal(await activeList.locator('.user-management-row').filter({hasText:'pair-users@example.test'}).count(),0);
  assert.equal(account().disabled,1);
+ if(process.env.TIE_USER_SCREENSHOTS)await page.screenshot({path:join(temporary,'admin-deactivated.png'),fullPage:true});
  await row.getByRole('button',{name:'Восстановить'}).click();
  await row.getByText('Активен').waitFor();
  assert.equal(account().disabled,0);
