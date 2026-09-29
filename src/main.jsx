@@ -35,8 +35,10 @@ const applicationDraftKey='tie:application-draft';
 const adminWorkspaceKey='tie:admin-workspace';
 const initialAdminWorkspace=()=>{try{const saved=sessionStorage.getItem(adminWorkspaceKey);return ['organizer','couple','contractor'].includes(saved)?saved:'organizer'}catch{return 'organizer'}};
 function savedApplication(){try{return JSON.parse(sessionStorage.getItem(applicationDraftKey)||'{}')}catch{return {}}}
-const applicationEntry=new URLSearchParams(location.search).get('application')==='1';
-const incomingSource=Object.fromEntries(['sourceCaseId','sourcePackageId'].map(key=>[key,new URLSearchParams(location.search).get(key)]).filter(([,value])=>value));
+const entryParams=new URLSearchParams(location.search);
+const applicationEntry=entryParams.get('application')==='1';
+const loginEntry=entryParams.get('login')==='1';
+const incomingSource=Object.fromEntries(['sourceCaseId','sourcePackageId'].map(key=>[key,entryParams.get(key)]).filter(([,value])=>value));
 if(Object.keys(incomingSource).length){try{sessionStorage.setItem(applicationDraftKey,JSON.stringify({...savedApplication(),...incomingSource}))}catch{}}
 const arr = value => Array.isArray(value) ? value : [];
 const dataOf = item => item?.data || item || {};
@@ -649,7 +651,7 @@ function App() {
   },[]);
   useEffect(() => {
     let alive=true;
-    (async()=>{try{await initClient();let next=await loadState();const invite=new URLSearchParams(location.search).get('invite');if(invite&&navigator.onLine){try{await command({op:'invite.accept',token:invite});const url=new URL(location.href);url.searchParams.delete('invite');history.replaceState(null,'',url);next=await loadState();}catch(error){flash(error.message,'error');}}if(alive){await acceptState(next);if(applicationEntry||Object.keys(incomingSource).length)setModal({type:'application'});}}catch{try{const info=await api(`/api/public?agency=${encodeURIComponent(agencySlug())}`);if(alive)setPublicInfo(info);}catch{}if(alive){setMode('public');if(applicationEntry||Object.keys(incomingSource).length)setModal({type:'auth',mode:'login',next:'application'});}}})();
+    (async()=>{try{await initClient();let next=await loadState();const invite=new URLSearchParams(location.search).get('invite');if(invite&&navigator.onLine){try{await command({op:'invite.accept',token:invite});const url=new URL(location.href);url.searchParams.delete('invite');history.replaceState(null,'',url);next=await loadState();}catch(error){flash(error.message,'error');}}if(alive){await acceptState(next);if(applicationEntry||Object.keys(incomingSource).length)setModal({type:'application'});}}catch{try{const info=await api(`/api/public?agency=${encodeURIComponent(agencySlug())}`);if(alive)setPublicInfo(info);}catch{}if(alive){setMode('public');if(applicationEntry||Object.keys(incomingSource).length)setModal({type:'auth',mode:'login',next:'application'});else if(loginEntry)setModal({type:'auth',mode:'login'});}}})();
     const off=subscribe(async()=>{try{const next=await loadState(activeProject.current);if(alive){if(Array.isArray(next.projects))setAvailableProjects(next.projects);if(!activeProject.current&&!has(next,'projects')&&next.projects?.length===1)await acceptState(next);else setState(next);setOffline(await getOfflineStatus(activeProject.current));}}catch(error){if(error.status===401&&alive){setState(null);setMode('public');}else if(error.status===403&&alive){activeProject.current=null;await acceptState(await loadState());}}});
     const timer=setInterval(async()=>{if(!navigator.onLine||document.visibilityState!=='visible')return;try{const next=await loadState(activeProject.current);if(alive){if(Array.isArray(next.projects))setAvailableProjects(next.projects);if(!activeProject.current&&!has(next,'projects')&&next.projects?.length===1)await acceptState(next);else setState(next);}}catch{}},15000);
     return()=>{alive=false;off();clearInterval(timer)};
@@ -703,6 +705,8 @@ function App() {
   };
   const authDone = async () => {
     const nextModal=modal?.next;setModal(null);
+    const loginUrl=new URL(location.href);
+    if(loginUrl.searchParams.delete('login'))history.replaceState(null,'',loginUrl);
     const invitation=new URLSearchParams(location.search).get('invite');
     if(invitation){await command({op:'invite.accept',token:invitation});const url=new URL(location.href);url.searchParams.delete('invite');history.replaceState(null,'',url);}
     await acceptState(await loadState());
@@ -732,7 +736,7 @@ function App() {
       type: 'auth',
       mode: publicInfo?.setup ? 'setup' : 'register',
       next: 'application'
-    })} />{modal?.type === 'auth' && <AuthDialog mode={modal.mode} onClose={() => setModal(null)} onAuth={authDone} />} {modal?.type === 'application' && <ApplicationDialog onClose={() => setModal(null)} onSent={async()=>{await refresh(null);setView('waiting')}} />}<Notice notice={notice} onDismiss={() => setNotice(null)} /></>;
+    })} />{modal?.type === 'auth' && <AuthDialog mode={modal.mode} onClose={() => {setModal(null);const url=new URL(location.href);if(url.searchParams.delete('login'))history.replaceState(null,'',url);}} onAuth={authDone} />} {modal?.type === 'application' && <ApplicationDialog onClose={() => setModal(null)} onSent={async()=>{await refresh(null);setView('waiting')}} />}<Notice notice={notice} onDismiss={() => setNotice(null)} /></>;
   if(awaitingClientAccess(state)){
     const application=arr(state.applications).filter(item=>item.data?.userId===state.user.id).sort((a,b)=>String(b.updated_at||b.created_at||'').localeCompare(String(a.updated_at||a.created_at||'')))[0];
     if(modal?.type==='questionnaire')return <QuestionnairePage state={state} application={application} onBack={()=>setModal(null)} onLogout={signOut} onSubmit={async({answers,contact,date})=>{

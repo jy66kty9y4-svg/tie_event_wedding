@@ -74,7 +74,7 @@ test('SSR uses configured canonical only and sitemap contains published agency p
   assert.match(html, /rel="canonical" href="https:\/\/weddings\.example\/stories"/);
   const publishedStory = getPublishedContent(db, user.agency_id, 'case', 'istoriya');
   const storyHtml = renderAgencyHtml({ agencyName: 'tie', page: 'story', item: publishedStory, domain: 'weddings.example' });
-  assert.match(storyHtml, /<meta name="description" content="Текст">/); assert.match(storyHtml, /https:\/\/weddings\.example\/stories\/istoriya/); assert.match(storyHtml, /Кабинет/);
+  assert.match(storyHtml, /<meta name="description" content="Текст">/); assert.match(storyHtml, /https:\/\/weddings\.example\/stories\/istoriya/); assert.match(storyHtml, /href="\/app\?login=1">Кабинет/);
 });
 
 test('sitemap lists only routes with published content while retaining the reachable legacy root', () => {

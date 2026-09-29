@@ -65,8 +65,9 @@ async function openPage(context, name) {
 }
 
 async function loginUi(page, email, password) {
-  await page.getByRole('button', { name: 'Войти', exact: true }).click();
+  await page.goto(`${origin}/app?login=1`);
   const dialog = page.getByRole('dialog', { name: 'Войти в tie' });
+  await dialog.waitFor();
   await dialog.getByLabel('Почта', { exact: true }).fill(email);
   await dialog.getByLabel('Пароль', { exact: true }).fill(password);
   await dialog.getByRole('button', { name: 'Войти', exact: true }).click();
