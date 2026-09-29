@@ -1,3 +1,5 @@
+export const PROJECT_FILE_MAX_BYTES = 5 * 1024 * 1024;
+
 // Date/period interactions adapted from Finance app/finance-dashboard.tsx.
 // New money conversion preserves integer kopecks and rejects implicit rounding.
 export function cents(value) {
@@ -12,6 +14,7 @@ export const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'E
 export const permissions = ['read','create','edit','delete','structure','finance','files','history','invite','projects','applications','catalog','agencyFinance','templates','access','settings','publishWeddingSite','manageGuestInvites','publishAgencySite','viewTeamAvailability'];
 export const permissionLabels = { read:'Просмотр',create:'Создание',edit:'Редактирование',delete:'Удаление',structure:'Структура таблиц',finance:'Финансы свадьбы',files:'Файлы',history:'История и восстановление',invite:'Приглашения',projects:'Создание проектов',applications:'Рассмотрение заявок',catalog:'Общий каталог',agencyFinance:'Бюджет агентства',templates:'Шаблоны',access:'Права доступа',settings:'Настройки агентства',publishWeddingSite:'Публикация сайта свадьбы',manageGuestInvites:'Гостевые приглашения',publishAgencySite:'Публикация сайта агентства',viewTeamAvailability:'Занятость команды' };
 export const projectPermissions = ['read','create','edit','delete','structure','finance','files','publishWeddingSite','manageGuestInvites'];
+export const studentRolePermissions = ['read','create','edit','delete','structure','finance','files','history','projects','publishWeddingSite','manageGuestInvites'];
 export const fieldTypes = { text:'Текст',number:'Число',money:'Деньги',date:'Дата',time:'Время',boolean:'Флажок',select:'Варианты',url:'Ссылка',file:'Файл',relation:'Связь',users:'Участники проекта',formula:'Вычисление' };
 export const movementLabels = { deposit:'Получено от пары',payment:'Выплата подрядчику',refund:'Возврат паре',transfer:'Передача организатору',fee:'Оплата гонорара',income:'Доход агентства',expense:'Расход агентства' };
 export const statuses = { review:'На рассмотрении',clarification:'Нужно уточнение',approved:'Одобрена',rejected:'Отклонена',planning:'Подготовка',confirmed:'Всё согласовано',completed:'Завершена',archived:'Архив' };

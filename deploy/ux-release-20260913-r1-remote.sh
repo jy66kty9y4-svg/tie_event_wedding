@@ -7,9 +7,10 @@ TAG=${TAG:-tie-event:$RELEASE_ID}
 EXPECTED_ACTIVE=${EXPECTED_ACTIVE:-tie-event:font-20260911-r3}
 ARCHIVE_NAME=tie-event-${RELEASE_ID}-source.tar.gz
 CADDY=/opt/ptitsa-plus-releases/20260904T6f38c93/deploy/cloud/Caddyfile
-CADDY_SHA=01753bf88e4c74d6135b9fe9b33a627f7ee6e6a77d458db83371aa667e2785d0
+CADDY_SHA=${EXPECTED_CADDY_SHA:-01753bf88e4c74d6135b9fe9b33a627f7ee6e6a77d458db83371aa667e2785d0}
 COMPOSE_SHA=${EXPECTED_COMPOSE_SHA:-0cdffc4f005a03142deccf890fbdac5ee00e5e65c8c28cc6b63b39dceac444cd}
 EXCLUDED_TABLES='sessions attempts guest_sessions notification_outbox'
+FINGERPRINT_IGNORE=${TIE_DB_FINGERPRINT_IGNORE:-}
 
 usage() {
   cat <<'EOF'
@@ -89,7 +90,7 @@ backup_and_fingerprint() {
   docker exec tie-event sh -c 'test -s "$1"' sh "$backup_tmp"
   stream_container_file "$backup_tmp" "$backup"
 
-  docker exec -i tie-event node --input-type=module - "$backup_tmp" "$before_tmp" < "$helper" >/dev/null
+  docker exec -i tie-event node --input-type=module - "$backup_tmp" "$before_tmp" "$FINGERPRINT_IGNORE" < "$helper" >/dev/null
   docker exec tie-event sh -c 'test -s "$1"' sh "$before_tmp"
   stream_container_file "$before_tmp" "$before"
   printf '%s\n' "$backup" "$before"
@@ -160,7 +161,7 @@ activate() {
   after_tmp="/tmp/${RELEASE_ID}-${stamp}-after.json"
   before_tmp="/tmp/${RELEASE_ID}-${stamp}-before.json"
   helper="$release/deploy/ux-release-20260913-r1-db-fingerprint.mjs"
-  docker exec -i tie-event node --input-type=module - /data/tie.sqlite "$after_tmp" < "$helper" >/dev/null
+  docker exec -i tie-event node --input-type=module - /data/tie.sqlite "$after_tmp" "$FINGERPRINT_IGNORE" < "$helper" >/dev/null
   docker exec tie-event sh -c 'test -s "$1"' sh "$after_tmp"
   stream_container_file "$after_tmp" "$after"
   docker exec -i tie-event sh -c 'umask 077; cat > "$1"' sh "$before_tmp" < "$before"

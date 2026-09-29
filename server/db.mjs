@@ -9,9 +9,19 @@ import { migrate as migrateCalendar } from './v2/calendar/index.mjs';
 import { DEFAULT_TASK_BLUEPRINTS } from '../src/task-blueprints.js';
 import { DEFAULT_GUEST_SEMANTIC_MAP, mergeGuestColumns, normalizeGuestRegistry } from '../src/guest-blueprint.js';
 import { DEFAULT_VENDOR_CATEGORIES } from '../src/vendor-categories.js';
+import { studentRolePermissions } from '../src/shared.js';
 
 export const uid = () => randomUUID();
 export const now = () => new Date().toISOString();
+export const AUDIT_RETENTION_YEARS = 3;
+export function auditRetentionCutoff(at = Date.now()) {
+  const cutoff = new Date(at);
+  cutoff.setUTCFullYear(cutoff.getUTCFullYear() - AUDIT_RETENTION_YEARS);
+  return cutoff.toISOString();
+}
+export function pruneAuditHistory(db, at = Date.now()) {
+  return db.prepare('DELETE FROM audit WHERE created_at<?').run(auditRetentionCutoff(at)).changes;
+}
 export class Fault extends Error {
   constructor(message, status = 400, details) { super(message); this.status = status; this.details = details; }
 }
@@ -189,6 +199,19 @@ export function openDatabase(path) {
     }
     db.prepare("INSERT INTO migrations VALUES(12,datetime('now'))").run();
   });
+  if(!db.prepare('SELECT version FROM migrations WHERE version=13').get()) transaction(db,()=>{
+    db.exec('CREATE INDEX IF NOT EXISTS audit_retention ON audit(created_at)');
+    db.prepare("INSERT INTO migrations VALUES(13,datetime('now'))").run();
+  });
+  if(!db.prepare('SELECT version FROM migrations WHERE version=14').get()) transaction(db,()=>{
+    for(const agency of db.prepare('SELECT id FROM agencies').all()) {
+      if(!db.prepare("SELECT id FROM roles WHERE agency_id=? AND key='student'").get(agency.id)) {
+        db.prepare('INSERT INTO roles(id,agency_id,name,permissions,protected,key) VALUES(?,?,?,?,0,?)').run(uid(),agency.id,'Практикант',JSON.stringify(studentRolePermissions),'student');
+      }
+    }
+    db.prepare("INSERT INTO migrations VALUES(14,datetime('now'))").run();
+  });
+  pruneAuditHistory(db);
   return db;
 }
 export function transaction(db, fn) {

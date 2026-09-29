@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openDatabase, entity, entities, uid } from '../server/db.mjs';
+import { openDatabase, entity, entities, pruneAuditHistory, uid } from '../server/db.mjs';
 import { defaults, grant, passwordHash, checkPassword, createSession, userSession } from '../server/auth.mjs';
 import { bootstrap, register, snapshot, execute, upload, download } from '../server/service.mjs';
 import { validateColumns } from '../server/model.mjs';
-import { compute } from '../src/shared.js';
+import { PROJECT_FILE_MAX_BYTES, compute, studentRolePermissions } from '../src/shared.js';
 import { questionnaireQuestions } from '../src/questionnaire.js';
 import { coupleBudgetGroups, coupleBudgetItemCount } from '../src/couple-budget.js';
 import { normalizeGuestRegistry } from '../src/guest-blueprint.js';
@@ -183,9 +183,14 @@ test('admin and organizer manage accounts without escalating organizer privilege
   fails(()=>command(db,organizer,'user.create',{name:'Без свадьбы',email:'no-project@example.test',password:'strong-password',roleId:coupleRole.id}));
   fails(()=>command(db,account(),'user.password',{userId:organizer.id,version:account().version,password:'another-password'}),403);
   fails(()=>command(db,organizer,'user.password',{userId:admin.id,version:db.prepare('SELECT version FROM users WHERE id=?').get(admin.id).version,password:'another-password'}),403);
-  const session=createSession(db,account());
+  const session=createSession(db,account(),{clientIp:'127.0.0.1',userAgent:'Первое устройство'});
+  const secondSession=createSession(db,account(),{clientIp:'127.0.0.2',userAgent:'Второе устройство'});
+  assert.equal(db.prepare('SELECT count(*) count FROM sessions WHERE user_id=?').get(created.id).count,2);
   command(db,organizer,'user.password',{userId:created.id,version:account().version,password:'changed-password'});
   assert.equal(userSession(db,session),null);
+  assert.equal(userSession(db,secondSession),null);
+  assert.equal(db.prepare('SELECT count(*) count FROM sessions WHERE user_id=?').get(created.id).count,0);
+  assert.equal(db.prepare('SELECT count(*) count FROM orbit_session_registry WHERE user_id=? AND revoked_at IS NOT NULL').get(created.id).count,2);
   assert(checkPassword('changed-password',account().password));
   fails(()=>command(db,organizer,'user.remove',{userId:created.id,version:created.version}),409);
   const freshSession=createSession(db,account());
@@ -202,6 +207,31 @@ test('admin and organizer manage accounts without escalating organizer privilege
   assert.equal(snapshot(db,powerful).canManageUsers,true);
   fails(()=>command(db,organizer,'user.remove',{userId:powerful.id,version:db.prepare('SELECT version FROM users WHERE id=?').get(powerful.id).version}),403);
   assert.equal(snapshot(db,organizer).users.find(user=>user.id===powerful.id)?.manageable,false);
+});
+
+test('practitioner access covers every wedding but not agency administration, and unused custom roles can be deleted',()=>{
+  const {db,admin}=fixture(),first=project(db,admin,'Первая свадьба');
+  const practitioner=registered(db,'practitioner@example.test','Практикант');
+  const practitionerRole=db.prepare("SELECT * FROM roles WHERE agency_id=? AND key='student'").get(admin.agency_id);
+  assert.deepEqual(JSON.parse(practitionerRole.permissions),studentRolePermissions);
+  assign(db,admin,practitioner,[{roleId:practitionerRole.id,projectId:null,restrictions:{}}]);
+  assert.equal(snapshot(db,practitioner).canManageUsers,false);
+  assert.equal(snapshot(db,practitioner).projects.some(item=>item.id===first.id),true);
+  const second=command(db,practitioner,'project.create',{data:{name:'Вторая свадьба',date:'2027-11-20'}});
+  const edited=command(db,practitioner,'entity.edit',{projectId:first.id,entityId:first.id,version:first.version,data:{location:'Новая площадка'}});
+  assert.equal(edited.data.location,'Новая площадка');
+  assert(snapshot(db,practitioner,first.id).history.length>0);
+  assert.equal(snapshot(db,practitioner).projects.some(item=>item.id===second.id),true);
+  fails(()=>command(db,practitioner,'settings.save',{version:1,name:'Другое агентство',settings:{}}),403);
+  fails(()=>command(db,practitioner,'role.save',{name:'Лишняя роль',permissions:['read']}),403);
+
+  const unused=role(db,admin,'Временная роль',['read']);
+  command(db,admin,'role.delete',{roleId:unused.id,version:unused.version});
+  assert.equal(db.prepare('SELECT id FROM roles WHERE id=?').get(unused.id),undefined);
+  const assigned=role(db,admin,'Назначенная роль',['read']),member=registered(db,'assigned-role@example.test','Участник');
+  assign(db,admin,member,[{roleId:assigned.id,projectId:first.id,restrictions:{}}]);
+  fails(()=>command(db,admin,'role.delete',{roleId:assigned.id,version:assigned.version}),409);
+  fails(()=>command(db,admin,'role.delete',{roleId:practitionerRole.id,version:practitionerRole.version}),403);
 });
 
 test('registration stays private until one idempotent approval and invitations join two distinct accounts',()=>{
@@ -367,6 +397,9 @@ test('offline selections are explicit, templates clone independently, files stay
   const selection=command(db,admin,'entity.create',{projectId:first.id,kind:'selection',data:{title:'Ведущий',price:70000,selected:true,terms:'Ведёт вечер',dueDate:'2027-07-01'}});
   const file=upload(db,admin,first.id,{name:'план.txt',mime:'text/plain',documentStatus:'pending_signature',content:Buffer.from('plan').toString('base64')});
   assert.equal(file.data.documentStatus,'pending_signature');
+  const maximum=upload(db,admin,first.id,{name:'ровно-5-мб.bin',mime:'application/octet-stream',content:Buffer.alloc(PROJECT_FILE_MAX_BYTES).toString('base64')});
+  assert.equal(maximum.data.size,PROJECT_FILE_MAX_BYTES);
+  fails(()=>upload(db,admin,first.id,{name:'больше-5-мб.bin',mime:'application/octet-stream',content:Buffer.alloc(PROJECT_FILE_MAX_BYTES+1).toString('base64')}));
   const offline=snapshot(db,admin,first.id,true);
   for(const id of [firstEdited.id,timingRow.id,selection.id,file.id]) assert(offline.entities.some(item=>item.id===id));
   assert.equal(Object.hasOwn(offline.entities.find(item=>item.id===file.id).data,'content'),false);
@@ -574,6 +607,20 @@ test('history exposes current entity state for restoring deleted records',()=>{
   row=command(db,admin,'entity.delete',{projectId:p.id,entityId:row.id,version:row.version,schemaVersion:table.version});
   const history=snapshot(db,admin,p.id).history.find(item=>item.entity_id===row.id&&item.action==='delete');
   assert.equal(history.current_version,row.version); assert.equal(history.current_deleted,1);
+});
+
+test('history records are retained for three years',()=>{
+  const {db,admin}=fixture(),p=project(db,admin),table=rowTable(db,admin,p.id);
+  let expired=addRow(db,admin,p.id,table,{title:'Старая запись'}),retained=addRow(db,admin,p.id,table,{title:'Граничная запись'});
+  expired=command(db,admin,'entity.delete',{projectId:p.id,entityId:expired.id,version:expired.version,schemaVersion:table.version});
+  retained=command(db,admin,'entity.delete',{projectId:p.id,entityId:retained.id,version:retained.version,schemaVersion:table.version});
+  const expiredAudit=db.prepare("SELECT id FROM audit WHERE entity_id=? AND action='delete'").get(expired.id),retainedAudit=db.prepare("SELECT id FROM audit WHERE entity_id=? AND action='delete'").get(retained.id);
+  db.prepare('UPDATE audit SET created_at=? WHERE id=?').run('2023-09-29T11:59:59.999Z',expiredAudit.id);
+  db.prepare('UPDATE audit SET created_at=? WHERE id=?').run('2023-09-29T12:00:00.000Z',retainedAudit.id);
+  assert.equal(pruneAuditHistory(db,Date.parse('2026-09-29T12:00:00.000Z')),1);
+  assert.equal(db.prepare('SELECT id FROM audit WHERE id=?').get(expiredAudit.id),undefined);
+  assert(db.prepare('SELECT id FROM audit WHERE id=?').get(retainedAudit.id));
+  assert(db.prepare('SELECT version FROM migrations WHERE version=13').get());
 });
 
 test('global resource permissions do not silently grant mutation verbs',()=>{

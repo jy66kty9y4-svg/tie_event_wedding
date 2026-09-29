@@ -4,7 +4,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 const args = process.argv.slice(2);
-const ignored = new Set(['sessions', 'attempts', 'guest_sessions', 'notification_outbox', 'migrations', 'calendar_connections', 'calendar_event_links', 'calendar_oauth_states']);
+const ignored = new Set(['sessions', 'attempts', 'guest_sessions', 'notification_outbox', 'migrations', 'calendar_connections', 'calendar_event_links', 'calendar_oauth_states', 'orbit_session_registry', 'orbit_guest_session_registry', 'orbit_nonces', 'orbit_idempotency']);
+if(args[0]!=='--compare') for(const name of String(args[2]||'').split(/[\s,]+/).filter(Boolean)) ignored.add(name);
 const quote = value => `"${String(value).replaceAll('"', '""')}"`;
 const stable = value => {
   if (Buffer.isBuffer(value) || value instanceof Uint8Array) return `blob:${createHash('sha256').update(value).digest('hex')}`;
@@ -21,7 +22,7 @@ if (args[0] === '--compare') {
   console.log(JSON.stringify({ matched: true, tables: Object.keys(before.tables || {}).length, ignored: before.ignoredTables }, null, 2));
 } else {
   const [dbPath, outputPath] = args;
-  if (!dbPath || !outputPath) throw new Error('Usage: node ux-release-20260913-r1-db-fingerprint.mjs <database.sqlite> <output.json>');
+  if (!dbPath || !outputPath) throw new Error('Usage: node ux-release-20260913-r1-db-fingerprint.mjs <database.sqlite> <output.json> [ignored-tables]');
   const db = new DatabaseSync(resolve(dbPath), { readOnly: true });
   try {
   const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(row => row.name).filter(name => !ignored.has(name));

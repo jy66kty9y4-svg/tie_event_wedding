@@ -1,6 +1,6 @@
 import { randomBytes, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
 import { assert, uid } from './db.mjs';
-import { permissions, projectPermissions } from '../src/shared.js';
+import { permissions, projectPermissions, studentRolePermissions } from '../src/shared.js';
 export const digest = x => createHash('sha256').update(x).digest('hex');
 export const token = () => randomBytes(32).toString('base64url');
 export function passwordHash(password) {
@@ -78,7 +78,7 @@ export function canHoldFunds(db,user,project) {
 }
 export function requireAccess(db,u,action,p=null,s=undefined,r=undefined,f=undefined) { assert(can(db,u,action,p,s,r,f),'Недостаточно прав',403); }
 export function defaults(db, agency) {
-  const roles = [ ['admin','Администратор',permissions,true], ['organizer','Организатор',permissions.filter(x=>!['access','settings','publishAgencySite'].includes(x)),false], ['couple','Участник пары',projectPermissions,false], ['coordinator','Координатор',['read','create','edit','delete','finance','files'],false], ['contractor','Подрядчик',['read','edit'],false] ];
+  const roles = [ ['admin','Администратор',permissions,true], ['organizer','Организатор',permissions.filter(x=>!['access','settings','publishAgencySite'].includes(x)),false], ['couple','Участник пары',projectPermissions,false], ['coordinator','Координатор',['read','create','edit','delete','finance','files'],false], ['contractor','Подрядчик',['read','edit'],false], ['student','Практикант',studentRolePermissions,false] ];
   return roles.map(([key,name,p,protectedRole]) => { const id=uid(); db.prepare('INSERT INTO roles(id,agency_id,name,permissions,protected,key) VALUES(?,?,?,?,?,?)').run(id,agency,name,JSON.stringify(p),Number(protectedRole),key); return {id,name,key}; });
 }
 export function grant(db, u, role, project = null, restrictions = {}) { db.prepare('INSERT INTO grants VALUES(?,?,?,?,?,?)').run(uid(),u.agency_id,u.id,role,project,JSON.stringify(restrictions)); }

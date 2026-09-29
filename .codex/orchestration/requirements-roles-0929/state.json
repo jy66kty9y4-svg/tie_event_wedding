@@ -1,0 +1,13 @@
+{
+  "work_id": "requirements-roles-0929",
+  "status": "in_progress",
+  "owner": "root",
+  "updated": "2026-09-29",
+  "release_id": "requirements-roles-20260929-r2",
+  "validation": {
+    "tests": "131 passed",
+    "build": "passed"
+  },
+  "blocker": null,
+  "previous_attempt": "r1 rolled back automatically after orbit_session_registry changed during activation"
+}

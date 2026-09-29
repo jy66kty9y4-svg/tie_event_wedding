@@ -3,7 +3,7 @@ import {guardProjectDateEdit} from './v2/workflow/index.mjs';
 import { assert, transaction, entity, entities, insert, change, version, uid, now, audit } from './db.mjs';
 import { token, digest, passwordHash, checkPassword, createSession, publicUser, defaults, grant, grants, can, canHoldFunds, requireAccess, rateLimit } from './auth.mjs';
 import { text, amount, date, safeUrl, getScoped, projectVisible, createProject, initialTemplate, validateColumns, validateRow, financials, validateLedger, sectionOf, accessRowId } from './model.mjs';
-import { permissions, projectPermissions } from '../src/shared.js';
+import { PROJECT_FILE_MAX_BYTES, permissions, projectPermissions } from '../src/shared.js';
 import { operations as v2Operations, typedKinds } from './v2/index.mjs';
 import {guestInvites,validateGuestSchemaMutation,validateGuestRowMutation} from './v2/guest/index.mjs';
 import { executeModule, members as assignableMembers } from './v2/common.mjs';
@@ -212,8 +212,8 @@ export function snapshot(db,u,project=null,offline=false) {
       const allRoles=db.prepare('SELECT id,name,permissions,key FROM roles WHERE agency_id=? AND protected=0 ORDER BY name').all(u.agency_id);
       result.inviteRoles=allRoles.filter(role=>can(db,u,'access')||role.key==='couple').map(({id,name})=>({id,name}));
     } else result.members=mayUseFinance?custodians:[];
-    const mayViewAgencyHistory=u.protected||grants(db,u).some(grant=>grant.role_key==='organizer'&&grant.permissions.includes('history')&&(grant.project_id===null||grant.project_id===project));
-    if(!offline && mayViewAgencyHistory) {result.history=db.prepare(`SELECT a.*,u.name AS author,e.version AS current_version,e.deleted AS current_deleted
+    const mayViewHistory=can(db,u,'history',project);
+    if(!offline && mayViewHistory) {result.history=db.prepare(`SELECT a.*,u.name AS author,e.version AS current_version,e.deleted AS current_deleted
       FROM audit a LEFT JOIN users u ON u.id=a.actor_id LEFT JOIN entities e ON e.id=a.entity_id AND e.agency_id=a.agency_id
       WHERE a.agency_id=? AND a.project_id=? ORDER BY a.created_at DESC LIMIT 200`).all(u.agency_id,project);if(!canHoldFunds(db,u,project))result.history=result.history.map(item=>({...item,before_json:redactOrganizerJson(item.before_json),after_json:redactOrganizerJson(item.after_json)}));}
     if(offline) { result.offline=true; result.expiresAt=Date.now()+7*86400000; result.project={...result.project,data:{name:p.data.name,date:p.data.date,offline:p.data.offline}}; result.agency={id:agency.id,name:agency.name}; }
@@ -388,6 +388,16 @@ export function execute(db,user,cmd) {
         result={id:target.id,disabled:op==='user.remove'};
       }
       audit(db,u,{id:target.id,kind:'user',project_id:null,data:{name:target.name,email:target.email,action:op}},null,op);
+    } else if(op==='role.delete') {
+      requireAccess(db,u,'access');
+      const existing=db.prepare('SELECT * FROM roles WHERE id=? AND agency_id=?').get(cmd.roleId,u.agency_id);
+      assert(existing,'Роль не найдена',404); version(existing,cmd.version);
+      assert(!existing.protected&&!existing.key,'Системную роль удалить нельзя',403);
+      assert(!db.prepare('SELECT id FROM grants WHERE role_id=? LIMIT 1').get(existing.id),'Роль назначена пользователям. Сначала измените их доступ.',409);
+      assert(!db.prepare('SELECT digest FROM invitations WHERE role_id=? LIMIT 1').get(existing.id),'Роль используется в приглашениях и должна быть сохранена.',409);
+      audit(db,u,{id:existing.id,kind:'role',project_id:null,data:{name:existing.name,permissions:JSON.parse(existing.permissions)},deleted:true},existing,'delete');
+      db.prepare('DELETE FROM roles WHERE id=?').run(existing.id);
+      result={id:existing.id,deleted:true};
     } else if(op==='role.save') {
       requireAccess(db,u,'access'); assert(Array.isArray(cmd.permissions)&&cmd.permissions.every(x=>permissions.includes(x)),'Неизвестное разрешение'); const name=text(cmd.name),id=cmd.roleId||uid();
       const existing=db.prepare('SELECT * FROM roles WHERE id=? AND agency_id=?').get(id,u.agency_id);
@@ -417,7 +427,7 @@ export function execute(db,user,cmd) {
 
 function authorizeCommand(db,u,c) {
   const p=c.projectId||null;
-  const actions={'project.create':'projects','application.review':'applications','role.save':'access','grants.save':'access','settings.save':'settings','invite.create':'invite'};
+  const actions={'project.create':'projects','application.review':'applications','role.save':'access','role.delete':'access','grants.save':'access','settings.save':'settings','invite.create':'invite'};
   if(actions[c.op]) requireAccess(db,u,actions[c.op],c.op==='invite.create'?p:null);
   if(c.op.startsWith('user.'))assert(canManageUsers(db,u),'Недостаточно прав',403);
   if(c.op==='coupleBudget.cell')requireAccess(db,u,['edit','finance'],p,'budget',null,[c.field]);
@@ -630,7 +640,7 @@ function movement(db,u,c) {
 export function upload(db,u,p,body) {
   u=db.prepare('SELECT * FROM users WHERE id=? AND agency_id=? AND disabled=0').get(u.id,u.agency_id); assert(u,'Доступ отозван',403);
   assert(projectVisible(db,u,p),'Проект недоступен',403); requireAccess(db,u,['create','files'],p,'files',null,['name','size','mime','documentStatus']);
-  const name=text(body.name,'Имя файла',1,200),bytes=Buffer.from(body.content||'','base64'); assert(bytes.length>0&&bytes.length<=8*1024*1024,'Размер файла: от 1 байта до 8 МБ');
+  const name=text(body.name,'Имя файла',1,200),bytes=Buffer.from(body.content||'','base64'); assert(bytes.length>0&&bytes.length<=PROJECT_FILE_MAX_BYTES,'Размер файла: от 1 байта до 5 МБ');
   const documentStatus=body.documentStatus||'personal';assert(['personal','pending_signature','signed'].includes(documentStatus),'Выберите раздел документа');
   return transaction(db,()=>{ const r=insert(db,u,'file',{name,size:bytes.length,mime:body.mime||'application/octet-stream',documentStatus},p); db.prepare('INSERT INTO blobs VALUES(?,?)').run(r.id,bytes); return r; });
 }

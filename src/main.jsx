@@ -3,7 +3,7 @@ import {TimingSetup} from './v2/TimingSetup.jsx';
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api, command, discardCommand, getOfflineStatus, initClient, loadState, logout, prepareProject, retryCommand, subscribe, syncQueue } from './client.js';
-import { dateLabel, money, permissionLabels, permissions, statuses, today } from './shared.js';
+import { PROJECT_FILE_MAX_BYTES, dateLabel, money, permissionLabels, permissions, statuses, today } from './shared.js';
 import { PublicHome } from './ui/PublicHome.jsx';
 import { AppShell } from './ui/AppShell.jsx';
 import { ClientWaitingPage } from './ui/ClientWaitingPage.jsx';
@@ -427,7 +427,8 @@ function Roles({
 function RoleForm({
   role,
   onClose,
-  onSave
+  onSave,
+  onDelete
 }) {
   const d = dataOf(role);
   const [f, set] = useForm({
@@ -439,7 +440,7 @@ function RoleForm({
       e.preventDefault();
       await onSave(f);
       onClose();
-    }}><FormField label="Название"><input autoFocus required value={f.name} onChange={e => set('name', e.target.value)} /></FormField><fieldset className="permission-grid"><legend>Разрешения</legend>{permissions.map(p => <label key={p}><input type="checkbox" checked={f.permissions.includes(p)} onChange={() => toggle(p)} />{permissionLabels[p]}</label>)}</fieldset><FormActions onCancel={onClose} /></SafeForm></Modal>;
+    }}><FormField label="Название"><input autoFocus required value={f.name} onChange={e => set('name', e.target.value)} /></FormField><fieldset className="permission-grid"><legend>Разрешения</legend>{permissions.map(p => <label key={p}><input type="checkbox" checked={f.permissions.includes(p)} onChange={() => toggle(p)} />{permissionLabels[p]}</label>)}</fieldset>{onDelete&&<button type="button" className="text-button danger-text" onClick={onDelete}>Удалить роль</button>}<FormActions onCancel={onClose} /></SafeForm></Modal>;
 }
 
 
@@ -559,8 +560,10 @@ function Workspace({
 const documentSections=[['personal','Личные'],['pending_signature','На подпись'],['signed','Подписано']];
 function Files({state,onFile}) {
   const [section,setSection]=useState('personal');
+  const [error,setError]=useState(''),[busy,setBusy]=useState(false);
   const all=arr(state.files||state.entities).filter(x=>x.kind==='file'&&!x.deleted),files=all.filter(file=>(dataOf(file).documentStatus||'personal')===section);
-  return <><PageHeader eyebrow="Свадьба" title="Документы" action={<label className="button"><input className="sr-only" type="file" onChange={e=>{const file=e.target.files?.[0];if(file)onFile(file,section);e.target.value=''}}/><Icon name="plus"/>Загрузить в «{documentSections.find(([key])=>key===section)?.[1]}»</label>}/><nav className="v2-document-tabs" aria-label="Разделы документов">{documentSections.map(([key,label])=><button key={key} className={section===key?'active':''} onClick={()=>setSection(key)}>{label}<span>{all.filter(file=>(dataOf(file).documentStatus||'personal')===key).length}</span></button>)}</nav><section className="panel">{files.length?<div className="data-list">{files.map(file=><a className="data-row" key={file.id} href={`/api/files/${file.id}`}><div><strong>{dataOf(file).name||'Документ'}</strong><small>{dataOf(file).size?`${Math.round(dataOf(file).size/1024)} КБ`:'Скачать документ'}</small></div><Icon name="arrow"/></a>)}</div>:<Empty title="В этом разделе документов пока нет" text="Загрузите документ — он останется внутри этой свадьбы."/>}</section></>;
+  const choose=async event=>{const file=event.target.files?.[0];event.target.value='';if(!file)return;setError('');if(file.size<1||file.size>PROJECT_FILE_MAX_BYTES){setError('Размер файла: от 1 байта до 5 МБ');return;}setBusy(true);try{await onFile(file,section)}catch(caught){setError(caught.message||'Не удалось загрузить файл')}finally{setBusy(false)}};
+  return <><PageHeader eyebrow="Свадьба" title="Документы" action={<label className={`button ${busy?'disabled':''}`} aria-disabled={busy}><input className="sr-only" type="file" disabled={busy} onChange={choose}/><Icon name="plus"/>{busy?'Загружаем…':`Загрузить в «${documentSections.find(([key])=>key===section)?.[1]}»`}</label>}/><p className="quiet-copy">До 5 МБ. Формат файла не ограничен.</p>{error&&<p className="form-error" role="alert">{error}</p>}<nav className="v2-document-tabs" aria-label="Разделы документов">{documentSections.map(([key,label])=><button key={key} className={section===key?'active':''} onClick={()=>setSection(key)}>{label}<span>{all.filter(file=>(dataOf(file).documentStatus||'personal')===key).length}</span></button>)}</nav><section className="panel">{files.length?<div className="data-list">{files.map(file=><a className="data-row" key={file.id} href={`/api/files/${file.id}`}><div><strong>{dataOf(file).name||'Документ'}</strong><small>{dataOf(file).size?`${Math.round(dataOf(file).size/1024)} КБ`:'Скачать документ'}</small></div><Icon name="arrow"/></a>)}</div>:<Empty title="В этом разделе документов пока нет" text="Загрузите документ — он останется внутри этой свадьбы."/>}</section></>;
 }
 
 const historyActions={create:'Создано',edit:'Изменено',delete:'Удалено',restore:'Восстановлено',setStatus:'Изменён статус',setOrganizerFocus:'Изменён список организатора',guest_rsvp_set:'Обновлён ответ гостя',seating_assign:'Гость рассажен',seating_unassign:'Гость снят с места',seating_plan_save:'Изменён план зала',seating_table_edit:'Изменён стол',guest_columns_migration:'Обновлена структура гостей'};
@@ -934,7 +937,7 @@ function App() {
       roleId: modal.item?.id,
       version: modal.item?.version,
       ...f
-    })} />} {modal?.type === 'grant' && <GrantEditor user={modal.item} state={state} onClose={() => setModal(null)} onSave={f => run({
+    })} onDelete={modal.item&&!modal.item.key&&!modal.item.protected?()=>setModal({type:'roleDelete',item:modal.item}):null} />} {modal?.type==='roleDelete'&&<ConfirmDialog title="Удалить роль?" confirm="Удалить роль" danger onClose={()=>setModal(null)} onConfirm={async()=>{await run({op:'role.delete',roleId:modal.item.id,version:modal.item.version});setModal(null)}}><p>Роль «{modal.item.name}» будет удалена без возможности восстановления. Удаление доступно, только если роль никому не назначена и не используется в приглашениях.</p></ConfirmDialog>} {modal?.type === 'grant' && <GrantEditor user={modal.item} state={state} onClose={() => setModal(null)} onSave={f => run({
       op: 'grants.save',
       userId: f.userId || modal.item?.id,
       version: state.users?.find(u=>u.id===(f.userId || modal.item?.id))?.version,

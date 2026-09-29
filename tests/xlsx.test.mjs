@@ -54,3 +54,13 @@ test('seating workbook includes guests and table occupancy',()=>{
   assert.equal(workbook.sheets[1].rows[0].occupied,1);
   assert.equal(workbook.sheets[1].rows[0].free,7);
 });
+
+test('representative export is formed within five seconds',()=>{
+  const columns=Array.from({length:20},(_,index)=>({key:`column${index}`,label:`Колонка ${index+1}`}));
+  const rows=Array.from({length:500},(_,rowIndex)=>Object.fromEntries(columns.map((column,columnIndex)=>[column.key,`Значение ${rowIndex+1}-${columnIndex+1}`])));
+  const startedAt=performance.now();
+  const bytes=buildXlsx({sheets:[{name:'Данные',title:'Контрольный экспорт',columns,rows}]});
+  const elapsedMs=performance.now()-startedAt;
+  assert.ok(bytes.length>0);
+  assert.ok(elapsedMs<=5000,`Экспорт сформирован за ${elapsedMs.toFixed(1)} мс вместо максимум 5000 мс`);
+});

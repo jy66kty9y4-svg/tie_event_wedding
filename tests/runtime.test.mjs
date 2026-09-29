@@ -50,10 +50,13 @@ test('HTTP bootstrap, sessions, CSRF, SPA and private cache controls', async t =
 
   result = await app.post('/api/setup', { slug: 'other', agencyName: 'Other', name: 'Other User', email: 'other@example.test', password: 'long-test-password' });
   assert.equal(result.response.status, 409);
+  const stateStartedAt = performance.now();
   result = await app.json('/api/state');
+  const stateResponseMs = performance.now() - stateStartedAt;
   assert.equal(result.response.status, 200);
   assert.equal(result.body.user.email, 'ada@example.test');
   assert.match(result.response.headers.get('cache-control'), /no-store/);
+  assert.ok(stateResponseMs <= 600, `Интерфейсное состояние сформировано за ${stateResponseMs.toFixed(1)} мс вместо максимум 600 мс`);
 
   const shell = await app.request('/projects/not-a-file');
   assert.equal(shell.status, 200);
