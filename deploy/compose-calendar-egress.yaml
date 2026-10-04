@@ -11,7 +11,7 @@ services:
     pids_limit: 128
     environment:
       TIE_CALENDAR_SECRET: ${TIE_CALENDAR_SECRET:?Set TIE_CALENDAR_SECRET}
-      TIE_PUBLIC_ORIGIN: ${TIE_PUBLIC_ORIGIN:-https://tie-event.cabinpxrn.ru}
+      TIE_PUBLIC_ORIGIN: ${TIE_PUBLIC_ORIGIN:-https://tie-event.ru}
       GOOGLE_CALENDAR_CLIENT_ID: ${GOOGLE_CALENDAR_CLIENT_ID:-}
       GOOGLE_CALENDAR_CLIENT_SECRET: ${GOOGLE_CALENDAR_CLIENT_SECRET:-}
     tmpfs:

@@ -169,7 +169,7 @@ activate() {
   volume_after=$(docker volume inspect tie-event-data --format '{{.Name}} {{.Mountpoint}}')
   [ "$volume_before" = "$volume_after" ] || { echo 'External data volume identity changed' >&2; exit 1; }
   docker exec tie-event node --input-type=module -e 'import assert from "node:assert/strict"; const health=await fetch("http://127.0.0.1:4173/api/health"), privateApi=await fetch("http://127.0.0.1:4173/api/state"); assert.equal(health.status,200); assert.equal(privateApi.status,401);'
-  curl -fsSI https://tie-event.cabinpxrn.ru/ | head -n 1
+  curl -fsSI https://tie-event.ru/ | head -n 1
   switched=0
   trap - EXIT INT TERM HUP
   printf 'previous_image=%s\nprevious_env=%s\nbackup=%s\nbefore_fingerprint=%s\nafter_fingerprint=%s\nvolume=%s\n' "$previous_image" "$ROOT/backups/env-before-${RELEASE_ID}-${stamp}" "$backup" "$before" "$after" "$volume_after"

@@ -5,7 +5,7 @@ if(!envPath||!credentialsPath)throw new Error('Usage: configure-google-calendar.
 const source=JSON.parse(readFileSync(credentialsPath,'utf8'));
 const credentials=source.web;
 if(!credentials?.client_id||!credentials?.client_secret)throw new Error('OAuth JSON must contain web client credentials');
-if(!credentials.redirect_uris?.includes('https://tie-event.cabinpxrn.ru/api/v2/calendar/google/callback'))throw new Error('Required redirect URI is missing');
+if(!credentials.redirect_uris?.includes('https://tie-event.ru/api/v2/calendar/google/callback'))throw new Error('Required redirect URI is missing');
 if(!/^[A-Za-z0-9._-]+$/.test(credentials.client_id)||!/^[A-Za-z0-9._-]+$/.test(credentials.client_secret))throw new Error('OAuth credentials contain unsupported characters');
 
 const values={GOOGLE_CALENDAR_CLIENT_ID:credentials.client_id,GOOGLE_CALENDAR_CLIENT_SECRET:credentials.client_secret};

@@ -90,13 +90,15 @@ try {
  await switcher.selectOption('organizer');
  await page.waitForURL('**/app/today');
  await page.setViewportSize({width:390,height:844});
- await page.getByRole('button',{name:'Открыть навигацию'}).click();
+ assert.deepEqual(await page.getByRole('navigation',{name:'Основные разделы'}).getByRole('button').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label'))),['Задачи','Свадьбы','Календарь','Финансы агентства']);
+ await page.getByRole('button',{name:'Открыть личное меню'}).click();
+ await page.waitForTimeout(200);
  if(process.env.TIE_WORKSPACE_SCREENSHOTS)await page.screenshot({path:join(temporary,'mobile.png'),fullPage:true});
  await page.locator('.sidebar.v2-menu-open').getByRole('button',{name:'Настройки'}).click();
  if(process.env.TIE_WORKSPACE_SCREENSHOTS)await page.screenshot({path:join(temporary,'settings-mobile.png'),fullPage:true});
  await page.getByLabel('Рабочее пространство').selectOption('couple');
  await page.waitForURL('**/app/projects');
- assert.equal(await page.getByRole('button',{name:'Открыть навигацию'}).getAttribute('aria-expanded'),'false');
+ assert.equal(await page.getByRole('button',{name:'Открыть личное меню'}).getAttribute('aria-expanded'),'false');
  if(process.env.TIE_WORKSPACE_SCREENSHOTS)await page.screenshot({path:join(temporary,'projects-mobile.png'),fullPage:true});
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
  assert.deepEqual(errors,[]);

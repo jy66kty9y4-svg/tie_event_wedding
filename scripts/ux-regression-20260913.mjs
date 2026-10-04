@@ -362,19 +362,22 @@ try {
     });
   }
 
-  await run('A12', 'mobile drawer focuses its first item, traps Tab, closes with Escape and restores trigger focus', page, async () => {
+  await run('A12', 'mobile account menu traps focus while the bottom dock keeps the four primary sections', page, async () => {
     const mobile = await browser.newContext({ viewport: { width: 390, height: 844 } });
     const mobilePage = await mobile.newPage();
     await login(mobilePage);
     await app(mobilePage, `/app/projects/${fixture.projectId}/guests`);
-    const trigger = mobilePage.getByRole('button', { name: 'Открыть навигацию', exact: true });
+    const primary = mobilePage.getByRole('navigation', { name: 'Основные разделы' });
+    const primaryLabels = await primary.getByRole('button').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')));
+    assert.deepEqual(primaryLabels,['Задачи','Свадьбы','Календарь','Финансы агентства']);
+    const trigger = mobilePage.getByRole('button', { name: 'Открыть личное меню', exact: true });
     await trigger.click();
     const navigation = mobilePage.getByRole('navigation', { name: 'Основная навигация' });
     const first = navigation.getByRole('button').first();
     await first.waitFor();
     assert.equal(await first.evaluate(node => document.activeElement === node), true, 'first drawer item did not receive focus');
-    const ariaCurrent = await navigation.getByRole('button', { name: 'Свадьбы', exact: true }).getAttribute('aria-current');
-    assert.equal(ariaCurrent, 'page', 'active drawer item has no aria-current="page"');
+    assert.equal(await navigation.getByRole('button', { name: 'Свадьбы', exact: true }).count(),0,'primary section leaked into the account menu');
+    assert.equal(await navigation.getByRole('button', { name: 'Профиль и календарь', exact: true }).count(),1,'profile action is missing from the account menu');
     for (let i = 0; i < 20; i++) await mobilePage.keyboard.press('Tab');
     assert.equal(await mobilePage.locator('.v2-main-column').evaluate(node => !node.contains(document.activeElement)), true, 'Tab escaped the drawer');
     await mobilePage.keyboard.press('Escape');
@@ -382,7 +385,7 @@ try {
     assert.equal(await trigger.getAttribute('aria-expanded'), 'false');
     assert.equal(await trigger.evaluate(node => document.activeElement === node), true, 'trigger did not regain focus');
     await mobile.close();
-    return { ariaCurrent };
+    return { primaryLabels };
   });
 
   await run('A10-320', 'public header fits into 320px document width', page, async () => {

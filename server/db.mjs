@@ -211,6 +211,16 @@ export function openDatabase(path) {
     }
     db.prepare("INSERT INTO migrations VALUES(14,datetime('now'))").run();
   });
+  if(!db.prepare('SELECT version FROM migrations WHERE version=15').get()) transaction(db,()=>{
+    const connectionColumns=new Set(db.prepare('PRAGMA table_info(calendar_connections)').all().map(column=>column.name));
+    for(const [name,type] of [
+      ['watch_channel_id','TEXT'],
+      ['watch_resource_id','TEXT'],
+      ['watch_token_digest','TEXT'],
+      ['watch_expires_at','INTEGER']
+    ]) if(!connectionColumns.has(name)) db.exec(`ALTER TABLE calendar_connections ADD COLUMN ${name} ${type}`);
+    db.prepare("INSERT INTO migrations VALUES(15,datetime('now'))").run();
+  });
   pruneAuditHistory(db);
   return db;
 }

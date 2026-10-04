@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { batchTables, dragPosition, drawnTable, nextTableNumber, tableFromPreset } from '../src/v2/guest/interaction.mjs';
+import { batchTables, dragPosition, drawnTable, nextTableNumber, tableFromPreset, tablePresetKey } from '../src/v2/guest/interaction.mjs';
 
 const plan = { widthM: 10, heightM: 8 };
 const close = (actual, expected) => assert(Math.abs(actual - expected) < 1e-8, `${actual} is not close to ${expected}`);
@@ -17,7 +17,10 @@ test('five table choices include exact requested sizes and a quarter-circle snak
  assert.deepEqual(tableFromPreset('round150'),{shape:'round150',widthM:1.5,heightM:1.5,preset:'round150',points:undefined});
  assert.deepEqual(tableFromPreset('round'),{shape:'round',widthM:1.8,heightM:1.8,preset:'round',points:undefined});
  assert.deepEqual(tableFromPreset('rect'),{shape:'rect',widthM:1.8,heightM:.9,preset:'rect',points:undefined});
- const snake=tableFromPreset('snakeQuarter');assert.equal(snake.shape,'snakeQuarter');assert.equal(snake.widthM,2.4);assert(snake.points.length>=8);
+ const snake=tableFromPreset('snakeQuarter',{label:'Стол 7',shape:'round',widthM:1.8,heightM:1.8,capacity:8});
+ assert.equal(snake.shape,'snakeQuarter');assert.equal(snake.widthM,2.4);assert.equal(snake.heightM,2.4);assert(snake.points.length>=8);
+ assert.equal(snake.label,'Стол 7');assert.equal(snake.capacity,8);assert.equal(tablePresetKey(snake),'snakeQuarter');
+ const anotherSnake=tableFromPreset('snakeQuarter');snake.points[0].x=99;assert.notEqual(anotherSnake.points[0].x,99);
 });
 
 test('batch tables place new tables away from occupied tables and zones and explain an exhausted plan', () => {

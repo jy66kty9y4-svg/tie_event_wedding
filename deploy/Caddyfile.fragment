@@ -1,4 +1,4 @@
-tie-event.cabinpxrn.ru {
+tie-event.ru {
     import orbit_access_metrics
     encode zstd gzip
     header {
@@ -11,4 +11,8 @@ tie-event.cabinpxrn.ru {
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
     }
+}
+
+www.tie-event.ru {
+    redir https://tie-event.ru{uri} 308
 }

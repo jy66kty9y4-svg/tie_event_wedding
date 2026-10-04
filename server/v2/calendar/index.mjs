@@ -26,7 +26,7 @@ export function calendar(db,user,q={}) {
   for(const r of rows){
    if(r.kind==='task'&&allowedSource(db,u,r,['title','dueDate','status','assigneeUserId'])&&!['done','skipped'].includes(r.data.status)&&r.data.dueDate)add(event(db,u,r,p,r.data.dueDate,r.data.dueDate,true,r.data.title,'tasks',[r.data.assigneeUserId].filter(Boolean)));
    if(r.kind==='approval'&&allowedSource(db,u,r,['title','dueDate','state'])&&r.data.dueDate&&!['approved','withdrawn','draft'].includes(r.data.state))add(event(db,u,r,p,r.data.dueDate,r.data.dueDate,true,r.data.title,'approvals'));
-   if(r.kind==='meeting'&&allowedSource(db,u,r,['title','startAt','endAt','assignedUserIds','participantUserIds']))add(event(db,u,r,p,r.data.startAt,r.data.endAt,false,r.data.title,'calendar',[...(r.data.assignedUserIds||[]),...(r.data.participantUserIds||[])],{location:r.data.location||''}));
+   if(r.kind==='meeting'&&allowedSource(db,u,r,['title','startAt','endAt','assignedUserIds','participantUserIds'])){const allDay=!!r.data.allDay,start=allDay?r.data.allDayStart||localDate(r.data.startAt,r.data.timeZone||z):r.data.startAt,end=allDay?r.data.allDayEnd||localDate(r.data.endAt,r.data.timeZone||z):r.data.endAt;add(event(db,u,r,p,start,end,allDay,r.data.title,'calendar',[...(r.data.assignedUserIds||[]),...(r.data.participantUserIds||[])],{location:r.data.location||''}));}
   }
   // Financial projection requires the complete authorized ledger. Never leak an aggregate of hidden fields.
   if(can(db,u,['read','finance'],p.id,'budget',null,null)){
@@ -41,7 +41,7 @@ export function calendar(db,user,q={}) {
    }
   }
  }
- if(!q.projectId)for(const r of entities(db,u.agency_id,null,'meeting'))if(allowedSource(db,u,r,['title','startAt','endAt','assignedUserIds','participantUserIds']))add(event(db,u,r,null,r.data.startAt,r.data.endAt,false,r.data.title,'calendar',[...(r.data.assignedUserIds||[]),...(r.data.participantUserIds||[])]));
+ if(!q.projectId)for(const r of entities(db,u.agency_id,null,'meeting'))if(allowedSource(db,u,r,['title','startAt','endAt','assignedUserIds','participantUserIds'])){const allDay=!!r.data.allDay,z=r.data.timeZone||'Europe/Moscow',start=allDay?r.data.allDayStart||localDate(r.data.startAt,z):r.data.startAt,end=allDay?r.data.allDayEnd||localDate(r.data.endAt,z):r.data.endAt;add(event(db,u,r,null,start,end,allDay,r.data.title,'calendar',[...(r.data.assignedUserIds||[]),...(r.data.participantUserIds||[])]));}
  return {items:result.sort((a,b)=>a.start.localeCompare(b.start)||a.id.localeCompare(b.id)),from,to};
 }
 function allBusy(db,u) {
@@ -79,7 +79,8 @@ function meetingData(db,u,p,data,current) {
  }
  assert(typeof start==='string'&&typeof end==='string'&&Number.isFinite(Date.parse(start))&&Number.isFinite(Date.parse(end)),'Укажите начало и окончание');
  start=new Date(start).toISOString();end=new Date(end).toISOString();assert(start<end,'Окончание должно быть позже начала');
- return {title:text(d.title),startAt:start,endAt:end,timeZone:z,location:d.location?text(d.location,'Место или ссылка',1,1000):'',notes:d.notes?text(d.notes,'Заметка',1,8000):'',assignedUserIds:d.assignedUserIds||[],participantUserIds:d.participantUserIds||[],dateAnchor:d.dateAnchor==='wedding'?'wedding':null,offsetDays:d.dateAnchor==='wedding'?d.offsetDays:null,localStartTime:d.dateAnchor==='wedding'?d.localStartTime:null,durationMinutes:d.dateAnchor==='wedding'?d.durationMinutes:null,dstChoice:d.dstChoice||null,conflictReason:d.conflictReason?text(d.conflictReason,'Причина пересечения',3,2000):''};
+ const allDay=!!d.allDay,allDayStart=allDay?date(d.allDayStart||d.startDate||localDate(start,z),false):null,allDayEnd=allDay?date(d.allDayEnd||d.endDate||addDays(allDayStart,1),false):null;if(allDay)assert(allDayEnd>allDayStart,'Окончание события на весь день должно быть позже начала');
+ return {title:text(d.title),startAt:start,endAt:end,timeZone:z,location:d.location?text(d.location,'Место или ссылка',1,1000):'',notes:d.notes?text(d.notes,'Заметка',1,8000):'',assignedUserIds:d.assignedUserIds||[],participantUserIds:d.participantUserIds||[],allDay,allDayStart,allDayEnd,dateAnchor:d.dateAnchor==='wedding'?'wedding':null,offsetDays:d.dateAnchor==='wedding'?d.offsetDays:null,localStartTime:d.dateAnchor==='wedding'?d.localStartTime:null,durationMinutes:d.dateAnchor==='wedding'?d.durationMinutes:null,dstChoice:d.dstChoice||null,conflictReason:d.conflictReason?text(d.conflictReason,'Причина пересечения',3,2000):''};
 }
 export function previewMeeting(db,user,c){const u=currentUser(db,user),p=c.projectId||null;if(p)projectAccess(db,u,p);requireAccess(db,u,c.entityId?'edit':'create',p,'calendar',c.entityId||null,Object.keys(c.data||{}));const row=c.entityId?scoped(db,u,c.entityId,p,'meeting'):null;const data=meetingData(db,u,p,c.data,row);return {data,conflicts:conflicts(db,u,data,row?.id),digest:digest(JSON.stringify({data,conflicts:conflicts(db,u,data,row?.id)}))};}
 const meetingAuthorize=(db,u,c)=>{const p=c.projectId||null;requireAccess(db,u,c.op==='meeting.delete'?'delete':c.entityId?'edit':'create',p,'calendar',c.entityId||null,c.op==='meeting.delete'?null:Object.keys(c.data||{}));if(c.entityId)scoped(db,u,c.entityId,p,'meeting');};

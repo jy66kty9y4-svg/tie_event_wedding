@@ -23,6 +23,22 @@ function registerSession(db, session, context = {}) {
     user_agent=CASE WHEN ?<>'' THEN ? ELSE user_agent END,last_activity_at=?,observed_at=?
     WHERE digest=? AND revoked_at IS NULL`).run(clientIp, userAgent, userAgent, at, at, session.digest);
 }
+function replaceSameDeviceSessions(db, userId, context = {}) {
+  const clientIp = context.clientIp || null;
+  const userAgent = String(context.userAgent || '').slice(0, 500);
+  if (!clientIp || !userAgent) return;
+  const replacedAt = observedAt();
+  const rows = db.prepare(`SELECT r.digest FROM orbit_session_registry r
+    JOIN sessions s ON s.digest=r.digest
+    WHERE r.user_id=? AND r.client_ip=? AND r.user_agent=?
+      AND r.revoked_at IS NULL AND s.expires>?`).all(userId, clientIp, userAgent, Date.now());
+  const revoke = db.prepare('UPDATE orbit_session_registry SET revoked_at=?,observed_at=? WHERE digest=? AND revoked_at IS NULL');
+  const remove = db.prepare('DELETE FROM sessions WHERE digest=?');
+  for (const row of rows) {
+    revoke.run(replacedAt, replacedAt, row.digest);
+    remove.run(row.digest);
+  }
+}
 export function userSession(db, raw, context = {}) {
   if (!raw) return null;
   const session = db.prepare(`SELECT s.digest AS session_digest,s.user_id AS session_user_id,s.expires AS session_expires,u.*
@@ -34,6 +50,7 @@ export function userSession(db, raw, context = {}) {
   return user;
 }
 export function createSession(db, user, context = {}) {
+  replaceSameDeviceSessions(db, user.id, context);
   const raw = token(), session = { digest: digest(raw), user_id: user.id, expires: Date.now()+7*86400000 };
   db.prepare('INSERT INTO sessions(digest,user_id,expires) VALUES(?,?,?)').run(session.digest,session.user_id,session.expires);
   registerSession(db, session, context);

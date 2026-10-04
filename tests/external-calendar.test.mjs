@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {openDatabase,entities,uid} from '../server/db.mjs';
 import {bootstrap,execute} from '../server/service.mjs';
-import {beginGoogleCalendar,connectAppleCalendar,externalCalendarStatus,finishGoogleCalendar,syncExternalCalendar} from '../server/v2/calendar/external.mjs';
+import {calendar} from '../server/v2/calendar/index.mjs';
+import {beginGoogleCalendar,connectAppleCalendar,externalCalendarStatus,finishGoogleCalendar,handleGoogleCalendarWebhook,queueExternalCalendarSyncForCommand,syncExternalCalendar} from '../server/v2/calendar/external.mjs';
 
 const fixture=()=>{const db=openDatabase(':memory:'),admin=bootstrap(db,{slug:'tie',agencyName:'Тест',email:'owner@example.test',name:'Владелец',password:'strong-password'}).user,project=execute(db,admin,{id:uid(),op:'project.create',data:{name:'Анна и Илья',date:'2027-06-12'}});return {db,admin,project};};
 const json=(value,status=200,headers={})=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json',...headers}});
@@ -11,19 +12,20 @@ const xml=(value,status=207,headers={})=>new Response(value,{status,headers:{'co
 test('Google Calendar creates a wedding calendar and synchronizes tasks both ways',async t=>{
  const previous={...process.env};t.after(()=>{for(const key of ['TIE_CALENDAR_SECRET','TIE_PUBLIC_ORIGIN','GOOGLE_CALENDAR_CLIENT_ID','GOOGLE_CALENDAR_CLIENT_SECRET'])previous[key]===undefined?delete process.env[key]:process.env[key]=previous[key];});
  Object.assign(process.env,{TIE_CALENDAR_SECRET:'01234567890123456789012345678901',TIE_PUBLIC_ORIGIN:'http://localhost:4199',GOOGLE_CALENDAR_CLIENT_ID:'client-id',GOOGLE_CALENDAR_CLIENT_SECRET:'client-secret'});
- const {db,admin,project}=fixture(),started=beginGoogleCalendar(db,admin,project.id),state=new URL(started.url).searchParams.get('state');let listRun=0,eventNumber=0;
+ const {db,admin,project}=fixture(),started=beginGoogleCalendar(db,admin,project.id),state=new URL(started.url).searchParams.get('state');let listRun=0,eventNumber=0,watchRequest;
  const fetchImpl=async(url,options={})=>{const value=String(url),method=options.method||'GET';
   if(value.includes('oauth2.googleapis.com/token'))return json({access_token:'access',refresh_token:'refresh',expires_in:3600});
   if(value.endsWith('/calendars')&&method==='POST')return json({id:'tie-calendar',summary:'tie · Анна и Илья'});
+  if(value.endsWith('/events/watch')&&method==='POST'){watchRequest=JSON.parse(options.body);return json({id:watchRequest.id,resourceId:'watch-resource',expiration:Date.now()+5*86400000});}
   if(value.includes('/events')&&method==='GET'){listRun++;return listRun===1?json({items:[],nextSyncToken:'sync-1'}):json({items:[{id:'outside-1',summary:'Задача из Google',description:'Добавлена в Google',start:{date:'2027-01-10'},end:{date:'2027-01-11'},updated:'2026-09-23T10:00:00.000Z',etag:'external-1'}],nextSyncToken:'sync-2'});}
   if(value.includes('/events')&&method==='POST'){const body=JSON.parse(options.body);eventNumber++;return json({id:`tie-${eventNumber}`,etag:`etag-${eventNumber}`,updated:'2026-09-23T09:00:00.000Z',...body});}
   throw new Error(`Unexpected Google request: ${method} ${value}`);
  };
  await finishGoogleCalendar(db,state,'code',{fetchImpl});
- assert.equal(externalCalendarStatus(db,admin,project.id).connections[0].provider,'google');
- const first=await syncExternalCalendar(db,admin,{projectId:project.id,provider:'google'},{fetchImpl});assert(first.exported>0);
- const second=await syncExternalCalendar(db,admin,{projectId:project.id,provider:'google'},{fetchImpl});assert.equal(second.imported,1);
+ const connected=externalCalendarStatus(db,admin,project.id).connections[0];assert.equal(connected.provider,'google');assert.equal(connected.syncMode,'push');assert(eventNumber>0);
+ await handleGoogleCalendarWebhook(db,{'x-goog-channel-id':watchRequest.id,'x-goog-resource-id':'watch-resource','x-goog-channel-token':watchRequest.token},{fetchImpl});
  assert(entities(db,admin.agency_id,project.id,'task').some(task=>task.data.title==='Задача из Google'));
+ const before=eventNumber,command={id:uid(),op:'task.create',projectId:project.id,data:{title:'Сразу в Google',dueMode:'fixed',fixedDate:'2027-02-01'}};execute(db,admin,command);await queueExternalCalendarSyncForCommand(db,admin,command,{fetchImpl});assert(eventNumber>before);
  const stored=db.prepare("SELECT secret_json FROM calendar_connections WHERE provider='google'").get().secret_json;assert(!stored.includes('refresh'));
 });
 
@@ -52,15 +54,20 @@ test('organizer calendar combines all weddings and routes imported tasks by wedd
  const fetchImpl=async(url,options={})=>{const value=String(url),method=options.method||'GET';
   if(value.includes('oauth2.googleapis.com/token'))return json({access_token:'access',refresh_token:'refresh',expires_in:3600});
   if(value.endsWith('/calendars')&&method==='POST')return json({id:'agency-calendar',summary:'tie · Календарь организатора'});
+  if(value.endsWith('/events/watch')&&method==='POST'){const body=JSON.parse(options.body);return json({id:body.id,resourceId:'agency-watch',expiration:Date.now()+5*86400000});}
   if(value.includes('/events')&&method==='GET')return json({items:remote,nextSyncToken:'agency-sync'});
   if(value.includes('/events')&&method==='POST'){const body=JSON.parse(options.body);written.push(body);return json({id:`agency-${written.length}`,etag:`etag-${written.length}`,updated:'2026-09-23T09:00:00.000Z',...body});}
+  if(value.includes('/events/')&&method==='DELETE')return json({error:{message:'Resource has been deleted'}},410);
   throw new Error(`Unexpected Google request: ${method} ${value}`);
  };
  await finishGoogleCalendar(db,state,'code',{fetchImpl});
- const first=await syncExternalCalendar(db,admin,{projectId:'agency',provider:'google'},{fetchImpl});assert(first.exported>0);
  assert(written.some(event=>event.summary.startsWith(`${project.data.name} — `)));assert(written.some(event=>event.summary.startsWith(`${second.data.name} — `)));
  assert(written.every(event=>event.extendedProperties.private.tieProjectId));
- remote=[{id:'outside-agency',summary:'Мария и Пётр — Задача из общего календаря',start:{date:'2027-02-10'},end:{date:'2027-02-11'},updated:'2026-09-23T10:00:00.000Z',etag:'outside-etag'}];
- const imported=await syncExternalCalendar(db,admin,{projectId:'agency',provider:'google'},{fetchImpl});assert.equal(imported.imported,1);
+ const meetingCommand={id:uid(),op:'meeting.save',projectId:null,data:{title:'Общая встреча',startAt:'2027-02-10T07:00:00.000Z',endAt:'2027-02-10T08:00:00.000Z',timeZone:'Europe/Moscow',assignedUserIds:[],participantUserIds:[]}},meeting=execute(db,admin,meetingCommand);await queueExternalCalendarSyncForCommand(db,admin,meetingCommand,{fetchImpl});const meetingWrite=written.find(event=>event.extendedProperties.private.tieEntityId===meeting.id);assert.equal(meetingWrite.summary,'Общая встреча');assert.equal(meetingWrite.start.dateTime,'2027-02-10T07:00:00.000Z');assert.equal(meetingWrite.extendedProperties.private.tieKind,'meeting');
+ execute(db,admin,{id:uid(),op:'meeting.delete',projectId:null,entityId:meeting.id,version:meeting.version});await syncExternalCalendar(db,admin,{projectId:'agency',provider:'google'},{fetchImpl});assert.equal(db.prepare('SELECT count(*) count FROM calendar_event_links WHERE task_id=?').get(meeting.id).count,0);assert.equal(db.prepare("SELECT last_error FROM calendar_connections WHERE provider='google'").get().last_error,null);
+ remote=[{id:'outside-agency',summary:'Мария и Пётр — Задача из общего календаря',start:{date:'2027-02-10'},end:{date:'2027-02-11'},updated:'2026-09-23T10:00:00.000Z',etag:'outside-etag'},{id:'agency-all-day-1',summary:'123',start:{date:'2026-09-30'},end:{date:'2026-10-01'},updated:'2026-09-23T10:01:00.000Z',etag:'all-day-1'},{id:'agency-all-day-2',summary:'123',start:{date:'2026-10-01'},end:{date:'2026-10-02'},updated:'2026-09-23T10:02:00.000Z',etag:'all-day-2'}];
+ const imported=await syncExternalCalendar(db,admin,{projectId:'agency',provider:'google'},{fetchImpl});assert.equal(imported.imported,3);
  assert(entities(db,admin.agency_id,second.id,'task').some(task=>task.data.title==='Задача из общего календаря'));
+ const allDayMeetings=entities(db,admin.agency_id,null,'meeting').filter(item=>item.data.allDay);assert.deepEqual(allDayMeetings.map(item=>[item.data.title,item.data.allDayStart,item.data.allDayEnd]),[['123','2026-09-30','2026-10-01'],['123','2026-10-01','2026-10-02']]);
+ const visible=calendar(db,admin,{from:'2026-09-30',to:'2026-10-02'}).items.filter(item=>item.sourceKind==='meeting'&&item.title==='123');assert.deepEqual(visible.map(item=>[item.start,item.end,item.allDay]),[['2026-09-30','2026-10-01',true],['2026-10-01','2026-10-02',true]]);
 });

@@ -77,13 +77,23 @@ test('Orbitpanel control authenticates, revokes real tie.event sessions, and enf
     server.db.prepare('INSERT INTO guest_invites(id,digest,agency_id,project_id,guest_table_id,expires_at,revoked_at,created_by,version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(inviteId,'invite-digest',agencyId,'guest-project','guest-table',Date.now()+86400000,null,owner.id,1,new Date().toISOString());
     server.db.prepare('INSERT INTO guest_sessions VALUES(?,?,?,?,?,?)').run(guestDigest,inviteId,Date.now()+86400000,1,'guest-csrf',new Date().toISOString());
     server.db.prepare('INSERT INTO orbit_guest_session_registry VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(guestId,guestDigest,inviteId,new Date().toISOString(),Date.now()+86400000,'8.8.8.8','guest-test',null,null,null,new Date().toISOString());
-    const active = await control(port, 'GET', '/api/internal/orbitpanel/sessions?status=active'); const memberSessions = active.data.data.filter(row => row.user_id === member.id); assert.equal(memberSessions.length, 2); assert.ok(memberSessions.every(row => !JSON.stringify(row).includes('tie_session')));
+    const active = await control(port, 'GET', '/api/internal/orbitpanel/sessions?status=active'); let memberSessions = active.data.data.filter(row => row.user_id === member.id); assert.equal(memberSessions.length, 1); assert.ok(memberSessions.every(row => !JSON.stringify(row).includes('tie_session')));
     const guestSession=active.data.data.find(row=>row.id===guestId); assert.equal(guestSession.session_kind,'guest_invite'); assert.equal(guestSession.user_id,null);
     assert.equal((await control(port,'POST',`/api/internal/orbitpanel/sessions/${guestId}/terminate`,{reason:'Revoke guest RSVP session'})).response.status,200);
     assert.equal(server.db.prepare('SELECT count(*) AS count FROM guest_sessions WHERE digest=?').get(guestDigest).count,0);
 
+    const replacedState = await http(port, '/api/state', { headers: { Cookie: firstSessionCookie } });
+    const currentState = await http(port, '/api/state', { headers: { Cookie: secondSessionCookie } });
+    assert.deepEqual([replacedState.status, currentState.status], [401, 200]);
+    const otherDevice = await publicPost(port, '/api/login', { slug: 'tie', email: 'member@example.test', password: 'correct-horse-battery' }, csrfState, { 'X-Forwarded-For': '8.8.8.8', 'User-Agent': 'tie-control-test-other-device' });
+    assert.equal(otherDevice.status, 200);
+    const otherDeviceCookie = firstCookie(otherDevice.headers, 'tie_session');
+    const activeAfterOtherDevice = await control(port, 'GET', '/api/internal/orbitpanel/sessions?status=active');
+    memberSessions = activeAfterOtherDevice.data.data.filter(row => row.user_id === member.id);
+    assert.equal(memberSessions.length, 2);
+
     const one = await control(port, 'POST', `/api/internal/orbitpanel/sessions/${memberSessions[0].id}/terminate`, { reason: 'Close one active session' }); assert.equal(one.response.status, 200);
-    const firstState = await http(port, '/api/state', { headers: { Cookie: firstSessionCookie } }); const secondState = await http(port, '/api/state', { headers: { Cookie: secondSessionCookie } });
+    const firstState = await http(port, '/api/state', { headers: { Cookie: secondSessionCookie } }); const secondState = await http(port, '/api/state', { headers: { Cookie: otherDeviceCookie } });
     assert.deepEqual([firstState.status, secondState.status].sort(), [200, 401]);
     assert.ok(!(firstState.text + secondState.text).includes((firstSessionCookie.split('=')[1] || '').slice(0, 24)));
     const all = await control(port, 'POST', `/api/internal/orbitpanel/users/${member.id}/terminate-sessions`, { reason: 'Close all active sessions' }); assert.equal(all.response.status, 200); assert.equal(all.data.data.terminatedCount, 1);

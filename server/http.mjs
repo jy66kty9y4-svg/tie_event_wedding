@@ -9,7 +9,7 @@ import { bootstrap, authenticate, register, publicInfo, snapshot, execute, uploa
 import { activeIpBan, clientIp, handleOrbitControl, privateControlHost } from './orbitpanel-control.mjs';
 
 import { calendar, notifications, preferences, previewMeeting, processOutbox } from './v2/calendar/index.mjs';
-import {beginGoogleCalendar,connectAppleCalendar,disconnectExternalCalendar,externalCalendarStatus,finishGoogleCalendar,syncDueExternalCalendars,syncExternalCalendar} from './v2/calendar/external.mjs';
+import {beginGoogleCalendar,connectAppleCalendar,disconnectExternalCalendar,ensureGoogleWatches,externalCalendarStatus,finishGoogleCalendar,handleGoogleCalendarWebhook,queueExternalCalendarSyncForCommand,syncDueExternalCalendars,syncExternalCalendar} from './v2/calendar/external.mjs';
 import { dashboard } from './v2/calendar/readiness.mjs';
 import {context as guestContext, exchange as guestExchange, guestList,guestInvites,seatingSnapshot,legacySeatingPreview,respond as guestRespond} from './v2/guest/index.mjs';
 import { members, scoped } from './v2/common.mjs';
@@ -249,6 +249,11 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
         const id=url.pathname.slice('/api/public/assets/'.length); assert(id&&!id.includes('/'),'Изображение не найдено',404);
         return sendAsset(res,getPublicAsset(db,publicAgency(db,url).id,id));
       }
+      if(url.pathname==='/api/v2/calendar/google/webhook'&&req.method==='POST') {
+        void handleGoogleCalendarWebhook(db,req.headers);
+        res.writeHead(204,securityHeaders({'Cache-Control':'no-store'}));
+        return res.end();
+      }
       if(url.pathname==='/api/v2/calendar/google/callback'&&req.method==='GET') {
         const result=await finishGoogleCalendar(db,url.searchParams.get('state'),url.searchParams.get('code'));
         const target=result.projectId==='agency'?'/app/settings?calendarConnected=google':`/app/projects/${encodeURIComponent(result.projectId)}/calendar?calendarConnected=google`;
@@ -318,14 +323,18 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
           if(req.method==='POST'&&path==='/api/v2/calendar/google/start'){const body=await readJson(req);return sendJson(res,200,beginGoogleCalendar(db,u,body.projectId));}
           if(req.method==='POST'&&path==='/api/v2/calendar/apple/connect')return sendJson(res,200,await connectAppleCalendar(db,u,await readJson(req)));
           if(req.method==='POST'&&path==='/api/v2/calendar/external/sync')return sendJson(res,200,await syncExternalCalendar(db,u,await readJson(req)));
-          if(req.method==='POST'&&path==='/api/v2/calendar/external/disconnect')return sendJson(res,200,disconnectExternalCalendar(db,u,await readJson(req)));
+          if(req.method==='POST'&&path==='/api/v2/calendar/external/disconnect')return sendJson(res,200,await disconnectExternalCalendar(db,u,await readJson(req)));
         }
         if (url.pathname === '/api/state' && req.method === 'GET') return sendJson(res, 200, snapshot(db, requireUser(db, req), url.searchParams.get('project') || null));
         if (url.pathname === '/api/offline' && req.method === 'GET') {
           const project = url.searchParams.get('project'); assert(project, 'Укажите проект');
           return sendJson(res, 200, snapshot(db, requireUser(db, req), project, true));
         }
-        if (url.pathname === '/api/command' && req.method === 'POST') return sendJson(res, 200, execute(db, requireUser(db, req), await readJson(req)));
+        if (url.pathname === '/api/command' && req.method === 'POST') {
+          const user=requireUser(db,req),command=await readJson(req),result=execute(db,user,command);
+          void queueExternalCalendarSyncForCommand(db,user,command);
+          return sendJson(res,200,result);
+        }
         if (url.pathname === '/api/files' && req.method === 'POST') {
           const project = url.searchParams.get('project'); assert(project, 'Укажите проект');
           return sendJson(res, 201, upload(db, requireUser(db, req), project, await readJson(req)));
@@ -369,8 +378,10 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
   });
   server.db = db;
   const outboxTimer=setInterval(()=>{try{processOutbox(db)}catch{/* Leave durable work queued for retry; no private payload logging. */}},30000);outboxTimer.unref();
-  const calendarTimer=setInterval(()=>{syncDueExternalCalendars(db).catch(()=>{})},5*60000);calendarTimer.unref();
-  server.on('close', () => { clearInterval(outboxTimer);clearInterval(calendarTimer); try { db.close(); } catch { /* already closed */ } });
+  const calendarTimer=setInterval(()=>{syncDueExternalCalendars(db).catch(()=>{})},60000);calendarTimer.unref();
+  const watchTimer=setInterval(()=>{ensureGoogleWatches(db).catch(()=>{})},60*60000);watchTimer.unref();
+  const watchKick=setTimeout(()=>{ensureGoogleWatches(db).catch(()=>{})},60000);watchKick.unref();
+  server.on('close', () => { clearInterval(outboxTimer);clearInterval(calendarTimer);clearInterval(watchTimer);clearTimeout(watchKick); try { db.close(); } catch { /* already closed */ } });
   return server;
 }
 

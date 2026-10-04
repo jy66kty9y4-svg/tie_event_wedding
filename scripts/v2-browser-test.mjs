@@ -22,7 +22,8 @@ await new Promise(resolveListen=>server.listen(0,'127.0.0.1',resolveListen));
 const origin=`http://127.0.0.1:${server.address().port}`;
 const db=server.db, checks=[],failures=[],browserErrors=[];
 const command=(user,op,body={})=>execute(db,user,{id:randomUUID(),op,...body});
-const check=async(name,work)=>{try{const detail=await work();checks.push({name,ok:true,...(detail===undefined?{}:{detail})})}catch(error){checks.push({name,ok:false,error:error.message,details:error.details});failures.push({name,error:error.message,details:error.details})}};
+const onlyCheck=process.env.V2_BROWSER_ONLY||'';
+const check=async(name,work)=>{if(onlyCheck&&!name.includes(onlyCheck))return;try{const detail=await work();checks.push({name,ok:true,...(detail===undefined?{}:{detail})})}catch(error){checks.push({name,ok:false,error:error.message,details:error.details});failures.push({name,error:error.message,details:error.details})}};
 const current=(id)=>entity(db,id);
 const sleep=ms=>new Promise(resolveSleep=>setTimeout(resolveSleep,ms));
 let browser,staffContext,guestContext,phoneContext,seatingPhoneContext;
@@ -36,7 +37,8 @@ try {
   const {user:admin}=bootstrap(db,{slug:'tie',agencyName:'V2 browser QA',name:'QA организатор',email:'qa-admin@example.test',password:'qa-admin-password'});
   const project=command(admin,'project.create',{data:{name:'QA пара',date:'2027-08-14',location:'Москва'}});
   let guests=entities(db,admin.agency_id,project.id,'table').find(row=>row.data.key==='guests');
-  guests=command(admin,'entity.edit',{projectId:project.id,entityId:guests.id,version:guests.version,data:{...guests.data,columns:[...guests.data.columns,{id:'allergies',name:'Аллергии',type:'text'},{id:'seat_table',name:'Стол ID',type:'relation',targetKind:'seatingTable'},{id:'seat_index',name:'Место',type:'number'}],confirmStructure:true}});
+  const extraGuestColumns=[{id:'allergies',name:'Аллергии',type:'text'},{id:'meal',name:'Питание',type:'text'},{id:'transport',name:'Трансфер',type:'text'},{id:'hotel',name:'Проживание',type:'text'},{id:'note',name:'Комментарий',type:'text'},{id:'seat_table',name:'Стол ID',type:'relation',targetKind:'seatingTable'},{id:'seat_index',name:'Место',type:'number'}].filter(column=>!guests.data.columns.some(existing=>existing.id===column.id));
+  if(extraGuestColumns.length)guests=command(admin,'entity.edit',{projectId:project.id,entityId:guests.id,version:guests.version,data:{...guests.data,columns:[...guests.data.columns,...extraGuestColumns],confirmStructure:true}});
   const primary=command(admin,'entity.create',{projectId:project.id,kind:'row',parentId:guests.id,schemaVersion:guests.version,data:guestData(1)});
   const second=command(admin,'entity.create',{projectId:project.id,kind:'row',parentId:guests.id,schemaVersion:guests.version,data:guestData(2)});
   guests=command(admin,'guestMapping.save',{projectId:project.id,guestTableId:guests.id,schemaVersion:guests.version,data:{semanticMap:rsvpMap()},confirm:true});
@@ -120,6 +122,24 @@ try {
     seatingPhone.on('pageerror',error=>browserErrors.push({type:'pageerror',message:error.message}));seatingPhone.on('console',message=>{if(message.type()==='error')browserErrors.push({type:'console',message:message.text()})});
     await seatingPhone.goto(`${origin}/app/projects/${project.id}/seating`,{waitUntil:'networkidle'}); await seatingPhone.getByRole('heading',{name:'QA зал'}).waitFor();
     await seatingPhone.screenshot({path:join(out,'seating-mobile-390.png'),fullPage:false});
+  });
+  await check('switching an existing table to the snake preset keeps the editor alive and persists its contour',async()=>{
+    await staff.goto(`${origin}/app/projects/${project.id}/seating`,{waitUntil:'networkidle'});
+    await staff.getByRole('button',{name:'Редактировать зал'}).click();
+    const tableButton=staff.locator('.v2-seat-table').filter({hasText:/QA стол(?! 2)/}).first();
+    await tableButton.click();
+    const shape=staff.locator('.v2-seat-properties select').first();
+    await shape.selectOption('snakeQuarter');
+    assert.equal(await shape.inputValue(),'snakeQuarter');
+    assert.equal(await staff.getByLabel('Ширина, м').inputValue(),'2.4');
+    assert.equal(await staff.getByLabel('Высота, м').inputValue(),'2.4');
+    assert.equal(await staff.locator('.v2-seat-svg polygon.seat-body').count(),1);
+    await staff.getByRole('button',{name:'Сохранить стол'}).click();
+    await staff.getByText('Сохранение…').waitFor({state:'hidden'});
+    const saved=current(table.id);assert.equal(saved.data.shape,'snakeQuarter');assert.equal(saved.data.widthM,2.4);assert.equal(saved.data.heightM,2.4);assert(saved.data.points.length>=8);
+    await staff.reload({waitUntil:'networkidle'});await staff.getByRole('button',{name:'Редактировать зал'}).click();
+    await staff.getByRole('button',{name:/^QA стол ·/}).click();
+    assert.equal(await staff.locator('.v2-seat-properties select').first().inputValue(),'snakeQuarter');
   });
   await check('seating print popup has a repeating name-only list and exports PDF',async()=>{
     await staff.goto(`${origin}/app/projects/${project.id}/seating`,{waitUntil:'networkidle'}); await staff.getByRole('heading',{name:'QA зал'}).waitFor();

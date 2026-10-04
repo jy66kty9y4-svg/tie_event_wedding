@@ -2,7 +2,7 @@ import React,{useMemo,useState,useRef,useEffect}from'react';
 import'./guest.css';
 import {ContourEditor} from './ContourEditor.jsx';
 import { seatPositions } from './geometry.mjs';
-import { tableShapes, tableFromPreset, tablePresetKey, nextTableNumber, batchTables, pointOnPlan, dragPosition, drawnTable, geometryDraft, outlineOnPlan, removeContourPoint } from './interaction.mjs';
+import { tableShapes, tableFromPreset, nextTableNumber, batchTables, pointOnPlan, dragPosition, drawnTable, geometryDraft, outlineOnPlan, removeContourPoint } from './interaction.mjs';
 import { readableGuestField } from './readable.mjs';
 import {downloadGuestsXlsx,downloadSeatingXlsx} from '../../export-workbooks.js';
 import {GuestRegistrySheet} from './GuestRegistrySheet.jsx';
@@ -67,7 +67,8 @@ function svgMarkup(plan,tables,guests,map,displayWidth=1200){
  const zones=(plan.data.zones||[]).map(z=>{const shape=z.shape==='custom'?`<polygon class="seat-zone-body" points="${z.points.map(p=>`${z.xM+p.x*z.widthM},${z.yM+p.y*z.heightM}`).join(' ')}"/>`:z.shape==='oval'?`<ellipse class="seat-zone-body" cx="${z.xM+z.widthM/2}" cy="${z.yM+z.heightM/2}" rx="${z.widthM/2}" ry="${z.heightM/2}"/>`:`<rect class="seat-zone-body" x="${z.xM}" y="${z.yM}" width="${z.widthM}" height="${z.heightM}"/>`;return `<g transform="rotate(${z.rotationDeg||0} ${z.xM+z.widthM/2} ${z.yM+z.heightM/2})">${shape}<text class="seat-zone-name" x="${z.xM+labelFont*.7}" y="${z.yM+labelFont*1.3}">${wrapLabel(z.label||'Зона',Math.max(labelFont*3,z.widthM-labelFont*1.4),labelFont).map((line,i)=>`<tspan x="${z.xM+labelFont*.7}" dy="${i?'1.2em':'0'}">${esc(line)}</tspan>`).join('')}</text></g>`}).join('');
  const tablesSvg=tables.map((t,tableIndex)=>{
   const d=t.data,cx=d.xM+d.widthM/2,cy=d.yM+d.heightM/2;
-  const shape=['round','round150','oval'].includes(d.shape)?`<ellipse class="seat-body" cx="${cx}" cy="${cy}" rx="${d.widthM/2}" ry="${d.heightM/2}"/>`:['custom','snakeQuarter'].includes(d.shape)?`<polygon class="seat-body" points="${d.points.map(p=>`${d.xM+p.x*d.widthM},${d.yM+p.y*d.heightM}`).join(' ')}"/>`:`<rect class="seat-body" x="${d.xM}" y="${d.yM}" width="${d.widthM}" height="${d.heightM}" rx=".06"/>`;
+  const points=Array.isArray(d.points)&&d.points.length>=3?d.points:(d.shape==='snakeQuarter'?tableFromPreset('snakeQuarter').points:[]);
+  const shape=['round','round150','oval'].includes(d.shape)?`<ellipse class="seat-body" cx="${cx}" cy="${cy}" rx="${d.widthM/2}" ry="${d.heightM/2}"/>`:['custom','snakeQuarter'].includes(d.shape)&&points.length>=3?`<polygon class="seat-body" points="${points.map(p=>`${d.xM+p.x*d.widthM},${d.yM+p.y*d.heightM}`).join(' ')}"/>`:`<rect class="seat-body" x="${d.xM}" y="${d.yM}" width="${d.widthM}" height="${d.heightM}" rx=".06"/>`;
   const compact=d.widthM/unit<65;
   const chairs=compact?'':seatPositions(d).map((p,i)=>{const x=d.xM+p.x,y=d.yM+p.y,g=guests.find(r=>r.data[map.seatingTable]===t.id&&Number(r.data[map.seatIndex])===i+1);return `<circle class="seat-chair ${g?'seat-occupied':''}" cx="${x}" cy="${y}" r=".13"/><text class="seat-guest-name" x="${x}" y="${y+.035}">${g?esc(String(g.data[map.guestName]||i+1).split(/\s+/).map((part,index)=>index?part.slice(0,1)+'.':part.slice(0,10)).join(' ')):i+1}</text>`}).join('');
   const words=compact?[String(tableIndex+1)]:String(d.label).split(/\s+/),font=Math.max(14*unit,Math.min(.2,d.widthM*.8/Math.max(...words.map(w=>w.length))/.55));
@@ -95,6 +96,7 @@ export function SeatingWorkspace({state,projectId,run,refresh,sourceId,can=()=>f
  const unseated=guests.filter(x=>!x.data[map.seatingTable]&&status(x,map)!=='declined'&&String(x.data[map.guestName]||'').toLowerCase().includes(guestSearch.toLowerCase()));
  useEffect(()=>{const canvas=canvasRef.current;if(!canvas)return;const observer=new ResizeObserver(()=>setCanvasWidth(canvas.getBoundingClientRect().width));observer.observe(canvas);setCanvasWidth(canvas.getBoundingClientRect().width);return()=>observer.disconnect()},[plan?.id]);
  useEffect(()=>{if(selected)setDraft(selected.data)},[selected?.id,selected?.version]);
+ useEffect(()=>{if(draft.shape&&draft.shape!=='custom')setDraft(current=>tableFromPreset(current.shape,current))},[draft.shape]);
  useEffect(()=>{if(selectedZone)setZoneDraft(selectedZone)},[selectedZone?.id,plan?.version]);
  useEffect(()=>{if(plan)setPlanDraft({widthM:plan.data.widthM,heightM:plan.data.heightM})},[plan?.id,plan?.version]);
  useEffect(()=>{if(selected){const free=Array.from({length:selected.data.capacity},(_,i)=>i+1).find(n=>!guests.some(g=>g.data[map.seatingTable]===selected.id&&Number(g.data[map.seatIndex])===n));setSeat(free||1)}},[selected?.id,selected?.version,guestsTable?.version,guests.filter(g=>g.data[map.seatingTable]===selected?.id).length]);

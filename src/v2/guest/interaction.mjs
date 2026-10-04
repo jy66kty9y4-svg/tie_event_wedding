@@ -9,6 +9,7 @@ export function tableFromPreset(preset,base={}) {
 }
 export function tablePresetKey(data={}) {
   if(data.preset&&tableShapes[data.preset])return data.preset;
+  if(data.shape==='snakeQuarter')return'snakeQuarter';
   if(data.shape==='round'&&Number(data.widthM)===1.5&&Number(data.heightM)===1.5)return'round150';
   if(data.shape==='round')return'round';
   if(data.shape==='rect')return'rect';

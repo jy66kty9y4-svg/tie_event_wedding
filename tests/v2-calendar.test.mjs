@@ -70,6 +70,17 @@ test('baseline readiness stays unverified, verified file provenance is required,
  assert.equal(home.organizerFocusTotal,1);assert.equal(home.organizerFocus[0].id,focused.id);
 });
 
+test('completed and archived projects keep their explicit dashboard while staying out of agency totals',()=>{
+ const {db,admin,p,user}=fixture();
+ for(const status of ['completed','archived']){
+  const current=entity(db,p.id);change(db,admin,current,{...current.data,status});
+  const projectDashboard=dashboard(db,user,{projectId:p.id});
+  assert.equal(projectDashboard.readiness.projectId,p.id);
+  assert.equal(projectDashboard.metrics.activeProjects,0);
+  assert.equal(dashboard(db,admin).metrics.activeProjects,0);
+ }
+});
+
 test('explicit staff working intervals use the project time zone and remain reversible',()=>{
  const {db,admin,p}=fixture();
  const saved=run(db,admin,'project.readinessSettings',{projectId:p.id,version:p.version,data:{staffIntervals:[{userId:admin.id,startLocal:'2027-06-12T09:00',endLocal:'2027-06-12T23:00'}]}});
