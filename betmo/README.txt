@@ -1,0 +1,1 @@
+Copyright (c) 2020 by Candra Vultype. All rights reserved.

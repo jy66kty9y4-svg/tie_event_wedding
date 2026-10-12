@@ -18,7 +18,7 @@ const dist = join(root, 'dist');
 const profiles = Object.fromEntries(['admin-a', 'admin-b', 'contractor', 'outsider', 'switch'].map(name => [name, join(root, name)]));
 mkdirSync(dist);
 for (const profile of Object.values(profiles)) mkdirSync(profile);
-copyFileSync(resolve('src/client.js'), join(dist, 'client.js'));
+for(const file of ['client.js','couple-budget.js','budget-format.js']) copyFileSync(resolve('src',file), join(dist,file));
 copyFileSync(resolve('public/sw.js'), join(dist, 'sw.js'));
 copyFileSync(resolve('public/icon.svg'), join(dist, 'icon.svg'));
 copyFileSync(resolve('public/manifest.webmanifest'), join(dist, 'manifest.webmanifest'));
@@ -48,7 +48,7 @@ function watchPage(page) {
 }
 
 async function openDevice(profile, offline = false) {
-  const context = await chromium.launchPersistentContext(profile, { executablePath: chromePath, headless: true });
+  const context = await chromium.launchPersistentContext(profile, { executablePath: chromePath, headless: true, userAgent: `TieBrowserTest/${profile.split('/').at(-1)}` });
   contexts.add(context);
   await context.setOffline(offline);
   const page = context.pages()[0] || await context.newPage();
@@ -256,7 +256,7 @@ try {
   const contractor = await openDevice(profiles.contractor);
   await contractor.page.evaluate(async values => {
     await window.tie.api('/api/register', { method: 'POST', body: {
-      slug: 'tie', name: 'Offline Contractor', email: 'contractor@example.test', password: 'contractor-password', invitation: values.invitation,
+      slug: 'tie', name: 'Offline Contractor', email: 'contractor@example.test', phone: '+79990000001', password: 'contractor-password', invitation: values.invitation,
     } });
     await window.tie.loadState();
     await window.tie.prepareProject(values.projectId);
@@ -300,7 +300,7 @@ try {
 
   const outsider = await openDevice(profiles.outsider);
   await outsider.page.evaluate(() => window.tie.api('/api/register', { method: 'POST', body: {
-    slug: 'tie', name: 'Outside User', email: 'outside@example.test', password: 'outside-user-password',
+    slug: 'tie', name: 'Outside User', email: 'outside@example.test', phone: '+79990000002', password: 'outside-user-password',
   } }));
   await closeDevice(outsider);
 

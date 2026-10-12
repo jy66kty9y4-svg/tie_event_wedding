@@ -1,0 +1,33 @@
+{
+  "status": "in_progress",
+  "snapshot": "/Users/cabinpxrn/Documents/ChatGPT/tie.event/test-results/system-audit-2026-10-12/snapshot",
+  "rootOwns": [
+    "docs/v2/SYSTEM_AUDIT_2026-10-12.md",
+    "knowledge/tasks/system-audit-1012.md",
+    "test-results/system-audit-2026-10-12/navigation",
+    "test-results/system-audit-2026-10-12/baseline"
+  ],
+  "workers": {
+    "audit_evidence": {
+      "scope": "backend security roles API fault and load",
+      "writeScope": [
+        "test-results/system-audit-2026-10-12/backend"
+      ],
+      "applicationWrite": false
+    },
+    "coverage_review": {
+      "scope": "browser user workflows regression responsive roles",
+      "writeScope": [
+        "test-results/system-audit-2026-10-12/browser"
+      ],
+      "applicationWrite": false
+    },
+    "reproduce_findings": {
+      "scope": "operational backup restore deploy PWA provider integrations",
+      "writeScope": [
+        "test-results/system-audit-2026-10-12/operations"
+      ],
+      "applicationWrite": false
+    }
+  }
+}

@@ -1,0 +1,14 @@
+.anchored-select{display:block;position:relative;min-width:0;width:100%}
+.tie-workspace .anchored-select-trigger,.anchored-select-trigger{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-width:0;min-height:38px;padding:10px 11px;border:1px solid var(--tie-line-strong);border-radius:5px;background:var(--surface,#fff);color:var(--ink);font:inherit;font-weight:500;text-align:left}
+.anchored-select-trigger>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.anchored-select-trigger>svg{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.anchored-select-trigger:disabled{opacity:.55;cursor:default}
+.anchored-select-options{position:fixed;z-index:100;overflow-y:auto;overscroll-behavior:contain;padding:4px;border:1px solid var(--tie-line-strong);border-radius:7px;background:var(--surface,#fff);color:var(--ink);box-shadow:0 8px 28px #0002}
+.anchored-select-options>button{display:block;width:100%;min-height:38px;padding:9px 10px;border:0;border-radius:4px;background:transparent;color:inherit;font:inherit;text-align:left;white-space:normal;overflow-wrap:anywhere}
+.anchored-select-options>button.is-active{background:var(--tie-soft,#f5eeee)}
+.anchored-select-options>button[aria-selected=true]{color:var(--tie-accent,#b71414);font-weight:700}
+.anchored-select-options>button:disabled{opacity:.5}
+.anchored-select-check{display:inline-block;width:18px;margin-right:6px;font-weight:700}
+.sheet-cell-special .anchored-select-trigger.sheet-cell-control{font:inherit!important;color:inherit!important;background:transparent!important;border-color:transparent!important}
+.sheet-cell-special .anchored-select-trigger.sheet-cell-control:focus{border-color:var(--tie-accent)!important}
+@media(max-width:767px){.anchored-select-trigger{font-size:16px}.anchored-select-options>button{min-height:44px}}

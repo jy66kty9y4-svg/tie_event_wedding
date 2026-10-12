@@ -1,12 +1,31 @@
-import {coupleBudgetFind, coupleBudgetAmountFields, coupleBudgetDefaultName, coupleBudgetDefaultNote} from './couple-budget.js';
+import {coupleBudgetFind, coupleBudgetAmountFields, coupleBudgetOrganizerGroups, coupleBudgetDefaultName, coupleBudgetDefaultNote} from './couple-budget.js';
+import {normalizeBudgetFormat,rebaseBudgetFormat} from './budget-format.js';
 
-const DB_NAME = 'tie-private-v1';
+const DB_NAME = 'tie-private-v2';
 const DB_VERSION = 1;
 const LOGOUT_TOMBSTONE = 'tie:pending-server-logout';
 const EVENT = 'tie-client-data';
 let initPromise = null;
 let syncPromise = null;
-const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('tie-private-events-v1') : null;
+const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('tie-private-events-v2') : null;
+let legacyCleanup = null;
+
+// The explicit agency reset retires saved weddings and queued writes as well as
+// the server records. A blocked legacy delete must never expose the old store.
+function retireLegacyStore() {
+  if(legacyCleanup)return legacyCleanup;
+  try {
+    const marker='tie:clean-reset:20261012';
+    if(localStorage.getItem(marker)!=='done') {
+      for(const storage of [localStorage,sessionStorage])for(const key of Object.keys(storage))if(key.startsWith('tie:')||key.startsWith('tie.'))storage.removeItem(key);
+      localStorage.setItem(marker,'done');
+    }
+  } catch {/* Storage may be unavailable. The separate database still isolates data. */}
+  legacyCleanup=new Promise(resolve=>{
+    try{const request=indexedDB.deleteDatabase('tie-private-v1');request.onsuccess=request.onerror=request.onblocked=()=>resolve()}catch{resolve()}
+  });
+  return legacyCleanup;
+}
 
 function online() { return typeof navigator === 'undefined' || navigator.onLine !== false; }
 function identityOf(value) { return value?.user?.id && value?.agency?.id ? `${value.agency.id}:${value.user.id}` : null; }
@@ -57,8 +76,9 @@ export async function api(path, options = {}) {
   return rawApi(path, options);
 }
 
-function openDb() {
+async function openDb() {
   if (typeof indexedDB === 'undefined') return Promise.reject(clientError('Офлайн-хранилище недоступно'));
+  await retireLegacyStore();
   return new Promise((resolveOpen, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
@@ -179,6 +199,7 @@ export async function loadState(projectId = null) {
       // The queue remains the source of truth until replay or an explicit discard.
       return applyOptimistic(state, queued);
     } catch (error) {
+      if (error.status === 401) await clearPrivate();
       if (error.status) throw error;
     }
   }
@@ -209,11 +230,17 @@ function allowedByGrant(snapshot, action, section, row = null, fields = []) {
 }
 
 function allowedOffline(command, snapshot) {
-  if (command.op === 'coupleBudget.cell') {
+  if (command.op === 'coupleBudget.cell'||command.op==='coupleBudget.format') {
     const row=command.row,field=command.field;
     const data=snapshot.entities?.find(item=>item.kind==='coupleBudget'&&!item.deleted)?.data||{};
     const found=coupleBudgetFind(data,row);
-    const valid=!!found&&(field==='name'||found.item&&(coupleBudgetAmountFields.includes(field)||field==='note'||field==='organizer'&&![28,51].includes(found.group.row)));
+    const formatOnly=command.op==='coupleBudget.format',column=(data.extraColumns||[]).find(item=>item.id===field),isText=['name','note'].includes(field)||column&&['text','url'].includes(column.type);
+    const valid=!!found&&(field==='name'||found.item&&(coupleBudgetAmountFields.includes(field)||field==='note'||!formatOnly&&field==='organizer'&&!coupleBudgetOrganizerGroups.has(found.group.row)||formatOnly&&field==='remaining'||column&&(column.type!=='formula'||formatOnly)));
+    if(formatOnly&&!Object.hasOwn(command,'format')||field==='organizer'&&Object.hasOwn(command,'format'))return false;
+    if(Object.hasOwn(command,'format'))try{
+      const value=column&&isText?String(data.extraValues?.[field]?.[row]??''):field==='name'?(data.names?.[row]||coupleBudgetDefaultName(row,data)):field==='note'?(data.notes?.[row]??coupleBudgetDefaultNote(row,data)):'';
+      normalizeBudgetFormat(command.format,formatOnly?value:String(command.value??'').trim(),isText);
+    }catch{return false;}
     return valid && snapshot.project?.data?.offline?.includes('budget') && allowedByGrant(snapshot,'edit','budget',null,[field]) && allowedByGrant(snapshot,'finance','budget',null,[field]);
   }
   if (command.op === 'movement.save') {
@@ -224,24 +251,39 @@ function allowedOffline(command, snapshot) {
   if (command.op !== 'entity.edit' || !command.entityId) return false;
   const row = snapshot.entities?.find(entity => entity.id === command.entityId && entity.kind === 'row');
   const table = row && snapshot.entities?.find(entity => entity.id === row.parent_id && entity.kind === 'table');
-  const fields = Object.keys(command.data || {});
+  const fields = [...new Set([...Object.keys(command.data || {}),...Object.keys(command.formats||{})])];
+  if(Object.hasOwn(command.data||{},'cellFormats'))return false;
+  if(command.formats)try{for(const [field,format] of Object.entries(command.formats)){const column=table?.data.columns.find(c=>c.id===field);if(!column)return false;normalizeBudgetFormat(format,String(command.data?.[field]??row.data?.[field]??''),['text','url'].includes(column.type));}}catch{return false;}
   return !!row && !!table && command.version === row.version && command.schemaVersion === table.version &&
     fields.every(field => table.data.columns.some(column => column.id === field)) && allowedByGrant(snapshot, 'edit', table.id, row.id, fields);
 }
 
 function optimistic(snapshot, command) {
   const next = structuredClone(snapshot);
-  if (command.op === 'coupleBudget.cell') {
+  if (command.op === 'coupleBudget.cell'||command.op==='coupleBudget.format') {
     let row=next.entities.find(item=>item.kind==='coupleBudget'&&!item.deleted);
     if(!row){row={id:`offline:${command.id}`,agency_id:next.agency.id,project_id:command.projectId,kind:'coupleBudget',parent_id:null,data:{names:{},estimated:{},actual:{},prepaid:{}},version:0,deleted:false,updated_at:new Date().toISOString()};next.entities.push(row);}
+    const column=(row.data.extraColumns||[]).find(item=>item.id===command.field),isText=['name','note'].includes(command.field)||column&&['text','url'].includes(column.type);
     const field=command.field==='name'?'names':command.field==='note'?'notes':command.field==='organizer'?'organizerRows':command.field;
-    row.data[field]={...(row.data[field]||{})};
-    if(command.value===null || command.field==='name'&&command.value===coupleBudgetDefaultName(command.row,row.data) || command.field==='note'&&command.value===coupleBudgetDefaultNote(command.row,row.data))delete row.data[field][command.row];
-    else row.data[field][command.row]=command.value;
+    const beforeText=column&&isText?String(row.data.extraValues?.[command.field]?.[command.row]??''):command.field==='name'?(row.data.names?.[command.row]||coupleBudgetDefaultName(command.row,row.data)):command.field==='note'?(row.data.notes?.[command.row]??coupleBudgetDefaultNote(command.row,row.data)):'';
+    const afterText=command.op==='coupleBudget.format'?beforeText:isText?String(command.value??'').trim():'';
+    if(command.op!=='coupleBudget.format'){
+      if(column){row.data.extraValues||={};row.data.extraValues[field]||={};if(command.value==null)delete row.data.extraValues[field][command.row];else row.data.extraValues[field][command.row]=command.value;}
+      else{row.data[field]={...(row.data[field]||{})};
+      if(command.value===null || command.field==='name'&&command.value===coupleBudgetDefaultName(command.row,row.data) || command.field==='note'&&command.value===coupleBudgetDefaultNote(command.row,row.data))delete row.data[field][command.row];
+      else row.data[field][command.row]=command.value;}
+    }
+    if(Object.hasOwn(command,'format')||beforeText!==afterText&&row.data.cellFormats?.[command.field]?.[command.row]){
+      const format=Object.hasOwn(command,'format')?normalizeBudgetFormat(command.format,afterText,isText):rebaseBudgetFormat(row.data.cellFormats[command.field][command.row],beforeText,afterText);
+      row.data.cellFormats||={};row.data.cellFormats[command.field]||={};
+      if(format)row.data.cellFormats[command.field][command.row]=format;else delete row.data.cellFormats[command.field][command.row];
+      if(!Object.keys(row.data.cellFormats[command.field]).length)delete row.data.cellFormats[command.field];
+      if(!Object.keys(row.data.cellFormats).length)delete row.data.cellFormats;
+    }
     row.version+=1;
   } else if (command.op === 'entity.edit') {
     const row = next.entities.find(x => x.id === command.entityId);
-    if (row) { row.data = { ...row.data, ...command.data }; row.version += 1; row.updated_at = new Date().toISOString(); }
+    if(row){const table=next.entities.find(item=>item.id===row.parent_id);for(const field of Object.keys(command.data||{})){const column=table?.data.columns.find(c=>c.id===field);if(['text','url'].includes(column?.type)&&row.data.cellFormats?.[field]&&!Object.hasOwn(command.formats||{},field))row.data.cellFormats[field]=rebaseBudgetFormat(row.data.cellFormats[field],String(row.data[field]??''),String(command.data[field]??''));}row.data={...row.data,...command.data};if(command.formats){row.data.cellFormats||={};for(const [field,format]of Object.entries(command.formats)){if(format)row.data.cellFormats[field]=format;else delete row.data.cellFormats[field];}}row.version+=1;row.updated_at=new Date().toISOString();}
   } else if (command.op === 'movement.save') {
     const existing = command.entityId && next.entities.find(x => x.id === command.entityId);
     const row = existing || { id: `offline:${command.id}`, agency_id: next.agency.id, project_id: command.projectId, kind: 'movement', parent_id: null, data: {}, version: 0, deleted: false, updated_at: new Date().toISOString() };
@@ -396,11 +438,8 @@ export function initClient() {
     }
     if (online()) {
       await completePendingLogout();
-      const identity = await currentIdentity();
-      if (identity) {
-        try { const state = await rawApi('/api/state'); const current = await reconcileIdentity(state); await removeInvisibleSnapshots(state, current); }
-        catch (error) { if (error.status === 401) await clearPrivate(); else if (error.status) throw error; }
-      }
+      // loadState performs fresh authorization and identity cleanup. Fetching
+      // the same dashboard here doubled every returning user's startup time.
     }
     return { online: online() };
   })().catch(error => { initPromise = null; throw error; });

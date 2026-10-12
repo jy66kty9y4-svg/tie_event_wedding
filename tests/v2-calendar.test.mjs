@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase, entity, entities, insert, change, transaction, uid } from '../server/db.mjs';
-import { bootstrap, execute, register } from '../server/service.mjs';
+import { bootstrap, execute } from '../server/service.mjs';
+import { registerTestUser as register } from './fixtures/account.mjs';
 import { grant } from '../server/auth.mjs';
 import { executeModule, zonedInstant, addDays } from '../server/v2/common.mjs';
-import { operations, calendar, previewMeeting, processOutbox, notifications, queueChanges, preferences, scheduleReminders } from '../server/v2/calendar/index.mjs';
+import { operations, calendar, previewMeeting, processOutbox, notifications, queueChanges, preferences, scheduleReminders, enqueue } from '../server/v2/calendar/index.mjs';
 import { readiness, dashboard, readinessOperations } from '../server/v2/calendar/readiness.mjs';
 const fixture=()=>{const db=openDatabase(':memory:');const admin=bootstrap(db,{slug:'tie',agencyName:'Тест',email:'owner@example.test',name:'Владелец',password:'strong-password'}).user;const p=execute(db,admin,{id:uid(),op:'project.create',data:{name:'Тестовая свадьба',date:'2027-06-12'}});const user=register(db,{slug:'tie',email:'couple@example.test',name:'Участник',password:'strong-password'}).user;grant(db,user,db.prepare("SELECT id FROM roles WHERE key='couple'").get().id,p.id);return {db,admin,p,user};};
 const run=(db,u,op,b={})=>executeModule(db,u,{id:uid(),op,...b},{...operations,...readinessOperations});
@@ -59,12 +60,13 @@ test('workflow result states enqueue notifications and microsite rotation revoke
  db.prepare('INSERT INTO guest_sessions VALUES(?,?,?,?,?,?)').run('session-2','invite',Date.now()+86400000,1,'csrf-2',new Date().toISOString());const unpublished=entity(db,site.id),unpublishCursor=db.prepare('SELECT max(rowid) rowid FROM audit').get().rowid;change(db,admin,unpublished,{...unpublished.data,status:'unpublished',publishedRevisionId:null});queueChanges(db,admin,unpublishCursor);assert.equal(db.prepare('SELECT count(*) count FROM guest_sessions').get().count,0);
 });
 test('baseline readiness stays unverified, verified file provenance is required, snooze stays personal',()=>{
- const {db,admin,p,user}=fixture();let report=readiness(db,user,p.id);assert.equal(report.progress.ratio,0);assert.equal(report.checks.find(x=>x.ruleKey==='contract').state,'unknown');assert(!report.checks.some(x=>x.state==='pass'));
+ const {db,admin,p,user}=fixture();let report=readiness(db,user,p.id);assert.equal(report.progress.ratio,0);assert.equal(report.checks.find(x=>x.ruleKey==='contract').state,'unknown');assert.equal(report.checks.find(x=>x.ruleKey==='tasks').state,'pass');assert(!report.checks.some(x=>x.ruleKey!=='tasks'&&x.state==='pass'));
  const updated=run(db,user,'project.readinessSettings',{projectId:p.id,version:p.version,data:{readinessPolicy:{contract:{required:true},booking:{required:false,reason:'Выбранные услуги не требуют брони'},timing:{required:true},seating:{required:true}}}});
  const file=insert(db,admin,'file',{name:'Документ.pdf'},p.id);report=readiness(db,user,p.id);assert.equal(report.checks.find(x=>x.ruleKey==='contract').state,'warning');
  run(db,user,'file.verify',{projectId:p.id,entityId:file.id,version:file.version,documentKind:'contract',status:'confirmed',note:'Проверен подписанный экземпляр'});assert.equal(readiness(db,user,p.id).checks.find(x=>x.ruleKey==='contract').state,'pass');
+ const overdue=insert(db,admin,'task',{title:'Просроченная задача',dueDate:'2020-01-01',status:'todo',assigneeUserId:user.id},p.id);
  const untilAt=new Date(Date.now()+86400000).toISOString();run(db,user,'readiness.snooze',{projectId:p.id,ruleKey:'tasks',untilAt});assert.equal(readiness(db,user,p.id).checks.find(x=>x.ruleKey==='tasks').snoozedUntil,untilAt);assert.equal(readiness(db,admin,p.id).checks.find(x=>x.ruleKey==='tasks').snoozedUntil,null);assert.equal(readiness(db,user,p.id).checks.find(x=>x.ruleKey==='tasks').state,'warning');
- const overdue=insert(db,admin,'task',{title:'Просроченная задача',dueDate:'2020-01-01',status:'todo',assigneeUserId:user.id},p.id);assert(!readiness(db,user,p.id).attention.some(x=>x.sourceId===overdue.id));assert(readiness(db,admin,p.id).attention.some(x=>x.sourceId===overdue.id));assert(readiness(db,user,p.id,Date.parse(untilAt)+1).attention.some(x=>x.sourceId===overdue.id));
+ assert(!readiness(db,user,p.id).attention.some(x=>x.sourceId===overdue.id));assert(readiness(db,admin,p.id).attention.some(x=>x.sourceId===overdue.id));assert(readiness(db,user,p.id,Date.parse(untilAt)+1).attention.some(x=>x.sourceId===overdue.id));
  assert.equal(dashboard(db,user,{projectId:p.id}).metrics.activeProjects,1);
  const focused=insert(db,admin,'task',{title:'В фокусе организатора',dueDate:'2027-06-01',status:'todo',organizerFocus:true},p.id),home=dashboard(db,admin);
  assert.equal(home.organizerFocusTotal,1);assert.equal(home.organizerFocus[0].id,focused.id);
@@ -88,4 +90,32 @@ test('explicit staff working intervals use the project time zone and remain reve
  rejects(()=>run(db,admin,'project.readinessSettings',{projectId:p.id,version:saved.version,data:{staffIntervals:[{userId:admin.id,startLocal:'2027-06-12T23:00',endLocal:'2027-06-12T09:00'}]}}));
  assert.equal(entity(db,p.id).version,saved.version);
  const cleared=run(db,admin,'project.readinessSettings',{projectId:p.id,version:saved.version,data:{staffIntervals:[]}});assert.deepEqual(cleared.data.staffIntervals,[]);
+});
+
+test('meeting deletion removes only its calendar event, preserves other wedding data and cancels its queued notifications',t=>{
+ const {db,admin,p,user}=fixture();t.after(()=>db.close());
+ const base={title:'Удаляемая встреча',startDate:'2027-06-01',startTime:'10:00',endDate:'2027-06-01',endTime:'11:00',timeZone:'Europe/Moscow',assignedUserIds:[user.id],participantUserIds:[]};
+ const first=run(db,user,'meeting.save',{projectId:p.id,data:base});
+ const second=run(db,user,'meeting.save',{projectId:p.id,data:{...base,title:'Оставшаяся встреча',startTime:'11:00',endTime:'12:00'}});
+ const task=insert(db,admin,'task',{title:'Задача на тот же день',dueDate:'2027-06-01',status:'todo',assigneeUserId:user.id},p.id);
+ const before=calendar(db,user,{projectId:p.id,from:'2027-06-01',to:'2027-06-30'}).items;
+ enqueue(db,null,first,user.id,'meeting.conflict','2027-06-01T06:00:00.000Z');enqueue(db,null,second,user.id,'meeting.conflict','2027-06-01T06:00:00.000Z');
+ const deleted=run(db,user,'meeting.delete',{projectId:p.id,entityId:first.id,version:first.version});
+ assert.equal(deleted.id,first.id);assert.equal(deleted.deleted,true);assert.equal(deleted.version,first.version+1);
+ const after=calendar(db,user,{projectId:p.id,from:'2027-06-01',to:'2027-06-30'}).items;
+ assert.deepEqual(after,before.filter(item=>item.sourceId!==first.id));assert(after.some(item=>item.sourceId===second.id));assert(after.some(item=>item.sourceId===task.id));assert(after.some(item=>item.sourceId===p.id));
+ assert.deepEqual(entity(db,second.id),second);assert.deepEqual(entity(db,p.id),p);assert.equal(entity(db,task.id).deleted,false);
+ processOutbox(db,Date.parse('2027-06-01T06:00:00Z'));assert.equal(db.prepare("SELECT count(*) n FROM notification_outbox WHERE source_id=? AND status<>'cancelled'").get(first.id).n,0);assert.equal(db.prepare("SELECT count(*) n FROM notification_outbox WHERE source_id=? AND status='sent'").get(second.id).n,1);
+});
+
+test('stale or unauthorized meeting deletion fails without removing any visible events',t=>{
+ const {db,admin,p,user}=fixture();t.after(()=>db.close());
+ const base={title:'Сохранить при ошибке',startDate:'2027-06-01',startTime:'10:00',endDate:'2027-06-01',endTime:'11:00',timeZone:'Europe/Moscow',assignedUserIds:[],participantUserIds:[]};
+ const initial=run(db,user,'meeting.save',{projectId:p.id,data:base}),current=run(db,user,'meeting.save',{projectId:p.id,entityId:initial.id,version:initial.version,data:{...base,title:'Название изменено'}});
+ const query={projectId:p.id,from:'2027-06-01',to:'2027-06-30'},before=calendar(db,user,query).items;
+ rejects(()=>run(db,user,'meeting.delete',{projectId:p.id,entityId:initial.id,version:initial.version}),409);
+ const reader=register(db,{slug:'tie',email:'calendar-reader@example.test',name:'Только чтение',password:'strong-password'}).user;
+ const role=execute(db,admin,{id:uid(),op:'role.save',name:'Чтение календаря',permissions:['read']});grant(db,reader,role.id,p.id,{sections:['calendar']});
+ assert(calendar(db,reader,query).items.some(item=>item.sourceId===current.id));rejects(()=>run(db,reader,'meeting.delete',{projectId:p.id,entityId:current.id,version:current.version}),403);
+ assert.deepEqual(calendar(db,user,query).items,before);assert.deepEqual(entity(db,current.id),current);
 });

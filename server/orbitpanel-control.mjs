@@ -105,7 +105,7 @@ function sessionStatus(row) { return row.revoked_at ? 'revoked' : Number(row.exp
 function users(db) {
   ensureRegistry(db);
   return db.prepare('SELECT * FROM users ORDER BY name,id').all().map(user => ({
-    site_id: SITE_ID, kind: 'portal_account', id: user.id, display_name: user.name, identity: user.email,
+    site_id: SITE_ID, kind: 'portal_account', id: user.id, display_name: user.name, identity: user.email || user.phone,
     enabled: !user.disabled, created_at: null, roles: db.prepare('SELECT COALESCE(r.key,r.name) AS role FROM grants g JOIN roles r ON r.id=g.role_id WHERE g.user_id=? ORDER BY role').all(user.id).map(row => row.role),
     active_session_count: Number(db.prepare('SELECT count(*) AS count FROM orbit_session_registry WHERE user_id=? AND revoked_at IS NULL AND expires>?').get(user.id, Date.now()).count),
     last_seen_at: db.prepare('SELECT max(last_activity_at) AS value FROM orbit_session_registry WHERE user_id=?').get(user.id).value || null,

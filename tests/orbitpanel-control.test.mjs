@@ -59,12 +59,15 @@ test('Orbitpanel control authenticates, revokes real tie.event sessions, and enf
     const setup = await publicPost(port, '/api/setup', { slug: 'tie', agencyName: 'Tie test', email: 'owner@example.test', name: 'Owner', password: 'correct-horse-battery' }, csrfState);
     assert.equal(setup.status, 201);
     const ownerCookie = firstCookie(setup.headers, 'tie_session');
-    const registration = await publicPost(port, '/api/register', { slug: 'tie', email: 'member@example.test', name: 'Member', password: 'correct-horse-battery' }, csrfState, { 'X-Forwarded-For': '8.8.8.8', 'User-Agent': 'tie-control-test' });
+    const registration = await publicPost(port, '/api/register', { slug: 'tie', email: 'member@example.test', phone: '+79990000001', name: 'Member', password: 'correct-horse-battery' }, csrfState, { 'X-Forwarded-For': '8.8.8.8', 'User-Agent': 'tie-control-test' });
     assert.equal(registration.status, 201);
     const firstSessionCookie = firstCookie(registration.headers, 'tie_session');
     const login = await publicPost(port, '/api/login', { slug: 'tie', email: 'member@example.test', password: 'correct-horse-battery' }, csrfState, { 'X-Forwarded-For': '8.8.8.8', 'User-Agent': 'tie-control-test' });
     assert.equal(login.status, 200);
     const secondSessionCookie = firstCookie(login.headers, 'tie_session');
+    const phoneRegistration = await publicPost(port, '/api/register', { slug: 'tie', email: 'phone-member@example.test', phone: '+79991234567', name: 'Phone member', password: 'correct-horse-battery' }, csrfState);
+    assert.equal(phoneRegistration.status, 201);
+    server.db.prepare('UPDATE users SET email=NULL WHERE phone=?').run('+79991234567'); // Existing phone-only account.
 
     assert.equal((await http(port, '/api/internal/orbitpanel/summary')).status, 404);
     assert.equal((await http(port, '/api/internal/orbitpanel/summary', { headers: { Host: controlHost } })).status, 401);
@@ -72,6 +75,7 @@ test('Orbitpanel control authenticates, revokes real tie.event sessions, and enf
     const summary = await control(port, 'GET', '/api/internal/orbitpanel/summary'); assert.equal(summary.response.status, 200); assert.equal(summary.data.data.siteId, 'tie-event'); assert.equal(summary.data.data.activeBans, 0);
     const listed = await control(port, 'GET', '/api/internal/orbitpanel/users'); assert.equal(listed.response.status, 200);
     const owner = listed.data.data.find(row => row.protected); const member = listed.data.data.find(row => row.identity === 'member@example.test'); assert.ok(owner && member && member.access_allowed);
+    assert.ok(listed.data.data.some(row => row.identity === '+79991234567' && row.access_allowed));
     const guestId=randomUUID(), inviteId=randomUUID(), guestDigest='guest-session-digest';
     const agencyId=server.db.prepare('SELECT agency_id FROM users WHERE id=?').get(member.id).agency_id;
     server.db.prepare('INSERT INTO guest_invites(id,digest,agency_id,project_id,guest_table_id,expires_at,revoked_at,created_by,version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(inviteId,'invite-digest',agencyId,'guest-project','guest-table',Date.now()+86400000,null,owner.id,1,new Date().toISOString());

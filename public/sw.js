@@ -1,5 +1,17 @@
-const CACHE = 'tie-shell-v5';
-const SHELL = ['/index.html', '/manifest.webmanifest', '/icon.svg'];
+const CACHE = 'tie-shell-v11-icons';
+const SHELL = [
+  '/index.html', '/manifest.webmanifest', '/icon.svg',
+  '/brand/tie/logo-dark.png', '/brand/tie/logo-light.png',
+  '/brand/tie/signature-red.png', '/brand/tie/signature-light.png', '/brand/tie/event-pattern.png',
+  '/brand/tie/icon-192.png', '/brand/tie/icon-512.png',
+  '/brand/tie/logo-04-20261012-16.png', '/brand/tie/logo-04-20261012-32.png',
+  '/brand/tie/logo-04-20261012-180.png', '/brand/tie/logo-04-20261012-192.png',
+  '/brand/tie/logo-04-20261012-512.png', '/brand/tie/logo-04-20261012-maskable-512.png',
+  '/apple-touch-icon.png', '/favicon.ico',
+  '/brand/tie/favicon-tie-20261012.svg', '/brand/tie/favicon-tie-20261012-16.png', '/brand/tie/favicon-tie-20261012-32.png',
+  '/brand/tie/fonts/evolventa-regular.woff', '/brand/tie/fonts/evolventa-bold.woff',
+  '/brand/tie/fonts/evolventa-oblique.woff', '/brand/tie/fonts/evolventa-bold-oblique.woff', '/brand/tie/fonts/ardeco.woff'
+];
 
 function localAsset(value, base = self.location.origin) {
   try {
@@ -65,12 +77,23 @@ function cacheable(request, response) {
   return !/no-store|private/i.test(control);
 }
 
+function immutableAsset(url) {
+  return url.pathname.startsWith('/assets/') && /-[A-Za-z0-9_-]{8,}\.(?:js|css|woff2?|png|jpe?g|webp|svg)$/.test(url.pathname);
+}
+
 self.addEventListener('fetch', event => {
   const request = event.request;
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/') || url.pathname.startsWith('/w/')) return;
   if (request.mode === 'navigate' && !url.pathname.startsWith('/app') && !['/','/index.html'].includes(url.pathname)) return;
   event.respondWith((async () => {
+    // A content hash changes with the file. Already downloaded application
+    // modules can be served immediately, even when the connection is slow.
+    if (immutableAsset(url) || SHELL.includes(url.pathname) && url.pathname.startsWith('/brand/tie/')) {
+      const cache = await caches.open(CACHE);
+      const cached = await cache.match(request);
+      if (cached) return cached;
+    }
     try {
       const response = await fetch(request);
       if (cacheable(request, response) && !(request.mode === 'navigate' && url.pathname === '/')) {

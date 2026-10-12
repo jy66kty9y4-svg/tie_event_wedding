@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase, entity, uid } from '../server/db.mjs';
-import { bootstrap, execute, register, upload } from '../server/service.mjs';
+import { bootstrap, execute, upload } from '../server/service.mjs';
+import { registerTestUser as register } from './fixtures/account.mjs';
 import { executeModule } from '../server/v2/common.mjs';
 import { migrate, operations, createPublicAsset, getPublicAsset, getMicrosite, getPublishedMicrosite, getPublishedContent, getPublishedHome, listPublishedContent, previewMicrosite, renderAgencyHtml, renderWeddingHtml, sitemapXml } from '../server/v2/publishing/index.mjs';
 

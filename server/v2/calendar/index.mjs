@@ -1,7 +1,8 @@
 import { assert, entity, entities, insert, change, version, transaction, now, uid, decode } from '../../db.mjs';
-import { can, requireAccess, digest } from '../../auth.mjs';
+import { can, requireAccess, digest, withAuthorizationRead } from '../../auth.mjs';
+import {timingFields} from '../../../src/timing-fields.js';
 import { getScoped, projectVisible, text, date, safeUrl, financials, sectionOf } from '../../model.mjs';
-import { currentUser, projectAccess, scoped, members, validateMembers, visible, listPage, localDate, addDays, timeZone, zonedInstant } from '../common.mjs';
+import { currentUser, projectAccess, scoped, members, validateMembers, visible, listPage, localDate, addDays, timeZone, zonedInstant, historicalRecord, changedFields } from '../common.mjs';
 
 export function migrate(db) {
  db.exec(`CREATE TABLE IF NOT EXISTS notification_preferences(user_id TEXT PRIMARY KEY REFERENCES users(id), data TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
@@ -12,10 +13,15 @@ export function migrate(db) {
 }
 const route=(p,s,id='')=>p?`/app/projects/${p}/${s}${id?'/'+id:''}`:`/app/${s}`;
 const activeProject=p=>p&&!p.deleted&&!['archived','completed'].includes(p.data.status);
-const allowedSource=(db,u,r,fields=[])=>r&&!r.deleted&&(!(r.kind==='project'?r.id:r.project_id)||projectVisible(db,u,r.kind==='project'?r.id:r.project_id))&&can(db,u,r.kind==='obligation'?['read','finance']:'read',r.kind==='project'?r.id:r.project_id,({task:'tasks',approval:'approvals',approvalRevision:'approvals',meeting:'calendar',project:'project',microsite:'microsite'})[r.kind]||sectionOf(r),r.id,fields.length?fields:undefined);
+const allowedSource=(db,u,r,fields=[])=>r?.kind==='accountOnboarding'
+ ? !r.deleted&&r.agency_id===u.agency_id&&!!db.prepare('SELECT id FROM users WHERE id=? AND agency_id=? AND disabled=0').get(r.data.userId,r.agency_id)&&(can(db,u,'applications')||can(db,u,'access'))
+ : r&&!r.deleted&&(!(r.kind==='project'?r.id:r.project_id)||projectVisible(db,u,r.kind==='project'?r.id:r.project_id))&&can(db,u,r.kind==='obligation'?['read','finance']:'read',r.kind==='project'?r.id:r.project_id,({task:'tasks',approval:'approvals',approvalRevision:'approvals',meeting:'calendar',project:'project',microsite:'microsite'})[r.kind]||sectionOf(r),r.id,fields.length?fields:undefined);
 function event(db,u,r,p,start,end,allDay,title,section,assigned=[],extra={}) {return {id:r.kind+':'+r.id,sourceKind:r.kind,sourceId:r.id,sourceVersion:r.version,projectId:p?.id||null,projectName:p?.data.name||'',title,start,end,allDay,displayTimeZone:r.data.timeZone||p?.data.timeZone||'Europe/Moscow',assignedUserIds:assigned,actionUrl:route(p?.id,section,r.kind==='project'?'':r.id),allowedOps:can(db,u,'edit',p?.id||null,sectionOfSource(r),r.id)?r.kind==='task'?['open','reschedule']:r.kind==='meeting'?['open','edit','delete']:['open']:['open'],...extra};}
 function sectionOfSource(r){return ({task:'tasks',approval:'approvals',approvalRevision:'approvals',meeting:'calendar',project:'project'})[r.kind]||sectionOf(r);}
 export function calendar(db,user,q={}) {
+ return withAuthorizationRead(db,()=>readCalendar(db,user,q));
+}
+function readCalendar(db,user,q) {
  const u=currentUser(db,user),from=date(q.from,false),to=date(q.to,false);assert(to>=from&&(Date.parse(to)-Date.parse(from))/86400000<=92,'Выберите период не длиннее 93 дней');
  const projects=entities(db,u.agency_id,null,'project').filter(p=>activeProject(p)&&projectVisible(db,u,p.id)&&(!q.projectId||p.id===q.projectId));
  if(q.projectId) projectAccess(db,u,q.projectId);
@@ -24,7 +30,7 @@ export function calendar(db,user,q={}) {
   const z=p.data.timeZone||'Europe/Moscow',rows=entities(db,u.agency_id,p.id);
   if(p.data.date&&can(db,u,'read',p.id,'project',p.id,['name','date']))add(event(db,u,p,p,p.data.date,p.data.date,true,p.data.name,'overview'));
   for(const r of rows){
-   if(r.kind==='task'&&allowedSource(db,u,r,['title','dueDate','status','assigneeUserId'])&&!['done','skipped'].includes(r.data.status)&&r.data.dueDate)add(event(db,u,r,p,r.data.dueDate,r.data.dueDate,true,r.data.title,'tasks',[r.data.assigneeUserId].filter(Boolean)));
+   if(r.kind==='task'&&allowedSource(db,u,r,['title','dueDate','status','assigneeUserId'])&&!['done','skipped'].includes(r.data.status)&&r.data.dueDate){const range=r.data.dueMode==='range'&&r.data.startDate&&allowedSource(db,u,r,['dueMode','startDate','endDate']);add(event(db,u,r,p,range?r.data.startDate:r.data.dueDate,r.data.dueDate,true,r.data.title,'tasks',[r.data.assigneeUserId].filter(Boolean),{dateRange:!!range}));};
    if(r.kind==='approval'&&allowedSource(db,u,r,['title','dueDate','state'])&&r.data.dueDate&&!['approved','withdrawn','draft'].includes(r.data.state))add(event(db,u,r,p,r.data.dueDate,r.data.dueDate,true,r.data.title,'approvals'));
    if(r.kind==='meeting'&&allowedSource(db,u,r,['title','startAt','endAt','assignedUserIds','participantUserIds'])){const allDay=!!r.data.allDay,start=allDay?r.data.allDayStart||localDate(r.data.startAt,r.data.timeZone||z):r.data.startAt,end=allDay?r.data.allDayEnd||localDate(r.data.endAt,r.data.timeZone||z):r.data.endAt;add(event(db,u,r,p,start,end,allDay,r.data.title,'calendar',[...(r.data.assignedUserIds||[]),...(r.data.participantUserIds||[])],{location:r.data.location||''}));}
   }
@@ -32,12 +38,12 @@ export function calendar(db,user,q={}) {
   if(can(db,u,['read','finance'],p.id,'budget',null,null)){
    const f=financials(rows);for(const r of rows.filter(x=>x.kind==='obligation'&&x.data.agreed!==null&&x.data.dueDate&&x.data.agreed-(f.paid[x.id]||0)>0))add(event(db,u,r,p,r.data.dueDate,r.data.dueDate,true,r.data.title,'finance/estimate',[r.data.responsible].filter(Boolean),{due:r.data.agreed-(f.paid[r.id]||0)}));
   }
-  for(const table of rows.filter(r=>r.kind==='table'&&r.data.key==='timing'&&r.data.semanticMap)){
-   const m=table.data.semanticMap;
+  for(const table of rows.filter(r=>r.kind==='table'&&r.data.key==='timing')){
+   const m=timingFields(table);
    for(const r of rows.filter(r=>r.kind==='row'&&r.parent_id===table.id)){
-    const required=[m.startTime,m.endTime,m.title,m.assignedUserIds].filter(Boolean);if(!m.startTime||!m.title||!can(db,u,'read',p.id,table.id,r.id,required))continue;
+    const required=[m.startTime,m.endTime,m.title,m.assignedUserIds,m.dayOffset,m.endDayOffset].filter(Boolean);if(!m.startTime||!m.title||!can(db,u,'read',p.id,table.id,r.id,required))continue;
     try{const day=addDays(p.data.date,Number(r.data[m.dayOffset]||0)),start=zonedInstant(day,r.data[m.startTime],z,r.data[m.dstChoice]),endTime=r.data[m.endTime]||r.data[m.startTime],endDay=addDays(day,Number(r.data[m.endDayOffset]||0)),end=zonedInstant(endDay,endTime,z,r.data[m.dstChoice]);if(end<start)continue;
-    const assigned=Array.isArray(r.data[m.assignedUserIds])?r.data[m.assignedUserIds]:[];add(event(db,u,r,p,start,end,false,r.data[m.title],'day/team',assigned,{sourceKind:'timing',actionUrl:route(p.id,'day/team')+'?row='+r.id}));}catch{/* Invalid legacy timing is surfaced in readiness, not silently corrected. */}
+    const assigned=Array.isArray(r.data[m.assignedUserIds])?r.data[m.assignedUserIds]:[];add(event(db,u,r,p,start,end,false,r.data[m.title],r.data.audience==='Команда'?'day/team':'day/pair',assigned,{sourceKind:'timing',actionUrl:route(p.id,r.data.audience==='Команда'?'day/team':'day/pair')+'?row='+r.id}));}catch{/* Invalid legacy timing is surfaced in readiness, not silently corrected. */}
    }
   }
  }
@@ -52,7 +58,7 @@ function allBusy(db,u) {
   if(r.kind==='meeting')result.push({row:r,start:r.data.startAt,end:r.data.endAt,users:[...(r.data.assignedUserIds||[]),...(r.data.participantUserIds||[])]});
   if(r.kind==='project')for(const interval of r.data.staffIntervals||[])if(interval.userId&&interval.startAt<interval.endAt)result.push({row:r,start:interval.startAt,end:interval.endAt,users:[interval.userId]});
   if(r.kind==='row'){
-   const t=records.find(t=>t.id===r.parent_id&&t.kind==='table'),m=t?.data.semanticMap,p=projects.get(r.project_id);if(t?.data.key!=='timing'||!m?.assignedUserIds||!p)continue;
+   const t=records.find(t=>t.id===r.parent_id&&t.kind==='table'),m=timingFields(t),p=projects.get(r.project_id);if(!m?.assignedUserIds||!p)continue;
    try{const day=addDays(p.data.date,Number(r.data[m.dayOffset]||0)),start=zonedInstant(day,r.data[m.startTime],p.data.timeZone),end=zonedInstant(addDays(day,Number(r.data[m.endDayOffset]||0)),r.data[m.endTime],p.data.timeZone);if(start<end)result.push({row:r,start,end,users:Array.isArray(r.data[m.assignedUserIds])?r.data[m.assignedUserIds]:[]});}catch{}
   }
  }return result;
@@ -61,9 +67,10 @@ export function conflicts(db,user,d,excludeId=null) {
  const u=currentUser(db,user),ids=new Set([...(d.assignedUserIds||[]),...(d.participantUserIds||[])]),items=[];
  for(const b of allBusy(db,u)){
   if(b.row.id===excludeId||!b.users.some(id=>ids.has(id))||!(d.startAt<b.end&&b.start<d.endAt))continue;
-  const readable=allowedSource(db,u,b.row,['title','startAt','endAt']);
+  const table=b.row.kind==='row'?entity(db,b.row.parent_id):null,m=timingFields(table),fields=table?.data.key==='timing'?[m.title,m.startTime,m.endTime,m.dayOffset,m.endDayOffset].filter(Boolean):['title','startAt','endAt'];
+  const readable=allowedSource(db,u,b.row,fields);
   if(!readable&&!can(db,u,'viewTeamAvailability',null))continue;
-  items.push(readable?{sourceId:b.row.id,sourceKind:b.row.kind,projectId:b.row.project_id,title:b.row.data.title||b.row.data.name,start:b.start,end:b.end,actionUrl:route(b.row.project_id,sectionOfSource(b.row),b.row.id)}:{busy:true,start:b.start,end:b.end});
+  items.push(readable?{sourceId:b.row.id,sourceKind:b.row.kind,projectId:b.row.project_id,title:b.row.data[m.title]||b.row.data.title||b.row.data.name,start:b.start,end:b.end,actionUrl:table?.data.key==='timing'?route(b.row.project_id,b.row.data.audience==='Команда'?'day/team':'day/pair')+'?row='+b.row.id:route(b.row.project_id,sectionOfSource(b.row),b.row.id)}:{busy:true,start:b.start,end:b.end});
  }return items;
 }
 function meetingData(db,u,p,data,current) {
@@ -84,9 +91,19 @@ function meetingData(db,u,p,data,current) {
 }
 export function previewMeeting(db,user,c){const u=currentUser(db,user),p=c.projectId||null;if(p)projectAccess(db,u,p);requireAccess(db,u,c.entityId?'edit':'create',p,'calendar',c.entityId||null,Object.keys(c.data||{}));const row=c.entityId?scoped(db,u,c.entityId,p,'meeting'):null;const data=meetingData(db,u,p,c.data,row);return {data,conflicts:conflicts(db,u,data,row?.id),digest:digest(JSON.stringify({data,conflicts:conflicts(db,u,data,row?.id)}))};}
 const meetingAuthorize=(db,u,c)=>{const p=c.projectId||null;requireAccess(db,u,c.op==='meeting.delete'?'delete':c.entityId?'edit':'create',p,'calendar',c.entityId||null,c.op==='meeting.delete'?null:Object.keys(c.data||{}));if(c.entityId)scoped(db,u,c.entityId,p,'meeting');};
+function restoredMeeting(db,u,c,row) {
+ const old=historicalRecord(db,u,c,row);
+ return meetingData(db,u,c.projectId||null,{...old.data,...c.conflictReason?{conflictReason:c.conflictReason}:{}},row);
+}
+function authorizeMeetingRestore(db,u,c) {
+ const p=c.projectId||null,row=scoped(db,u,c.entityId,p,'meeting',{deleted:true});if(p)projectAccess(db,u,p);
+ const data=restoredMeeting(db,u,c,row),fields=changedFields(row.data,data);
+ requireAccess(db,u,['read','edit','history'],p,'calendar',row.id,fields.length?fields:null);
+}
 export const operations={
  'meeting.save':{authorize:meetingAuthorize,run(db,u,c){const preview=previewMeeting(db,u,c);if(preview.conflicts.length)assert(c.conflictDigest===preview.digest&&preview.data.conflictReason,'Есть пересечение. Проверьте события и укажите причину сохранения.',409,{conflicts:preview.conflicts,digest:preview.digest});const old=c.entityId?scoped(db,u,c.entityId,c.projectId||null,'meeting'):null;if(old)version(old,c.version);return old?change(db,u,old,preview.data):insert(db,u,'meeting',preview.data,c.projectId||null);}},
  'meeting.delete':{authorize:meetingAuthorize,run(db,u,c){const r=scoped(db,u,c.entityId,c.projectId||null,'meeting');version(r,c.version);return change(db,u,r,r.data,true,'delete');}},
+ 'meeting.restore':{authorize:authorizeMeetingRestore,run(db,u,c){const row=scoped(db,u,c.entityId,c.projectId||null,'meeting',{deleted:true});version(row,c.version);const data=restoredMeeting(db,u,c,row),found=conflicts(db,u,data,row.id),previewDigest=digest(JSON.stringify({data:{...data,conflictReason:''},conflicts:found}));if(found.length)assert(c.conflictDigest===previewDigest&&data.conflictReason,'Есть пересечение. Проверьте события и укажите причину восстановления.',409,{conflicts:found,digest:previewDigest});return change(db,u,row,data,false,'restore');}},
  'notification.read':{authorize(db,u,c){const r=scoped(db,u,c.entityId,undefined,'notification');assert(notificationVisible(db,u,r),'Уведомление недоступно',403);},run(db,u,c){const r=entity(db,c.entityId);return r.data.readAt?r:change(db,u,r,{...r.data,readAt:now()});}},
  'notification.readAll':{authorize(){},run(db,u,c){const rows=notificationRows(db,u,c);for(const r of rows)if(!r.data.readAt)change(db,u,r,{...r.data,readAt:now()});return {count:rows.filter(r=>!r.data.readAt).length};}},
  'notificationPreferences.save':{authorize(){},run(db,u,c){const old=preferences(db,u);assert(c.version===old.version,'Настройки уже изменены',409,{current:old});const d=c.data;assert(d&&Array.isArray(d.disabledTypes)&&d.disabledTypes.length<=30&&d.disabledTypes.every(x=>typeof x==='string'&&x.length<=100),'Проверьте виды уведомлений');assert(/^([01]\d|2[0-3]):[0-5]\d$/.test(d.dateOnlyReminderTime),'Проверьте время');assert(!d.email,'Email не подключён');const data={disabledTypes:[...new Set(d.disabledTypes)],dateOnlyReminderTime:d.dateOnlyReminderTime,email:false,inApp:true};db.prepare('INSERT INTO notification_preferences VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data,version=excluded.version').run(u.id,JSON.stringify(data),old.version+1);db.prepare("UPDATE notification_outbox SET status='cancelled' WHERE recipient_id=? AND status='queued'").run(u.id);return {...data,version:old.version+1,emailStatus:'not_configured'};}},
@@ -103,6 +120,12 @@ export function enqueue(db,actor,source,recipientId,templateKey,occurrence=now()
  const pref=preferences(db,u);if(pref.disabledTypes.includes(templateKey))return;
  const key=[source.kind,source.id,templateKey,generation,recipientId,occurrence,'inApp'].join(':');
  db.prepare('INSERT OR IGNORE INTO notification_outbox(id,dedupe_key,agency_id,project_id,recipient_id,source_kind,source_id,source_version,occurrence_at,channel,generation,template_key,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(uid(),key,source.agency_id,source.kind==='project'?source.id:source.project_id,recipientId,source.kind,source.id,source.version,occurrence,'inApp',generation,templateKey,JSON.stringify({...payload,preferenceVersion:pref.version}));
+}
+export function queueAccountRegistration(db,actor,source) {
+ if(source.kind!=='accountOnboarding'||source.deleted||source.data.status!=='pending')return;
+ const account=db.prepare('SELECT id,name FROM users WHERE id=? AND agency_id=? AND disabled=0').get(source.data.userId,source.agency_id);if(!account)return;
+ const recipients=db.prepare('SELECT * FROM users WHERE agency_id=? AND disabled=0').all(source.agency_id);
+ for(const recipient of recipients)if(can(db,recipient,'applications')||can(db,recipient,'access'))enqueue(db,actor,source,recipient.id,'account.registered',source.updated_at,'registration',{body:`${account.name} ожидает подтверждения аккаунта и назначения свадьбы.`,actionUrl:`/app/applications?registration=${source.id}`});
 }
 function reminderRecipients(r,p){return r.kind==='meeting'?[...new Set([...(r.data.assignedUserIds||[]),...(r.data.participantUserIds||[])])]:[r.data.assigneeUserId||r.data.responsible||p?.data.leadOrganizerUserId].filter(Boolean);}
 function reminderDebt(db,r){if(r.kind!=='obligation')return null;const f=financials(entities(db,r.agency_id,r.project_id));return r.data.agreed===null?null:r.data.agreed-(f.paid[r.id]||0);}
@@ -134,8 +157,8 @@ export function scheduleReminders(db,at=Date.now()) {
   }
  }
 }
-export function processOutbox(db,at=Date.now(),limit=100) {
- return transaction(db,()=>{scheduleReminders(db,at);const stamp=new Date(at).toISOString();const pending=db.prepare("SELECT * FROM notification_outbox WHERE (status='queued' OR (status='leased' AND lease_until<?)) AND occurrence_at<=? AND (retry_at IS NULL OR retry_at<=?) ORDER BY occurrence_at,id LIMIT ?").all(stamp,stamp,stamp,limit);let delivered=0,cancelled=0;
+export function processOutbox(db,at=Date.now(),limit=100,{sourceId=null}={}) {
+ return transaction(db,()=>{if(!sourceId)scheduleReminders(db,at);const stamp=new Date(at).toISOString();const pending=db.prepare("SELECT * FROM notification_outbox WHERE (status='queued' OR (status='leased' AND lease_until<?)) AND occurrence_at<=? AND (retry_at IS NULL OR retry_at<=?) AND (? IS NULL OR source_id=?) ORDER BY occurrence_at,id LIMIT ?").all(stamp,stamp,stamp,sourceId,sourceId,limit);let delivered=0,cancelled=0;
   for(const job of pending){db.prepare("UPDATE notification_outbox SET status='leased',lease_until=?,attempts=attempts+1 WHERE id=?").run(new Date(at+30000).toISOString(),job.id);const u=db.prepare('SELECT * FROM users WHERE id=? AND agency_id=? AND disabled=0').get(job.recipient_id,job.agency_id),r=entity(db,job.source_id),payload=JSON.parse(job.payload);let valid=recipientAllowed(db,u,r)&&(payload.reminder||r.version===job.source_version);
    if(valid){const pref=preferences(db,u);valid=!pref.disabledTypes.includes(job.template_key)&&pref.version===payload.preferenceVersion;if(payload.reminder){const p=r.project_id?entity(db,r.project_id):null;valid=reminderRecipients(r,p).includes(job.recipient_id)&&generationFor(db,r,pref,job.recipient_id)===job.generation;}
     if(r.kind==='task'&&['done','skipped'].includes(r.data.status))valid=false;
@@ -143,7 +166,7 @@ export function processOutbox(db,at=Date.now(),limit=100) {
     if(r.kind==='obligation'){const f=financials(entities(db,r.agency_id,r.project_id));if(r.data.agreed===null||r.data.agreed-(f.paid[r.id]||0)<=0)valid=false;}
    }
    if(!valid){db.prepare("UPDATE notification_outbox SET status='cancelled',lease_until=NULL WHERE id=?").run(job.id);cancelled++;continue;}
-   if(!db.prepare("SELECT id FROM entities WHERE kind='notification' AND json_extract(data,'$.dedupeKey')=?").get(job.dedupe_key))insert(db,u,'notification',{recipientUserId:u.id,sourceKind:r.kind,sourceId:r.id,sourceVersion:r.version,templateKey:job.template_key,title:titles[job.template_key]||'Новое событие',body:r.data.title||r.data.name||'',actionUrl:payload.actionUrl||route(r.project_id,sectionOfSource(r),r.kind==='project'?'':r.id),createdAt:stamp,readAt:null,dedupeKey:job.dedupe_key},r.kind==='project'?r.id:r.project_id);
+   if(!db.prepare("SELECT id FROM entities WHERE kind='notification' AND json_extract(data,'$.dedupeKey')=?").get(job.dedupe_key))insert(db,u,'notification',{recipientUserId:u.id,sourceKind:r.kind,sourceId:r.id,sourceVersion:r.version,templateKey:job.template_key,title:job.template_key==='account.registered'?'Новая заявка на регистрацию':titles[job.template_key]||'Новое событие',body:payload.body??(r.data.title||r.data.name||''),actionUrl:payload.actionUrl||route(r.project_id,sectionOfSource(r),r.kind==='project'?'':r.id),createdAt:stamp,readAt:null,dedupeKey:job.dedupe_key},r.kind==='project'?r.id:r.project_id);
    db.prepare("UPDATE notification_outbox SET status='sent',lease_until=NULL WHERE id=?").run(job.id);delivered++;
   }return {delivered,cancelled};
  });

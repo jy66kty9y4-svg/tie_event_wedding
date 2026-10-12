@@ -1,5 +1,6 @@
 import { assert, entities, entity, change, version, now } from '../../db.mjs';
-import { can, requireAccess } from '../../auth.mjs';
+import { can, requireAccess, withAuthorizationRead } from '../../auth.mjs';
+import {timingFields} from '../../../src/timing-fields.js';
 import { financials, projectVisible, text } from '../../model.mjs';
 import { currentUser, projectAccess, scoped, localDate, addDays, zonedInstant, validateMembers, timeZone } from '../common.mjs';
 import { calendar, conflicts } from './index.mjs';
@@ -11,6 +12,9 @@ function guestFields(m){return {name:m.guestName||m.name,rsvp:m.rsvpStatus||m.rs
 function rsvpValue(row,m){const value=row.data[m.rsvp];return Object.entries(m.values).find(([,v])=>v===value)?.[0]||(['confirmed','declined','tentative'].includes(value)?value:'unanswered');}
 const tableExists=(db,name)=>!!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name);
 export function readiness(db,user,projectId,at=Date.now()) {
+ return withAuthorizationRead(db,()=>readReadiness(db,user,projectId,at));
+}
+function readReadiness(db,user,projectId,at) {
  const u=currentUser(db,user),p=projectAccess(db,u,projectId),all=entities(db,u.agency_id,projectId),today=localDate(at,p.data.timeZone||'Europe/Moscow'),checkedAt=new Date(at).toISOString(),checks=[],attention=[];
  const activeSnooze=(key,sourceId='')=>db.prepare('SELECT until_at FROM readiness_snoozes WHERE user_id=? AND project_id=? AND rule_key=? AND source_id IN (?,\'\') AND until_at>? ORDER BY source_id DESC LIMIT 1').get(u.id,projectId,key,sourceId,checkedAt);
  const add=(key,state,summary,reason,path,sourceRefs=[])=>{const snooze=activeSnooze(key);const r={ruleKey:key,state,summary,reason,sourceRefs,actionUrl:link(projectId,path),snoozedUntil:snooze?.until_at||null,checkedAt};checks.push(r);return r;};
@@ -47,14 +51,17 @@ export function readiness(db,user,projectId,at=Date.now()) {
   else{confirmed=guests.filter(r=>rsvpValue(r,map)==='confirmed');const seats=new Map();for(const r of guests){const key=r.data[map.table]+':'+r.data[map.seat];if(r.data[map.table])seats.set(key,(seats.get(key)||0)+1);}const missing=confirmed.filter(r=>{const t=tables.find(t=>t.id===r.data[map.table]),index=r.data[map.seat];return !t||!Number.isInteger(index)||index<1||index>t.data.capacity||seats.get(t.id+':'+index)>1;});add('seating',missing.length?'warning':'pass','Подтвердившие гости рассажены',missing.length?`Нужны места: ${missing.length}`:`Проверено мест: ${confirmed.length}`,'seating',missing.map(r=>({kind:r.kind,id:r.id})));for(const r of missing)warn('seating',r,r.data[map.name]||'Гость без места','', 'seating');for(const item of attention.filter(item=>item.ruleKey==='seating'&&missing.some(row=>row.id===item.sourceId))){item.reason='Подтвердил участие, место не назначено';item.title=`${item.title} — подтвердил участие, место не назначено`;}}
  }
  if(applyPolicy('timing','Программа дня заполнена','day/team')){
-  const t=all.find(r=>r.kind==='table'&&r.data.key==='timing'),m=t?.data.semanticMap;if(!t||!m?.startTime||!m?.title||!m?.required||!known(db,u,projectId,t.id))add('timing','unknown','Программа дня заполнена','Нужно сопоставить название, время и обязательность пунктов','day/team');
-  else{const rows=all.filter(r=>r.kind==='row'&&r.parent_id===t.id),required=rows.filter(r=>r.data[m.required]===true),invalid=required.filter(r=>{try{if(!r.data[m.title])return true;const day=addDays(p.data.date,Number(r.data[m.dayOffset]||0)),start=zonedInstant(day,r.data[m.startTime],p.data.timeZone);if(m.endTime&&r.data[m.endTime]){const end=zonedInstant(addDays(day,Number(r.data[m.endDayOffset]||0)),r.data[m.endTime],p.data.timeZone);if(end<start)return true;}return false;}catch{return true;}});add('timing',!rows.length||!required.length?'unknown':invalid.length?'warning':'pass','Программа дня заполнена',!rows.length?'Программа не заполнена':!required.length?'Обязательные пункты не отмечены':invalid.length?`Проверьте время и названия: ${invalid.length}`:'Обязательные пункты проверены','day/team',invalid.map(r=>({kind:r.kind,id:r.id})));}
+  const t=all.find(r=>r.kind==='table'&&r.data.key==='timing'),m=timingFields(t),path='day/pair';if(!m.startTime||!m.title||!known(db,u,projectId,t.id))add('timing','unknown','Программа дня заполнена','В таблице нужны событие и время начала','day/pair');
+  else{const fields=[m.title,m.startTime,m.endTime,m.dayOffset,m.endDayOffset,m.required].filter(Boolean),allRows=all.filter(r=>r.kind==='row'&&r.parent_id===t.id),rows=allRows.filter(r=>allowedRecord(db,u,r,t.id,fields)),required=m.required?rows.filter(r=>r.data[m.required]===true):rows,invalid=required.filter(r=>{try{if(!r.data[m.title])return true;const day=addDays(p.data.date,Number(r.data[m.dayOffset]||0)),start=zonedInstant(day,r.data[m.startTime],p.data.timeZone);if(m.endTime&&r.data[m.endTime]){const end=zonedInstant(addDays(day,Number(r.data[m.endDayOffset]||0)),r.data[m.endTime],p.data.timeZone);if(end<start)return true;}return false;}catch{return true;}});add('timing',!rows.length||!required.length?'unknown':invalid.length?'warning':'pass','Программа дня заполнена',!rows.length?'Программа не заполнена':!required.length?'Обязательные пункты не отмечены':invalid.length?`Проверьте время и названия: ${invalid.length}`:m.required?'Обязательные пункты проверены':'События программы проверены',path,invalid.map(r=>({kind:r.kind,id:r.id})));}
  }
  for(const m of all.filter(r=>r.kind==='meeting'&&allowedRecord(db,u,r,'calendar',['title','startAt','endAt','assignedUserIds','participantUserIds'])))if(conflicts(db,u,m.data,m.id).length)warn('calendar',m,m.data.title,localDate(m.data.startAt,p.data.timeZone),'calendar');
  attention.sort((a,b)=>a.priority-b.priority||a.dueDate.localeCompare(b.dueDate)||a.id.localeCompare(b.id));
  return {projectId,checkedAt,today,checks,attention,progress:{done:done.length,total:activeTasks.length,ratio:activeTasks.length?done.length/activeTasks.length:null},financials:finance,guestCount:guestAllowed?guests.length:null,confirmedCount:guestAllowed&&map?confirmed.length:null,daysToWedding:p.data.date?Math.round((Date.parse(p.data.date)-Date.parse(today))/86400000):null};
 }
 export function dashboard(db,user,q={}){
+ return withAuthorizationRead(db,()=>readDashboard(db,user,q));
+}
+function readDashboard(db,user,q){
  const u=currentUser(db,user),at=q.at||Date.now(),day=localDate(at),projects=entities(db,u.agency_id,null,'project').filter(p=>projectVisible(db,u,p.id)&&(q.projectId?q.projectId===p.id:!['completed','archived'].includes(p.data.status)));if(q.projectId)projectAccess(db,u,q.projectId);
  const reports=projects.map(p=>readiness(db,u,p.id,at)),attention=reports.flatMap(r=>r.attention).filter(a=>(!q.assignee||a.assigneeUserId===q.assignee)&&(!q.type||a.ruleKey===q.type)).sort((a,b)=>a.priority-b.priority||a.dueDate.localeCompare(b.dueDate)||a.id.localeCompare(b.id));
  const organizerFocus=!q.projectId&&can(db,u,'projects',null)?projects.flatMap(p=>entities(db,u.agency_id,p.id,'task').filter(r=>r.data.organizerFocus===true&&['todo','doing'].includes(r.data.status)&&allowedRecord(db,u,r,'tasks',['title','status','dueDate','assigneeUserId','organizerFocus'])).map(r=>({id:r.id,projectId:p.id,projectName:p.data.name,title:r.data.title,status:r.data.status,dueDate:r.data.dueDate||'',assigneeUserId:r.data.assigneeUserId||null,actionUrl:link(p.id,'tasks',r.id)}))).sort((a,b)=>(a.dueDate||'9999-12-31').localeCompare(b.dueDate||'9999-12-31')||a.title.localeCompare(b.title,'ru')||a.id.localeCompare(b.id)):[];

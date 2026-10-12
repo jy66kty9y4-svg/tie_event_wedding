@@ -1,0 +1,138 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync,mkdirSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {createHttpServer} from '../server/http.mjs';
+import {bootstrap,execute} from '../server/service.mjs';
+import {grant,createSession,token} from '../server/auth.mjs';
+import {uid,entity,entities} from '../server/db.mjs';
+import {registerTestUser} from '../tests/fixtures/account.mjs';
+const {chromium,webkit}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH||'/Users/cabinpxrn/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs'));
+const engine=process.env.TEST_BROWSER==='webkit'?'webkit':'chromium';
+const root=mkdtempSync(join(tmpdir(),'tie-mobile-followup-')),server=createHttpServer({dbPath:join(root,'test.sqlite'),distDir:resolve('dist')});
+await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+const origin=`http://127.0.0.1:${server.address().port}`,db=server.db;
+const admin=bootstrap(db,{slug:'tie',agencyName:'Тест',name:'Админ',email:'admin@example.test',password:'followup-password'}).user;
+const staff=registerTestUser(db,{slug:'tie',name:'Организатор',email:'staff@example.test',password:'followup-password'}).user;
+grant(db,staff,db.prepare("SELECT id FROM roles WHERE key='organizer'").get().id);
+const run=(op,body={})=>execute(db,admin,{id:uid(),op,...body});
+const project=run('project.create',{data:{name:'Тест мобильной сметы',date:''}}),other=run('project.create',{data:{name:'Другая свадьба',date:''}});
+const couple=registerTestUser(db,{slug:'tie',name:'Пара',email:'couple@example.test',password:'followup-password'}).user;
+for(const p of [project,other])grant(db,couple,db.prepare("SELECT id FROM roles WHERE key='couple'").get().id,p.id);
+run('coupleBudget.cell',{projectId:project.id,row:9,field:'actual',value:12500000});run('coupleBudget.cell',{projectId:project.id,row:9,field:'prepaid',value:3000000});
+const day=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+for(let i=1;i<=6;i++)run('task.create',{projectId:project.id,data:{title:`Задача ${i}`,dueMode:'fixed',fixedDate:day}});
+for(const [title,time] of [['Встреча вечером','18'],['Встреча днём','14']])run('meeting.save',{projectId:project.id,data:{title,startAt:`${day}T${time}:00:00+03:00`,endAt:`${day}T${time}:30:00+03:00`}});
+const browser=await (engine==='webkit'?webkit.launch({headless:true}):chromium.launch({headless:true,executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'}));
+const previews='/private/tmp/tie-mobile-followup-previews';mkdirSync(previews,{recursive:true});
+const errors=[];
+async function contextFor(user,mobile=false){const context=await browser.newContext({timezoneId:'Europe/Moscow',...(mobile?{viewport:{width:390,height:844},isMobile:true,hasTouch:true}:{viewport:{width:1280,height:900}})});await context.addCookies([{name:'tie_session',value:createSession(db,user),url:origin,httpOnly:true},{name:'tie_csrf',value:token(),url:origin}]);const page=await context.newPage();page.on('pageerror',error=>errors.push(error.message));return {context,page};}
+async function waitForDb(check){const end=Date.now()+5000;while(!check()){if(Date.now()>end)throw new Error('Database condition timed out');await new Promise(resolve=>setTimeout(resolve,25));}}
+async function syntheticPinch(page,factor){return page.locator('.sheet-zoom-scroll').evaluate((el,factor)=>{const box=el.getBoundingClientRect(),x=box.left+el.clientWidth/2,y=Math.max(140,box.top+110),points=delta=>[1,2].map((identifier,i)=>({identifier,target:el,clientX:x+(i?-delta:delta),clientY:y}));const fire=(type,touches)=>{const event=new Event(type,{bubbles:true,cancelable:true});Object.defineProperties(event,{touches:{value:touches},changedTouches:{value:touches}});el.dispatchEvent(event);return event.defaultPrevented};const first=fire('touchstart',points(60)),move=fire('touchmove',points(60*factor)),end=fire('touchend',[]);return {first,move,end};},factor);}
+try{
+ const {context,page}=await contextFor(staff);
+ await page.goto(`${origin}/app/projects/${project.id}/venue`);await page.getByRole('heading',{name:'Площадки',exact:true}).waitFor();
+ await page.getByRole('button',{name:'+ Добавить площадку',exact:true}).click();await page.getByText('Новая площадка автоматически сохранится в базе агентства.',{exact:true}).waitFor();
+ await page.getByLabel('Название площадки',{exact:true}).fill('Автоматическая веранда');await page.getByLabel('Сайт или страница площадки',{exact:true}).fill('https://example.test/automatic');
+ await page.getByLabel('Аренда от, ₽',{exact:true}).fill('50000');await page.getByLabel('Аренда до, ₽',{exact:true}).fill('120000');await page.getByLabel('Согласованная стоимость для сметы, ₽',{exact:true}).fill('60000');
+ await page.getByRole('button',{name:'Сохранить',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
+ const venue=entities(db,admin.agency_id,project.id,'selection').find(row=>row.data.title==='Автоматическая веранда');assert.ok(venue.data.vendorId);assert.equal(entity(db,venue.data.vendorId).data.price,null);assert.equal(venue.data.price,6000000);
+ await page.goto(`${origin}/app/vendors`);await page.getByRole('heading',{name:'Подрядчики',exact:true}).waitFor();await page.getByRole('button',{name:/^Площадка/}).first().click();await page.getByRole('heading',{name:'Автоматическая веранда',exact:true}).waitFor();
+ await page.goto(`${origin}/app/projects/${project.id}/calendar`);await page.locator('.v2-calendar-event').first().waitFor();
+ const cell=page.locator('.v2-calendar-grid>section').filter({hasText:'Встреча вечером'});
+ const checkMeetings=async()=>{const texts=await cell.locator('.v2-calendar-event').allTextContents();assert.match(texts[0],/Встреча днём/);assert.match(texts[1],/Встреча вечером/);assert.match(texts[2],/Задача/);};
+ await checkMeetings();await cell.getByRole('button',{name:'Ещё 5',exact:true}).click();const all=await page.locator('.v2-calendar-day-event').allTextContents();assert.equal(all.length,8);assert.equal(all[0],'Встреча днём');assert.equal(all[1],'Встреча вечером');
+ await page.getByRole('dialog').getByRole('button',{name:'Закрыть',exact:true}).click();await page.getByRole('button',{name:'Неделя',exact:true}).click();await checkMeetings();
+ await page.screenshot({path:join(previews,`calendar-${engine}.png`)});
+ await page.goto(`${origin}/app/projects/${project.id}/estimate`);await page.locator('.sheet-zoom-content').waitFor();
+ for(let i=0;i<5;i++)await page.getByRole('button',{name:'Уменьшить смету',exact:true}).click();
+ assert.equal(await page.locator('.sheet-zoom-scroll').getAttribute('data-sheet-zoom'),'0.5');
+ const handle=page.getByRole('separator',{name:'Ширина колонки Статья',exact:true}),box=await handle.boundingBox();
+ await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();await page.mouse.move(box.x+box.width/2+30,box.y+box.height/2);await page.mouse.up();
+ await page.getByRole('separator',{name:'Ширина колонки Статья',exact:true}).first().waitFor();
+ assert.equal(Number(await handle.getAttribute('aria-valuenow')),340);
+ assert.equal(entities(db,admin.agency_id,project.id,'coupleBudget')[0]?.data.sheetLayout?.columnWidths?.name,undefined);
+ await page.reload();await page.locator('.sheet-zoom-scroll[data-sheet-zoom="0.5"]').waitFor();assert.equal(await handle.getAttribute('aria-valuenow'),'340');
+ if(engine==='chromium'){
+   const cdp=await context.newCDPSession(page);
+   await cdp.send('Emulation.setTouchEmulationEnabled',{enabled:true});
+   await cdp.send('Emulation.setDeviceMetricsOverride',{width:440,height:956,deviceScaleFactor:1,mobile:true,screenWidth:440,screenHeight:956});
+   await page.locator('[data-budget-device=phone]').waitFor();
+   await page.waitForFunction(()=>Number(document.querySelector('[data-sheet-zoom]').dataset.sheetZoom)<.5);
+   assert.deepEqual(await page.locator('.couple-budget-sheet col').evaluateAll(els=>els.map(el=>parseFloat(el.style.width))),[46,200,165,127,120,110,123]);
+   assert.ok(await page.locator('.sheet-zoom-scroll').evaluate(el=>el.scrollWidth<=el.clientWidth+2));
+   await page.getByRole('button',{name:/^Масштаб .*Вернуть 100%$/}).click();
+   await page.getByRole('button',{name:'Уменьшить смету',exact:true}).click();await page.getByRole('button',{name:'Уменьшить смету',exact:true}).click();
+   await page.getByRole('separator',{name:'Ширина колонки Фактические',exact:true}).press('ArrowRight');
+   await page.waitForFunction(()=>document.querySelector('.couple-budget-sheet col:nth-child(4)').style.width==='135px');
+   await cdp.send('Emulation.setDeviceMetricsOverride',{width:956,height:440,deviceScaleFactor:1,mobile:true,screenWidth:956,screenHeight:440});
+   await page.locator('[data-budget-device=phone] .sheet-zoom-scroll[data-sheet-zoom="0.8"]').waitFor();
+   await cdp.send('Emulation.setTouchEmulationEnabled',{enabled:false});await cdp.send('Emulation.clearDeviceMetricsOverride');
+   await page.locator('[data-budget-device=desktop] .sheet-zoom-scroll[data-sheet-zoom="0.5"]').waitFor();
+   assert.equal(await handle.getAttribute('aria-valuenow'),'340');
+   assert.equal(await page.getByRole('separator',{name:'Ширина колонки Фактические',exact:true}).getAttribute('aria-valuenow'),'170');
+   await cdp.detach();
+ }
+ await context.close();
+ const {context:mobileContext,page:mobile}=await contextFor(couple,true);
+ await mobile.goto(`${origin}/app/projects/${project.id}/estimate`);await mobile.locator('[data-budget-device=phone]').waitFor();
+ await mobile.waitForFunction(()=>Number(document.querySelector('[data-sheet-zoom]').dataset.sheetZoom)<.5);
+ assert.deepEqual(await mobile.locator('.couple-budget-sheet col').evaluateAll(els=>els.map(el=>parseFloat(el.style.width))),[46,200,165,127,120,110,123]);
+ assert.ok(await mobile.locator('.sheet-zoom-scroll').evaluate(el=>el.scrollWidth<=el.clientWidth+2));
+ await mobile.getByRole('button',{name:/^Масштаб .*Вернуть 100%$/}).click();
+ const sheetBefore=entities(db,admin.agency_id,project.id,'coupleBudget')[0],initialWidth=await mobile.locator('.couple-budget-sheet').evaluate(el=>el.getBoundingClientRect().width);
+ await mobile.locator('.sheet-zoom-scroll').evaluate(el=>el.scrollIntoView({block:'start'}));
+ const prevented=await syntheticPinch(mobile,.6);assert.deepEqual(prevented,{first:true,move:true,end:true});
+ await mobile.waitForFunction(()=>Number(document.querySelector('.sheet-zoom-scroll').dataset.sheetZoom)<.7);
+ const width=await mobile.locator('.couple-budget-sheet').evaluate(el=>el.getBoundingClientRect().width);assert.ok(Math.abs(width/initialWidth-.6)<.01);
+ assert.equal(entities(db,admin.agency_id,project.id,'coupleBudget')[0].version,sheetBefore.version);assert.equal(await mobile.evaluate(()=>visualViewport.scale),1);
+ const key=`tie:budget-view:v2:${admin.agency_id}:${couple.id}:${project.id}:phone:scale`;assert.equal(await mobile.evaluate(key=>Number(localStorage.getItem(key)),key),.6);
+ await mobile.reload();await mobile.locator('.sheet-zoom-scroll[data-sheet-zoom="0.6"]').waitFor();
+ await mobile.goto(`${origin}/app/projects/${other.id}/estimate`);await mobile.waitForFunction(()=>Number(document.querySelector('[data-sheet-zoom]')?.dataset.sheetZoom)<.5);assert.ok(await mobile.locator('.sheet-zoom-scroll').evaluate(el=>el.scrollWidth<=el.clientWidth+2));
+ await mobile.goto(`${origin}/app/projects/${project.id}/estimate`);await mobile.locator('.sheet-zoom-scroll[data-sheet-zoom="0.6"]').waitFor();
+ await mobile.getByRole('button',{name:'Вместить',exact:true}).click();assert.ok(await mobile.locator('.sheet-zoom-scroll').evaluate(el=>el.scrollWidth<=el.clientWidth+2));
+ await mobile.screenshot({path:join(previews,`budget-${engine}-fit.png`)});
+ await mobile.getByRole('button',{name:/^Масштаб .*Вернуть 100%$/}).click();
+ if(engine==='chromium'){
+   await mobile.locator('.sheet-zoom-scroll').evaluate(el=>el.scrollIntoView({block:'start'}));
+   const area=await mobile.locator('.sheet-zoom-scroll').boundingBox(),x=area.x+150,y=Math.max(140,area.y+110),cdp=await mobileContext.newCDPSession(mobile);
+   await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{id:1,x:x-60,y},{id:2,x:x+60,y}]});
+   for(let i=1;i<=5;i++)await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{id:1,x:x-60-i*6,y},{id:2,x:x+60+i*6,y}]});
+   await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+   assert.ok(Number(await mobile.locator('.sheet-zoom-scroll').getAttribute('data-sheet-zoom'))>1.3);
+   assert.equal(await mobile.evaluate(()=>visualViewport.scale),1);
+   const beforePan=await mobile.locator('.sheet-zoom-scroll').evaluate(el=>el.scrollLeft),panScale=await mobile.locator('.sheet-zoom-scroll').getAttribute('data-sheet-zoom');
+   await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{id:3,x:x+35,y}]});
+   for(let i=1;i<=6;i++)await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{id:3,x:x+35-i*15,y}]});
+   await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+   await mobile.waitForFunction(value=>document.querySelector('.sheet-zoom-scroll').scrollLeft>value,beforePan);
+   assert.equal(await mobile.locator('.sheet-zoom-scroll').getAttribute('data-sheet-zoom'),panScale);
+   assert.equal(entities(db,admin.agency_id,project.id,'coupleBudget')[0].version,sheetBefore.version);
+   await cdp.detach();
+ }
+ await mobile.getByRole('button',{name:/^Масштаб .*Вернуть 100%$/}).click();
+ await mobile.getByRole('button',{name:'Увеличить смету',exact:true}).click();
+ const amount=mobile.getByRole('textbox',{name:'Фактические: Аренда площадки',exact:true});await amount.fill('140000');await amount.press('Enter');
+ await waitForDb(()=>entities(db,admin.agency_id,project.id,'coupleBudget')[0].data.actual[9]===14000000);
+ await mobile.reload();await mobile.locator('.sheet-zoom-scroll[data-sheet-zoom="1.1"]').waitFor();assert.match(await amount.innerText(),/140\s000/);assert.match(await mobile.getByRole('textbox',{name:'Осталось: Аренда площадки',exact:true}).innerText(),/110\s000/);
+ for(const width of [320,390,768]){await mobile.setViewportSize({width,height:844});assert.ok(await mobile.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));}
+ await mobile.setViewportSize({width:390,height:844});await mobile.getByRole('button',{name:'Вместить',exact:true}).click();await mobile.screenshot({path:join(previews,`budget-${engine}-mobile.png`)});
+ // A separate browser/device must start with its own phone view for the same account and wedding.
+ const second=await contextFor(couple,true);await second.page.goto(`${origin}/app/projects/${project.id}/estimate`);
+ await second.page.waitForFunction(()=>Number(document.querySelector('[data-sheet-zoom]')?.dataset.sheetZoom)<.5);
+ assert.equal(await second.page.evaluate(key=>localStorage.getItem(key),key),null);
+ await second.context.close();
+ const legacy=await contextFor(couple,true),legacyKey=`tie:budget-zoom:${admin.agency_id}:${couple.id}:${project.id}`;
+ await legacy.context.addInitScript(key=>localStorage.setItem(key,'.4551'),legacyKey);
+ await legacy.page.goto(`${origin}/app/projects/${project.id}/estimate`);await legacy.page.locator('.sheet-zoom-scroll[data-sheet-zoom="0.4551"]').waitFor();
+ await legacy.page.getByRole('button',{name:/^Масштаб .*Вернуть 100%$/}).click();await legacy.page.reload();
+ await legacy.page.locator('.sheet-zoom-scroll[data-sheet-zoom="1"]').waitFor();await legacy.context.close();
+ // Large formatted amounts widen only automatic numeric columns; they never alter the shared sheet layout.
+ run('coupleBudget.cell',{projectId:project.id,row:9,field:'actual',value:999999999999});
+ run('coupleBudget.format',{projectId:project.id,row:9,field:'actual',format:{style:{fontSize:24}}});
+ await mobile.reload();await mobile.waitForFunction(()=>parseFloat(document.querySelector('.couple-budget-sheet col:nth-child(4)')?.style.width||'0')>127);
+ assert.ok(await mobile.getByRole('textbox',{name:'Фактические: Аренда площадки',exact:true}).evaluate(el=>el.scrollWidth<=el.clientWidth+1));
+ assert.equal(entities(db,admin.agency_id,project.id,'coupleBudget')[0]?.data.sheetLayout?.columnWidths?.name,undefined);
+ assert.deepEqual(errors,[]);await mobileContext.close();console.log(JSON.stringify({engine,passed:true,checks:['automatic venue catalog','calendar meeting priority/month/week/day','pinch/fit/reset/persistence/scope',...(engine==='chromium'?['native Chromium pinch/single-finger pan']:[]),'device/browser/account/wedding scope/legacy upgrade',...(engine==='chromium'?['same-browser device emulation/rotation']:[]),'compact phone widths/automatic fit/large amounts','local scaled column resize','budget editing/calculations/reload','320–768 overflow'],previews}));
+}finally{await browser.close();await new Promise(resolve=>server.close(resolve));}

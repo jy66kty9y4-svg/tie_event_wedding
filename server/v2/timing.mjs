@@ -1,5 +1,6 @@
 import { assert, change, entities, version } from '../db.mjs';
-import { requireAccess } from '../auth.mjs';
+import { requireAccess,canUseTeamTiming } from '../auth.mjs';
+import {withTimingStaff,needsTimingStaff} from '../../src/timing-fields.js';
 import { validateColumns } from '../model.mjs';
 import { executeModule, projectAccess, scoped } from './common.mjs';
 
@@ -36,7 +37,7 @@ function configure(db,u,c){
  const table=timingTable(db,u,c);version(table,c.schemaVersion);const source=c.data||{},input=source.semanticMap;assert(input&&typeof input==='object'&&!Array.isArray(input),'Передайте сопоставление тайминга');
  const createMissing=source.createMissing||[];assert(Array.isArray(createMissing)&&new Set(createMissing).size===createMissing.length&&createMissing.every(key=>CREATABLE.has(key)),'Можно создать только дополнительные поля тайминга');
  let nextColumns=structuredClone(columns(table));const existing=new Set(nextColumns.map(item=>item.id)),nextMap={};
- for(const key of KEYS){if(typeof input[key]==='string'&&input[key])nextMap[key]=input[key];else if(createMissing.includes(key)){const spec=DEFAULTS[key],id=uniqueId(existing,spec.id);nextColumns.push({...spec,id});nextMap[key]=id;}}
+ for(const key of KEYS){if(typeof input[key]==='string'&&input[key])nextMap[key]=input[key];else if(createMissing.includes(key)){const spec=DEFAULTS[key],present=nextColumns.find(c=>c.id===spec.id&&c.type===spec.type),id=present?.id||uniqueId(existing,spec.id);if(!present)nextColumns.push({...spec,id});nextMap[key]=id;}}
  const candidate={...table,data:{...table.data,columns:nextColumns,semanticMap:nextMap}};validateColumns(nextColumns);validateMap(candidate,nextMap);
  const disabled=KEYS.filter(key=>mapping(table)[key]&&!nextMap[key]);const guard=validateTimingSchemaMutation(table,candidate,{confirm:!Object.keys(mapping(table)).length||c.confirm===true,disabled});assert(guard.ok,'Изменение подключённого поля требует явной перепривязки',409,guard);
  const saved=change(db,u,table,candidate.data,false,'timingConfigure');
@@ -44,5 +45,8 @@ function configure(db,u,c){
  return saved;
 }
 
-export const operations={'timing.configure':{authorize:authorizeConfigure,run:configure}};
+export const operations={
+ 'timing.configure':{authorize:authorizeConfigure,run:configure},
+ 'timing.ensure':{authorize(db,u,c){authorizeConfigure(db,u,c);assert(canUseTeamTiming(db,u,c.projectId),'Настройка сотрудников доступна организаторам',403)},run(db,u,c){const table=timingTable(db,u,c);if(!needsTimingStaff(table))return table;version(table,c.schemaVersion);const data=withTimingStaff(table.data);validateColumns(data.columns);return change(db,u,table,data,false,'timingAutomaticStaff');}}
+};
 export const execute=(db,user,command)=>executeModule(db,user,command,operations);

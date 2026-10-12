@@ -1,0 +1,1 @@
+Copyright (c) 2015 by Irina Chukina, Jovanny Lemonad. All rights reserved.

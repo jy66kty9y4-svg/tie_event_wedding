@@ -10,6 +10,8 @@ async function fixture(t) {
   const dist = join(root, 'dist'); mkdirSync(dist);
   writeFileSync(join(dist, 'index.html'), '<!doctype html><title>tie runtime</title><main>shell</main>');
   writeFileSync(join(dist, 'asset.js'), 'export default true');
+  mkdirSync(join(dist,'assets'));
+  writeFileSync(join(dist,'assets','app-AbC_1234.js'),'export default true');
   const server = createHttpServer({ dbPath: ':memory:', distDir: dist });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
@@ -62,8 +64,64 @@ test('HTTP bootstrap, sessions, CSRF, SPA and private cache controls', async t =
   assert.equal(shell.status, 200);
   assert.equal(await shell.text(), '<!doctype html><title>tie runtime</title><main>shell</main>');
   assert.equal(shell.headers.get('cache-control'), 'no-cache');
+  const module=await app.request('/assets/app-AbC_1234.js');
+  assert.equal(module.status,200);
+  assert.equal(module.headers.get('cache-control'),'public, max-age=31536000, immutable');
+  const publicFile=await app.request('/asset.js');
+  assert.equal(publicFile.headers.get('cache-control'),'public, max-age=3600');
   const traversal = await app.request('/..%2Fpackage.json');
   assert.equal(traversal.status, 404);
+});
+
+test('login remembers the session only when requested, with persistence as the default', async t => {
+  const app = await fixture(t);
+  await app.json('/api/public');
+  const credentials = { slug: 'tie', email: 'session@example.test', password: 'long-test-password' };
+  await app.post('/api/setup', { ...credentials, agencyName: 'Tie', name: 'Session user' });
+  for (const rememberSession of [false, true, undefined]) {
+    await app.post('/api/logout', {});
+    const result = await app.post('/api/login', { ...credentials, ...(rememberSession === undefined ? {} : { rememberSession }) });
+    assert.equal(result.response.status, 200);
+    const sessionCookie = result.response.headers.getSetCookie().find(value => value.startsWith('tie_session='));
+    assert.match(sessionCookie, /HttpOnly/);
+    assert.match(sessionCookie, /SameSite=Strict/);
+    if (rememberSession === false) assert.doesNotMatch(sessionCookie, /Max-Age|Expires/);
+    else assert.match(sessionCookie, /Max-Age=604800/);
+    assert.equal((await app.json('/api/state')).body.user.email, credentials.email);
+  }
+  const loggedOut = await app.post('/api/logout', {});
+  assert.match(loggedOut.response.headers.getSetCookie().join(';'), /tie_session=.*Max-Age=0/);
+  assert.equal((await app.json('/api/state')).response.status, 401);
+});
+
+test('phone registration and single-request login work through the HTTP API with CSRF and session cookies', async t => {
+  const app = await fixture(t);
+  await app.json('/api/public');
+  await app.post('/api/setup', { slug: 'tie', agencyName: 'Tie', name: 'Owner', email: 'phone-owner@example.test', password: 'long-test-password' });
+  await app.post('/api/logout', {});
+  const account = { name: 'Phone user', email: 'phone-user@example.test', phone: '8 (999) 123-45-67', password: 'phone-http-password' };
+  assert.equal((await app.post('/api/register', account, false)).response.status, 403);
+  for (const field of ['email', 'phone']) {
+    const incomplete = { ...account };
+    delete incomplete[field];
+    assert.equal((await app.post('/api/register', incomplete)).response.status, 400);
+  }
+  assert.equal((await app.post('/api/register', { ...account, phone: '+799912345678' })).response.status, 400);
+  const registered = await app.post('/api/register', account);
+  assert.equal(registered.response.status, 201);
+  assert.equal(registered.body.user.phone, '+79991234567');
+  assert.equal(registered.body.user.email, account.email);
+  assert.equal('password' in registered.body.user, false);
+  assert.match(registered.response.headers.getSetCookie().join(';'), /HttpOnly/);
+  assert.equal((await app.json('/api/state')).body.user.id, registered.body.user.id);
+  await app.post('/api/logout', {});
+  assert.equal((await app.post('/api/register', { ...account, phone: '9991234567' })).response.status, 409);
+  assert.equal((await app.post('/api/login', { identifier: '+7 999 123 45 67', password: 'wrong-password' })).response.status, 401);
+  const loggedIn = await app.post('/api/login', { identifier: '9991234567', password: account.password, rememberSession: false });
+  assert.equal(loggedIn.response.status, 200);
+  assert.equal(loggedIn.body.user.id, registered.body.user.id);
+  assert.doesNotMatch(loggedIn.response.headers.getSetCookie().find(value => value.startsWith('tie_session=')), /Max-Age|Expires/);
+  assert.equal((await app.json('/api/state')).body.user.phone, '+79991234567');
 });
 
 test('commands, bounded uploads, authorized downloads and logout', async t => {
@@ -111,4 +169,19 @@ test('remote binding requires explicit deployment opt-in',async t=>{
  t.after(()=>new Promise(resolve=>server.close(resolve)));
  const response=await fetch(`http://127.0.0.1:${server.address().port}/api/health`);
  assert.equal(response.status,200);assert.deepEqual(await response.json(),{ok:true});
+});
+
+test('XLSX downloads require a session and preserve Unicode attachment names with private cache controls',async t=>{
+ const app=await fixture(t);
+ assert.equal((await app.request('/api/export.xlsx?kind=agencyFinance')).status,401);
+ await app.json('/api/public');await app.post('/api/setup',{slug:'tie',agencyName:'Тест экспорта',name:'Owner',email:'export-owner@example.test',password:'long-test-password'});
+ const created=await app.post('/api/command',{id:crypto.randomUUID(),op:'project.create',data:{name:'Анна и Иван',date:'2027-06-12'}});assert.equal(created.response.status,200);
+ const project=created.body.id,state=await app.json(`/api/state?project=${project}`),table=state.body.entities.find(row=>row.kind==='table');
+ for(const kind of ['budget','table','financeSheet']){
+  const response=await app.request(`/api/export.xlsx?project=${project}&kind=${kind}&table=${table.id}`);assert.equal(response.status,200);assert.match(response.headers.get('content-type'),/spreadsheetml/);assert.match(response.headers.get('content-disposition'),/filename\*=UTF-8''/);assert.match(response.headers.get('cache-control'),/no-store/);const bytes=new Uint8Array(await response.arrayBuffer());assert.equal(new DataView(bytes.buffer).getUint32(0,true),0x04034b50);
+ }
+ assert.equal((await app.request('/api/export.xlsx?kind=agencyFinance')).status,200);
+ assert.equal((await app.request(`/api/export.xlsx?project=${project}&kind=table&table=missing`)).status,404);
+ await app.post('/api/logout',{});await app.post('/api/register',{name:'Pending',email:'export-pending@example.test',phone:'+79991234567',password:'pending-test-password'});
+ assert.equal((await app.request(`/api/export.xlsx?project=${project}&kind=budget`)).status,403);
 });

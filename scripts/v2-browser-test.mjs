@@ -1,3 +1,4 @@
+import {registerTestUser as register} from '../tests/fixtures/account.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
@@ -7,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createHttpServer } from '../server/http.mjs';
 import { entity, entities, insert } from '../server/db.mjs';
-import { bootstrap, execute, register } from '../server/service.mjs';
+import { bootstrap, execute } from '../server/service.mjs';
 
 const chromePath=process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const playwrightPath=process.env.PLAYWRIGHT_MODULE_PATH||'/Users/cabinpxrn/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs';
@@ -44,6 +45,7 @@ try {
   guests=command(admin,'guestMapping.save',{projectId:project.id,guestTableId:guests.id,schemaVersion:guests.version,data:{semanticMap:rsvpMap()},confirm:true});
   let site=command(admin,'microsite.saveDraft',{projectId:project.id,data:{rsvpDeadline:'2099-08-10',draft:{coupleNames:'QA пара',title:'Приглашение QA',intro:'Только для приглашённой семьи',dateLabel:'14 августа 2027',mealEnabled:true,transportEnabled:true}}});
   site=command(admin,'microsite.publish',{projectId:project.id,version:site.version});
+  command(admin,'guestInvitations.settings',{projectId:project.id,version:entity(db,project.id).version,enabled:true});
   const invitation=command(admin,'guestInvite.create',{projectId:project.id,guestTableId:guests.id,schemaVersion:guests.version,guestRowIds:[primary.id],expiresAt:new Date(Date.now()+86400000).toISOString()});
 
   const plan=command(admin,'seatingPlan.save',{projectId:project.id,data:{name:'QA зал',widthM:12,heightM:8,guestTableId:guests.id}});
@@ -59,8 +61,8 @@ try {
     assert.equal(current(third.id).data.seat_table,null);
   });
 
-  const one=register(db,{slug:'tie',name:'QA согласующий 1',email:'qa-one@example.test',password:'qa-one-password'}).user;
-  const two=register(db,{slug:'tie',name:'QA согласующий 2',email:'qa-two@example.test',password:'qa-two-password'}).user;
+  const one=register(db,{slug:'tie',name:'QA согласующий 1',email:'qa-one@example.test',phone:'+79990000001',password:'qa-one-password'}).user;
+  const two=register(db,{slug:'tie',name:'QA согласующий 2',email:'qa-two@example.test',phone:'+79990000002',password:'qa-two-password'}).user;
   const coupleRole=db.prepare("SELECT id FROM roles WHERE agency_id=? AND key='couple'").get(admin.agency_id);
   for(const person of [one,two]){const version=db.prepare('SELECT version FROM users WHERE id=?').get(person.id).version;command(admin,'grants.save',{userId:person.id,version,disabled:false,grants:[{roleId:coupleRole.id,projectId:project.id,restrictions:{}}]})}
   await check('two approvers vote concurrently once and create no payment',async()=>{

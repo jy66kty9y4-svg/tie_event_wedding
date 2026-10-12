@@ -39,3 +39,10 @@ Date reschedule preview/commit workflow includes active relative task versions, 
 Approval apply touches existing selection+obligation synchronously under transaction, checks original versions and amounts against existing financials, no movement. Authorize finance+vendors, never permission combination across scopes.
 
 Root owns calendar/meeting/notifications/readiness, shared permissions+migrations, API dispatcher and central UI. Source event hooks integrate module changes with durable notification outbox at command transaction boundary. Modules can expose event facts in result but never fabricate notifications or paid/booking/contract confirmations.
+
+Registration integration (2026-10-10): `queueAccountRegistration` authorizes active same-agency `applications`/`access` recipients for protected `accountOnboarding` sources. Signup commits the jobs with the account, then calls `processOutbox(...,{sourceId})` outside the transaction; this scope neither schedules unrelated reminders nor delivers other sources. Notification reads recheck rights/source account status. The explicit pending-account backfill is idempotent and does not alter onboarding.
+
+2026-10-11 guest feature: guestInvitations.settings is a versioned admin-only project setting; default false/missing gates private and public invitation operations, invalidates guest sessions on disable and is protected from generic project edits/history restore. See tasks/guests-1011.md and docs/v2/GUEST-API.md.
+
+
+Verified 2026-10-11: Workflow task dueMode extends to none/range; range startDate/endDate are inclusive, dueDate=endDate. Calendar range events expose dateRange:true with inclusive end, gated by field permissions. External Google/CalDAV export uses end+1 and imports multi-day spans. See docs/v2/WORKFLOW-API.md and tests/task-schedule.test.mjs. See [[../tasks/task-schedule-1011|Optional task deadlines and periods]].

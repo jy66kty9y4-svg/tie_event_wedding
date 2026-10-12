@@ -1,3 +1,4 @@
+import {markLegacyAccount} from '../tests/fixtures/account.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -60,14 +61,15 @@ async function openPage(context, name) {
   watch(page, name);
   await page.goto(origin);
   await page.waitForLoadState('networkidle');
-  await page.getByText(/Ваша история|Сегодня|Все проекты|Входящие обращения/).first().waitFor();
+  await page.getByText(/Войти в tie|Сегодня|Все проекты|Входящие обращения/).first().waitFor();
   return page;
 }
 
 async function loginUi(page, email, password) {
   await page.goto(`${origin}/app?login=1`);
-  const dialog = page.getByRole('dialog', { name: 'Войти в tie' });
+  const dialog = page.getByRole('region', { name: 'Войти в tie' });
   await dialog.waitFor();
+  await dialog.getByRole('button', { name: 'Почта', exact: true }).click();
   await dialog.getByLabel('Почта', { exact: true }).fill(email);
   await dialog.getByLabel('Пароль', { exact: true }).fill(password);
   await dialog.getByRole('button', { name: 'Войти', exact: true }).click();
@@ -102,15 +104,81 @@ try {
   });
   const coupleApi = new ApiClient(origin);
   await coupleApi.post('/api/register', {
-    slug: 'tie', name: 'UI Couple', email: 'couple-ui@example.test',
+    slug: 'tie', name: 'UI Couple', email: 'couple-ui@example.test', phone: '+79990000001',
     password: 'couple-ui-password', invitation: invitation.token,
   });
 
+  markLegacyAccount(server.db,server.db.prepare('SELECT id FROM users WHERE email=?').get('couple-ui@example.test').id);
   browser = await chromium.launch({ executablePath: chromePath, headless: true });
   const coupleContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const couplePage = await openPage(coupleContext, 'couple');
   await loginUi(couplePage, 'couple-ui@example.test', 'couple-ui-password');
   await couplePage.getByRole('heading', { name: 'Couple UI Project', exact: true }).waitFor();
+
+  for (const [section, label] of [['personal', 'Личные'], ['pending_signature', 'На подпись'], ['signed', 'Подписано']]) {
+    const name = `Документ-${section}-${'длинное-название-'.repeat(5)}UI.txt`;
+    await couplePage.goto(`${origin}/app/projects/${project.id}/files`);
+    await couplePage.getByRole('heading', { name: 'Документы', exact: true }).waitFor();
+    await couplePage.getByRole('navigation', { name: 'Разделы документов' }).getByRole('button', { name: new RegExp(`^${label}`) }).click();
+    await couplePage.locator('input[type="file"]').setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from('Document UI') });
+    const row = couplePage.locator('.document-row').filter({ hasText: name });
+    await row.waitFor();
+    const uploaded = (await coupleApi.get(`/api/state?project=${project.id}`)).entities.find(item => item.kind === 'file' && item.data.name === name);
+    assert.equal(uploaded.data.documentStatus, section);
+    await couplePage.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await couplePage.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await row.getByRole('button', { name: `Удалить файл «${name}»`, exact: true }).click();
+    let removal = couplePage.getByRole('dialog', { name: 'Удалить файл?', exact: true });
+    await removal.getByRole('button', { name: 'Отмена', exact: true }).click();
+    await removal.waitFor({ state: 'detached' });
+    assert.equal(await row.count(), 1);
+    await row.getByRole('button', { name: `Удалить файл «${name}»`, exact: true }).click();
+    removal = couplePage.getByRole('dialog', { name: 'Удалить файл?', exact: true });
+    await removal.getByRole('button', { name: 'Удалить файл', exact: true }).click();
+    await removal.waitFor({ state: 'detached' });
+    await row.waitFor({ state: 'detached' });
+    assert.equal(await couplePage.getByRole('navigation', { name: 'Разделы документов' }).getByRole('button', { name: new RegExp(`^${label}`) }).innerText(), `${label}0`);
+    const afterRemoval = await coupleApi.get(`/api/state?project=${project.id}`);
+    assert.equal(afterRemoval.entities.some(item => item.id === uploaded.id), false);
+    await assert.rejects(() => coupleApi.request(`/api/files/${uploaded.id}`), /404 Файл удалён/);
+    await couplePage.reload();
+    await couplePage.getByRole('heading', { name: 'Документы', exact: true }).waitFor();
+    assert.equal(await row.count(), 0);
+  }
+  const protectedFile = await adminApi.post(`/api/files?project=${project.id}`, {
+    name: 'Read-only document.txt', mime: 'text/plain', content: Buffer.from('Keep this document').toString('base64'),
+  });
+  const readerRole = await adminApi.command('role.save', { name: 'Document reader UI', permissions: ['read', 'files'] });
+  const readerInvitation = await adminApi.command('invite.create', { projectId: project.id, roleId: readerRole.id, email: 'reader-ui@example.test' });
+  const readerApi = new ApiClient(origin);
+  await readerApi.post('/api/register', { slug: 'tie', name: 'Document Reader UI', email: 'reader-ui@example.test', phone: '+79990000002', password: 'reader-ui-password', invitation: readerInvitation.token });
+  const readerContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const readerPage = await openPage(readerContext, 'reader');
+  await loginUi(readerPage, 'reader-ui@example.test', 'reader-ui-password');
+  await readerPage.goto(`${origin}/app/projects/${project.id}/files`);
+  const readerRow = readerPage.locator('.document-row').filter({ hasText: protectedFile.data.name });
+  await readerRow.waitFor();
+  assert.equal(await readerRow.getByRole('button', { name: /Удалить файл/ }).count(), 0);
+  await assert.rejects(() => readerApi.command('entity.delete', { projectId: project.id, entityId: protectedFile.id, version: protectedFile.version, confirm: true }), /403 Недостаточно прав/);
+  await readerContext.close();
+
+  const adminState = await adminApi.get('/api/state');
+  const approval = await adminApi.command('approval.saveDraft', { projectId: project.id, data: {
+    title: 'Document approval UI', category: 'other', approverUserIds: [adminState.user.id], policy: 'any',
+    options: [{ id: 'document', title: 'Document', price: 0, fileIds: [protectedFile.id] }],
+  } });
+  await adminApi.command('approval.publish', { projectId: project.id, entityId: approval.id, version: approval.version });
+  await couplePage.goto(`${origin}/app/projects/${project.id}/files`);
+  await couplePage.locator('.document-row').filter({ hasText: protectedFile.data.name }).getByRole('button', { name: /Удалить файл/ }).click();
+  const protectedRemoval = couplePage.getByRole('dialog', { name: 'Удалить файл?', exact: true });
+  await protectedRemoval.getByRole('button', { name: 'Удалить файл', exact: true }).click();
+  await protectedRemoval.getByRole('alert').filter({ hasText: 'Файл включён в историю согласования и должен сохраняться' }).waitFor();
+  assert((await coupleApi.get(`/api/state?project=${project.id}`)).entities.some(item => item.id === protectedFile.id));
+  await protectedRemoval.getByRole('button', { name: 'Отмена', exact: true }).click();
+  const protectedConflict = browserErrors.findIndex(message => message.startsWith('couple console:') && /status of 409 \(Conflict\)/.test(message));
+  assert(protectedConflict >= 0, 'Expected protected-file conflict response');
+  browserErrors.splice(protectedConflict, 1);
+  await couplePage.setViewportSize({ width: 1280, height: 900 });
 
   await couplePage.goto(`${origin}/app/projects/${project.id}/guests`);
   await couplePage.getByRole('heading', { name: 'Гости', exact: true }).waitFor();
@@ -216,6 +284,27 @@ try {
   const venueEstimate = couplePage.getByRole('textbox', { name: 'Предполагаемые: Аренда площадки' });
   await venueEstimate.fill('1000.50');
   await venueEstimate.press('Tab');
+  await venueEstimate.filter({hasText:'1 000,5'}).waitFor();
+  const venueName=couplePage.getByRole('textbox',{name:'Название статьи Аренда площадки',exact:true});
+  assert.equal(await venueName.evaluate(el=>getComputedStyle(el).fontSize),'16px');
+  await venueName.click({button:'right'});
+  const formatMenu=couplePage.getByRole('dialog',{name:'Форматирование текста'});
+  await formatMenu.getByRole('button',{name:'Жирный',exact:true}).click();
+  await formatMenu.getByRole('button',{name:'Выделение: Жёлтый',exact:true}).click();
+  await formatMenu.getByRole('button',{name:'Готово — сохранить форматирование'}).click();
+  await couplePage.reload();
+  await venueName.waitFor();
+  assert.equal(await venueName.evaluate(el=>getComputedStyle(el).fontWeight),'700');
+  assert.equal(await venueName.evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(255, 240, 166)');
+  assert.equal(await venueEstimate.textContent(),'1 000,5');
+  for(const [label,value] of [['Фактические: Организация свадьбы','120000'],['Предоплата: Организация свадьбы','30000'],['Фактические: Координация свадьбы','30000'],['Предоплата: Координация свадьбы','10000'],['Фактические: Свадебный сайт','5000']]){
+    const cell=couplePage.getByRole('textbox',{name:label,exact:true});await cell.fill(value);await cell.press('Tab');
+    await couplePage.waitForLoadState('networkidle');
+  }
+  const agencyCard=(await adminApi.get('/api/state')).agencyRevenue.projects.find(card=>card.projectId===project.id);
+  assert.equal(agencyCard.feeExpected,15000000);assert.equal(agencyCard.feePrepaid,4000000);assert.equal(agencyCard.feeRemaining,11000000);
+  assert.equal(agencyCard.feeSource,'coupleBudget');
+  assert.match(await couplePage.getByRole('row').filter({hasText:'Общий бюджет для организатора'}).textContent(),/155 000/);
   const budgetSearch=couplePage.getByRole('searchbox',{name:'Поиск по смете'});
   await budgetSearch.fill('Диджей');
   await couplePage.getByRole('textbox',{name:'Название статьи Диджей'}).waitFor();
@@ -311,9 +400,10 @@ try {
 
   const applicantContext = await browser.newContext({ viewport: { width: 1100, height: 850 } });
   const applicantPage = await openPage(applicantContext, 'applicant');
-  await applicantPage.getByRole('button', { name: 'Оставить заявку', exact: true }).first().click();
-  dialog = applicantPage.getByRole('dialog', { name: 'Создать аккаунт' });
+  await applicantPage.getByRole('button', { name: 'Создать аккаунт', exact: true }).first().click();
+  dialog = applicantPage.getByRole('region', { name: 'Создать аккаунт' });
   await dialog.getByLabel('Ваше имя', { exact: true }).fill('Applicant UI');
+  await dialog.getByLabel('Номер телефона').fill('89990000003');
   await dialog.getByLabel('Почта', { exact: true }).fill('applicant-ui@example.test');
   await dialog.getByLabel('Пароль', { exact: true }).fill('applicant-ui-password');
   await dialog.getByRole('button', { name: 'Создать аккаунт', exact: true }).click();
@@ -382,7 +472,7 @@ try {
   assert.equal(finalCoupleState.entities.find(item => item.id === persistedRow.id).data[moneyColumn.id], 32109);
   const expectedConsoleError = /status of 401 \(Unauthorized\)/;
   assert.deepEqual(browserErrors.filter(message => !expectedConsoleError.test(message)), []);
-  console.log('Production UI: couple structure/table/money/payment persistence, clarification approval, cold login, and 390px editing: OK');
+  console.log('Production UI: document deletion/cancellation in all sections, couple structure/table/money/payment persistence, clarification approval, cold login, and 390px editing: OK');
 } catch (error) {
   console.error('Captured browser errors:', browserErrors.length ? browserErrors : '(none)');
   throw error;

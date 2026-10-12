@@ -1,0 +1,127 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {openDatabase,entities,entity,insert,change,uid} from '../server/db.mjs';
+import {bootstrap,execute,snapshot} from '../server/service.mjs';
+import {grant} from '../server/auth.mjs';
+import {registerTestUser} from './fixtures/account.mjs';
+import {coupleBudgetColumns,coupleBudgetTotals} from '../src/couple-budget.js';
+import {financeSheetColumns,obligationSheetColumns} from '../src/finance-sheet.js';
+
+function fixture(){
+  const db=openDatabase(':memory:'),admin=bootstrap(db,{slug:'tie',agencyName:'Агентство',name:'Администратор',email:'template@example.test',password:'strong-password'}).user;
+  const run=(op,body={},user=admin)=>execute(db,user,{id:uid(),op,...body});
+  const project=run('project.create',{data:{name:'Исходная пара',date:'2027-08-20',limit:999001}});
+  return {db,admin,run,project};
+}
+const fails=(fn,status)=>assert.throws(fn,error=>error.status===status);
+
+test('a wedding snapshot copies reusable configuration and starts independent empty weddings',()=>{
+  const {db,admin,run,project}=fixture(),projectId=project.id;
+  const section=run('entity.create',{projectId,kind:'section',data:{name:'Дополнительные списки',order:9}});
+  const columns=[{id:'item',name:'Наименование',type:'text'},{id:'cost',name:'Цена',type:'money'},{id:'double',name:'Формула',type:'formula',formula:'{cost} * 2',resultType:'money'},{id:'choice',name:'Варианты',type:'select',options:['Один','Два']}];
+  let table=run('entity.create',{projectId,kind:'table',data:{key:'checklist',name:'Список',sectionId:section.id,columns,offline:true}});
+  run('entity.create',{projectId,kind:'row',parentId:table.id,schemaVersion:table.version,data:{item:'PRIVATE-ROW',cost:999001,choice:'Два'}});
+  table=run('sheet.layout',{projectId,entityId:table.id,version:table.version,axis:'columnWidths',key:'cost',value:123});
+  run('coupleBudget.cell',{projectId,row:9,field:'name',value:'Особая аренда'});
+  run('coupleBudget.cell',{projectId,row:9,field:'actual',value:999001,format:{style:{bold:true,color:'#b93646'}}});
+  run('coupleBudget.cell',{projectId,row:9,field:'note',value:'PRIVATE-NOTE'});
+  const group=run('coupleBudget.section.add',{projectId,name:'Наш раздел'});
+  const groupId=group.createdId||group.data?.extraSections?.at(-1)?.row;
+  assert(groupId);
+  run('coupleBudget.item.add',{projectId,sectionId:groupId,name:'Дополнительная статья',note:'PRIVATE-ARTICLE-NOTE',organizer:true});
+  let budget=entities(db,admin.agency_id,projectId,'coupleBudget')[0];
+  const budgetColumns=[...coupleBudgetColumns(budget.data,true),{id:'tag',name:'Статус',type:'select',options:['План','Готово']}];
+  run('coupleBudget.structure',{projectId,action:'columns',columns:budgetColumns,hiddenColumns:['prepaid']});
+  run('sheet.layout',{projectId,axis:'columnWidths',key:'actual',value:130});
+  run('sheet.layout',{projectId,axis:'rowHeights',key:'9',value:60});
+  run('coupleBudget.structure',{projectId,action:'delete',row:10});
+  const tasks=entities(db,admin.agency_id,projectId,'task');
+  const first=run('task.edit',{projectId,entityId:tasks[0].id,version:tasks[0].version,data:{title:'Подготовить документы',description:'PRIVATE-TASK-NOTE',dueMode:'relative',offsetDays:-10,priority:'high'}});
+  run('task.setStatus',{projectId,entityId:first.id,version:first.version,status:'done'});
+  const custom=run('task.create',{projectId,data:{title:'Проверить список',dueMode:'none',dependencyIds:[first.id]}});
+  const guest=entities(db,admin.agency_id,projectId,'table').find(t=>t.data.key==='guests');
+  const plan=run('seatingPlan.save',{projectId,data:{name:'План',guestTableId:guest.id,widthM:12,heightM:10,zones:[{id:'original-zone',label:'Сцена',xM:1,yM:1,widthM:2,heightM:1,rotationDeg:90}]}});
+  run('seatingTable.create',{projectId,planId:plan.id,planVersion:plan.version,data:{label:'Стол 1',shape:'rect',xM:4,yM:4,capacity:6,rotationDeg:90}});
+  run('project.readinessSettings',{projectId,version:project.version,data:{readinessPolicy:{seating:{required:false,reason:'PRIVATE-REASON'},contract:{required:true}}}});
+  const p=entity(db,projectId);change(db,admin,p,{...p.data,personalInvitationsEnabled:true,location:'PRIVATE-LOCATION',notes:'PRIVATE-PROJECT-NOTE'});
+  run('microsite.saveDraft',{projectId,data:{template:'light',coupleNames:'PRIVATE-COUPLE',intro:'PRIVATE-INTRO',mealEnabled:true,transportEnabled:true}});
+  run('movement.save',{projectId,data:{type:'deposit',amount:999001,date:'2027-08-01',description:'PRIVATE-DEPOSIT',source:'custody',to:admin.id}});
+  const before=entities(db,admin.agency_id,projectId,undefined,true).map(row=>[row.id,row.version,JSON.stringify(row.data)]);
+  const command={id:uid(),op:'project.template.create',projectId,projectVersion:entity(db,projectId).version,name:'Готовая структура'};
+  const saved=execute(db,admin,command);assert.equal(execute(db,admin,command).id,saved.id);
+  assert.equal(entities(db,admin.agency_id,null,'template').filter(t=>t.data.name==='Готовая структура').length,1);
+  const json=JSON.stringify(saved.data);
+  for(const secret of ['PRIVATE-','999001',projectId,table.id,first.id,custom.id,plan.id,admin.id])assert(!json.includes(secret),secret);
+  assert.deepEqual(entities(db,admin.agency_id,projectId,undefined,true).map(row=>[row.id,row.version,JSON.stringify(row.data)]),before);
+  const next=run('project.create',{templateId:saved.id,data:{name:'Новая свадьба',date:'2028-06-10'}});
+  const rows=entities(db,admin.agency_id,next.id),nextTable=rows.find(r=>r.kind==='table'&&r.data.key==='checklist');
+  assert.deepEqual(nextTable.data.columns,columns);assert.equal(nextTable.data.sheetLayout.columnWidths.cost,123);
+  assert.deepEqual(rows.filter(r=>r.kind==='row'||['movement','selection','obligation','file','meeting','approval'].includes(r.kind)),[]);
+  const nextBudget=rows.find(r=>r.kind==='coupleBudget').data;
+  assert.equal(nextBudget.names[9],'Особая аренда');assert.equal(nextBudget.extraSections[0].items[0].note,'');
+  assert.equal(nextBudget.sheetLayout.columnWidths.actual,130);assert.equal(nextBudget.sheetLayout.rowHeights[9],60);
+  assert.equal(nextBudget.cellFormats.actual[9].style.bold,true);assert.equal(coupleBudgetTotals(nextBudget).overall.actual,0);
+  assert.deepEqual(nextBudget.hiddenColumns,['prepaid']);assert(nextBudget.deletedRows.includes('10'));
+  const nextFirst=rows.find(r=>r.kind==='task'&&r.data.title==='Подготовить документы'),nextCustom=rows.find(r=>r.kind==='task'&&r.data.title==='Проверить список');
+  assert.equal(nextFirst.data.dueDate,'');assert.equal(nextFirst.data.dueMode,'none');assert.equal(nextFirst.data.offsetDays,null);assert.equal(nextFirst.data.priority,'high');assert.equal(nextFirst.data.status,'todo');assert.equal(nextFirst.data.assigneeUserId,null);assert.equal(nextFirst.data.description,'');
+  assert.deepEqual(nextCustom.data.dependencyIds,[nextFirst.id]);assert.equal(nextCustom.data.dueMode,'none');assert.equal(nextCustom.data.dueDate,'');
+  const nextPlan=rows.find(r=>r.kind==='seatingPlan');assert.notEqual(nextPlan.id,plan.id);assert.notEqual(nextPlan.data.zones[0].id,'original-zone');assert.equal(nextPlan.data.guestTableId,rows.find(r=>r.kind==='table'&&r.data.key==='guests').id);
+  assert.equal(rows.find(r=>r.kind==='seatingTable').data.rotationDeg,90);
+  const site=rows.find(r=>r.kind==='microsite');assert.equal(site.data.status,'draft');assert.equal(site.data.draft.mealEnabled,true);assert.equal(site.data.draft.coupleNames,'');assert.deepEqual(site.data.draft.gallery,[]);
+  assert.equal(next.data.limit,null);assert.equal(next.data.location,'');assert.deepEqual(next.data.readinessPolicy.seating,{required:false,reason:'Отключено в шаблоне'});
+  run('entity.edit',{projectId:next.id,entityId:nextTable.id,version:nextTable.version,data:{name:'Независимая таблица'}});
+  assert.equal(entity(db,saved.id).data.tables.find(t=>t.key==='checklist').name,'Список');assert.equal(entity(db,table.id).data.name,'Список');
+  db.close();
+});
+
+test('snapshot creation enforces organizer, current project, schema access and same agency before replay',()=>{
+  const {db,admin,run,project}=fixture();
+  const organizer=registerTestUser(db,{slug:'tie',name:'Организатор',email:'organizer@example.test',password:'password-123'}).user;
+  const role=db.prepare("SELECT id FROM roles WHERE agency_id=? AND key='organizer'").get(admin.agency_id);
+  const body={projectId:project.id,projectVersion:project.version,name:'От организатора'};
+  fails(()=>run('project.template.create',body,organizer),403);grant(db,organizer,role.id,null);
+  const saved=run('project.template.create',body,organizer);assert.equal(saved.kind,'template');
+  fails(()=>run('project.template.create',{...body,projectVersion:0},organizer),409);
+  db.prepare('UPDATE grants SET restrictions=? WHERE user_id=?').run(JSON.stringify({fields:['name']}),organizer.id);
+  fails(()=>run('project.template.create',body,organizer),403);
+  const couple=registerTestUser(db,{slug:'tie',name:'Пара',email:'couple@example.test',password:'password-123'}).user;
+  const coupleRole=db.prepare("SELECT id FROM roles WHERE agency_id=? AND key='couple'").get(admin.agency_id);grant(db,couple,coupleRole.id,project.id);
+  fails(()=>run('project.template.create',body,couple),403);
+  const agencyId=uid();db.prepare('INSERT INTO agencies(id,slug,name) VALUES(?,?,?)').run(agencyId,'other','Другое');const other={id:uid(),agency_id:agencyId};db.prepare('INSERT INTO users(id,agency_id,email,name,password,protected) VALUES(?,?,?,?,?,1)').run(other.id,agencyId,'other@example.test','Владелец','unused');
+  fails(()=>run('project.template.create',body,other),404);
+  const cmd={id:uid(),op:'project.template.create',...body,name:'Повтор'};execute(db,admin,cmd);db.prepare('UPDATE users SET disabled=1 WHERE id=?').run(admin.id);fails(()=>execute(db,admin,cmd),403);
+  db.close();
+});
+
+test('manual editing preserves snapshot settings and malformed extensions roll back',()=>{
+  const {db,admin,run,project}=fixture();
+  run('coupleBudget.cell',{projectId:project.id,row:9,field:'actual',value:1000});
+  const saved=run('project.template.create',{projectId:project.id,projectVersion:project.version,name:'База'});
+  const edited=run('entity.edit',{entityId:saved.id,version:saved.version,data:{name:'Новое имя'}});
+  assert.deepEqual(edited.data.budgetTemplate,saved.data.budgetTemplate);assert.deepEqual(edited.data.projectSettings,saved.data.projectSettings);
+  const before=entity(db,saved.id);
+  fails(()=>run('entity.edit',{entityId:saved.id,version:edited.version,data:{budgetTemplate:{extraColumns:[{id:'bad',name:'Плохая формула',type:'formula',formula:'{missing} + 1'}]}}}),400);
+  assert.deepEqual(entity(db,saved.id),before);
+  run('entity.delete',{projectId:project.id,entityId:project.id,version:project.version,confirm:true});
+  fails(()=>run('project.template.create',{projectId:project.id,projectVersion:project.version,name:'Удалённая'}),403);
+  db.close();
+});
+
+test('payout definitions and guest mappings survive capture without financial records or admin privilege escalation',()=>{
+  const {db,admin,run,project}=fixture(),projectId=project.id;
+  const columns=[...financeSheetColumns(false),{id:'pay_hint',name:'Способ',type:'select',options:['Карта','Наличные']}];
+  const obligations=[...obligationSheetColumns(),{id:'qa_extra_cost',name:'Дополнение',type:'money'}];
+  run('financeSheet.structure',{projectId,columns,hiddenColumns:['method']});run('financeSheet.structure',{projectId,target:'obligation',columns:obligations,hiddenColumns:['condition']});
+  run('financeSheet.layout',{projectId,axis:'columnWidths',key:'pay_hint',value:144});
+  const p=entity(db,projectId);change(db,admin,p,{...p.data,personalInvitationsEnabled:true});
+  const saved=run('project.template.create',{projectId,projectVersion:entity(db,projectId).version,name:'С выплатами'});
+  const organizer=registerTestUser(db,{slug:'tie',name:'Организатор',email:'staff@example.test',password:'password-123'}).user;
+  grant(db,organizer,db.prepare("SELECT id FROM roles WHERE agency_id=? AND key='organizer'").get(admin.agency_id).id,null);
+  const next=run('project.create',{templateId:saved.id,data:{name:'Вторая',date:''}},organizer),rows=entities(db,admin.agency_id,next.id),config=rows.find(r=>r.kind==='financeSheet');
+  assert.deepEqual(config.data.columns,columns);assert.deepEqual(config.data.obligationColumns,obligations);assert.equal(config.data.sheetLayout.columnWidths.pay_hint,144);assert.deepEqual(config.data.hiddenColumns,['method']);assert.deepEqual(config.data.obligationHiddenColumns,['condition']);assert.equal(config.data.obligationColumns.find(c=>c.id==='paid').computed,true);
+  assert.deepEqual(rows.filter(r=>['obligation','movement','row'].includes(r.kind)),[]);
+  const oldGuest=entities(db,admin.agency_id,projectId,'table').find(t=>t.data.key==='guests'),newGuest=rows.find(t=>t.kind==='table'&&t.data.key==='guests');
+  assert.notEqual(newGuest.id,oldGuest.id);assert.deepEqual(newGuest.data.semanticMap,oldGuest.data.semanticMap);
+  assert.equal(next.data.personalInvitationsEnabled,false);assert.equal(rows.some(r=>r.kind==='microsite'),false);
+  db.close();
+});

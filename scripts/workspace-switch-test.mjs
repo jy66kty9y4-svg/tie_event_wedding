@@ -29,8 +29,8 @@ try {
  const page=await context.newPage(),errors=[];
  page.on('pageerror',error=>errors.push(error.message));
  await page.goto(origin);
- await page.getByRole('button',{name:'Войти',exact:true}).click();
- const login=page.getByRole('dialog',{name:'Войти в tie'});
+ const login=page.getByRole('region', { name: 'Войти в tie'});
+ await login.getByRole('button',{name:'Почта',exact:true}).click();
  await login.getByLabel('Почта',{exact:true}).fill('admin-workspaces@example.test');
  await login.getByLabel('Пароль',{exact:true}).fill('admin-workspaces-password');
  await login.getByRole('button',{name:'Войти',exact:true}).click();
@@ -65,10 +65,10 @@ try {
  await switcher.selectOption('couple');
  await page.waitForURL('**/app/projects');
  await page.locator('.project-card').filter({hasText:'Анна и Иван'}).locator('.project-open').click();
- await page.waitForURL(`**/app/projects/${first.id}/overview`);
+ await page.waitForURL(`**/app/projects/${first.id}/finance/estimate`);
  assert.equal(await page.getByLabel('Выбрать свадьбу').inputValue(),first.id);
  await page.getByLabel('Выбрать свадьбу').selectOption(second.id);
- await page.waitForURL(`**/app/projects/${second.id}/overview`);
+ await page.waitForURL(`**/app/projects/${second.id}/finance/estimate`);
  await page.getByRole('button',{name:'Настройки',exact:true}).click();
  await switcher.selectOption('contractor');
  await page.waitForURL('**/app/projects');

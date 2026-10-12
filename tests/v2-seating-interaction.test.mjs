@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { batchTables, dragPosition, drawnTable, nextTableNumber, tableFromPreset, tablePresetKey } from '../src/v2/guest/interaction.mjs';
+import { batchTables, dragPosition, drawnTable, nextTableNumber, tableFromPreset, tablePresetKey, quarterTurn } from '../src/v2/guest/interaction.mjs';
 
 const plan = { widthM: 10, heightM: 8 };
 const close = (actual, expected) => assert(Math.abs(actual - expected) < 1e-8, `${actual} is not close to ${expected}`);
@@ -73,4 +73,13 @@ test('deleting a selected contour vertex retains other vertices and opens unders
  assert.equal(removeContourPoint({...result,selected:0}).closed,false);
  const world=outlineOnPlan({xM:1,yM:1,widthM:2,heightM:2,rotationDeg:90,points:[{x:0,y:0},{x:1,y:0},{x:1,y:1}]});
  close(world[0].x,3);close(world[0].y,1);
+});
+
+test('quarter turns preserve shape/seats, wrap angles and keep rotated tables and zones inside the hall',()=>{
+ const data={label:'Стол',shape:'rect',widthM:1.8,heightM:.9,xM:0,yM:0,rotationDeg:0,capacity:8};
+ let next=quarterTurn(data,90,plan);assert.equal(next.rotationDeg,90);assert.equal(next.capacity,8);assert.equal(next.widthM,1.8);assert(next.yM>=.45-1e-8);
+ for(let i=0;i<3;i++)next=quarterTurn(next,90,plan);assert.equal(next.rotationDeg,0);
+ assert.equal(quarterTurn(data,-90,plan).rotationDeg,270);
+ const zone={...data,id:'zone',label:'Зона',shape:'custom',points:[{x:0,y:0},{x:1,y:0},{x:1,y:1}]};assert.deepEqual(quarterTurn(zone,90,plan).points,zone.points);
+ assert.throws(()=>quarterTurn({...zone,widthM:8,heightM:1},90,{widthM:10,heightM:4}),/не помещается/);
 });

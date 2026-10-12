@@ -1,8 +1,22 @@
 import { randomBytes, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
-import { assert, uid } from './db.mjs';
+import { assert, uid, entity } from './db.mjs';
 import { permissions, projectPermissions, studentRolePermissions } from '../src/shared.js';
 export const digest = x => createHash('sha256').update(x).digest('hex');
 export const token = () => randomBytes(32).toString('base64url');
+const authorizationReads = new WeakMap();
+// Readers are synchronous. Share permission lookups only until this read ends;
+// commands and the next request always consult the current database again.
+export function withAuthorizationRead(db, read) {
+  if (authorizationReads.has(db)) return read();
+  authorizationReads.set(db, { grants: new Map(), entities: new Map() });
+  try { return read(); } finally { authorizationReads.delete(db); }
+}
+function authorizationEntity(db, id) {
+  const scope = authorizationReads.get(db);
+  if (!scope) return entity(db, id);
+  if (!scope.entities.has(id)) scope.entities.set(id, entity(db, id));
+  return scope.entities.get(id);
+}
 export function passwordHash(password) {
   assert(typeof password === 'string' && password.length >= 10 && password.length <= 256, 'Пароль: от 10 до 256 символов');
   const salt = randomBytes(16).toString('hex'); return salt + ':' + scryptSync(password, salt, 64).toString('hex');
@@ -57,12 +71,29 @@ export function createSession(db, user, context = {}) {
   return raw;
 }
 export function publicUser(user) { const { password, ...safe } = user; return safe; }
+export function accountPending(db, user) {
+  return !!db.prepare("SELECT id FROM entities WHERE agency_id=? AND project_id IS NULL AND kind='accountOnboarding' AND deleted=0 AND json_extract(data,'$.userId')=? AND json_extract(data,'$.status')<>'complete' LIMIT 1").get(user.agency_id,user.id);
+}
 export function grants(db, user) {
+  const scope = authorizationReads.get(db), key = JSON.stringify([user.agency_id, user.id]);
+  if (scope?.grants.has(key)) return scope.grants.get(key);
+  const value = readGrants(db, user);
+  scope?.grants.set(key, value);
+  return value;
+}
+function readGrants(db, user) {
+  if (!user.protected && accountPending(db,user)) return [];
   return db.prepare('SELECT g.*,r.permissions,r.name AS role_name,r.key AS role_key FROM grants g JOIN roles r ON g.role_id=r.id WHERE g.user_id=? AND g.agency_id=? AND r.agency_id=?').all(user.id,user.agency_id,user.agency_id).map(g=>({...g,permissions:JSON.parse(g.permissions),restrictions:JSON.parse(g.restrictions)}));
+}
+export function canUseTeamTiming(db,user,project) {
+  if(!user||user.disabled)return false;
+  if(user?.protected)return true;
+  return grants(db,user).some(g=>(g.project_id===null||g.project_id===project)&&(g.role_key==='organizer'||g.role_key==='admin'||g.project_id===null&&g.permissions.includes('projects')));
 }
 export function can(db, user, action, project = null, section = undefined, row = undefined, field = undefined) {
   if (!user || user.disabled) return false;
   if (user.protected) return true;
+  if(typeof row==='string'){const record=authorizationEntity(db,row);if(record?.kind==='row'&&record.data.audience==='Команда'&&authorizationEntity(db,record.parent_id)?.data.key==='timing'&&!canUseTeamTiming(db,user,project))return false;}
   return grants(db,user).some(g => {
     const actions=Array.isArray(action)?action:[action];
     if (actions.some(required=>!g.permissions.includes(required))) return false;

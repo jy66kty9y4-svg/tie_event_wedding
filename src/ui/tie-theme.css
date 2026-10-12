@@ -1,0 +1,164 @@
+/* TIE brand tokens live on the cabinet document, including its modal portals.
+   Public publishing documents do not opt into this theme. */
+@font-face{font-family:'TIE Evolventa';src:url('/brand/tie/fonts/evolventa-regular.woff') format('woff');font-style:normal;font-weight:400;font-display:swap}
+@font-face{font-family:'TIE Evolventa';src:url('/brand/tie/fonts/evolventa-bold.woff') format('woff');font-style:normal;font-weight:700;font-display:swap}
+@font-face{font-family:'TIE Evolventa';src:url('/brand/tie/fonts/evolventa-oblique.woff') format('woff');font-style:italic;font-weight:400;font-display:swap}
+@font-face{font-family:'TIE Evolventa';src:url('/brand/tie/fonts/evolventa-bold-oblique.woff') format('woff');font-style:italic;font-weight:700;font-display:swap}
+@font-face{font-family:'TIE Ardeco';src:url('/brand/tie/fonts/ardeco.woff') format('woff');font-style:normal;font-weight:400;font-display:swap}
+
+:root.tie-workspace{
+  --tie-accent:#b01a1a;--tie-accent-strong:#9e1a17;--tie-accent-soft:#f7e9e8;
+  --tie-ink:#232322;--tie-muted:#686866;--tie-line:#e5e3e3;--tie-line-strong:#c7c5c5;
+  --tie-canvas:#f4f4f4;--tie-surface:#fff;--tie-subtle:#fafafa;--tie-soft:#eeeeed;
+  --tie-focus:#b01a1a66;--tie-shadow:#2323220f;--tie-overlay:#23232266;
+  --tie-error:#9e1a17;--tie-success:#286345;--tie-warning:#8a5b1d;
+  --tie-display:'TIE Ardeco','TIE Evolventa',sans-serif;
+  --sans:'TIE Evolventa',system-ui,-apple-system,BlinkMacSystemFont,sans-serif;
+  --serif:var(--sans);--mono:var(--sans);
+  --canvas:var(--tie-canvas);--surface:var(--tie-surface);--border:var(--tie-line);
+  --ink:var(--tie-ink);--muted:var(--tie-muted);--rose:var(--tie-accent);--rose-pale:var(--tie-accent-soft);
+  --plum:var(--tie-accent);--plum-dark:var(--tie-accent-strong);--lilac:var(--tie-accent-soft);
+  --mist:var(--tie-canvas);--paper:var(--tie-surface);--line:var(--tie-line);
+  --green:var(--tie-success);--red:var(--tie-error);
+  color:var(--ink);font-family:var(--sans);font-synthesis:none;color-scheme:light;
+}
+.tie-workspace body{background:var(--canvas)}
+.tie-workspace :is(button,input,textarea,select){font-family:var(--sans);accent-color:var(--tie-accent)}
+.tie-workspace :is(button,a,input,textarea,select,summary,[contenteditable=true]):focus-visible{outline:2px solid var(--tie-accent);outline-offset:3px}
+.tie-workspace ::selection{background:#e9bdbb;color:var(--ink)}
+.tie-workspace .tie-brand-logo{display:block;width:144px;height:auto;flex:none;object-fit:contain}
+.tie-workspace .mark{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;flex:none;vertical-align:middle}
+.tie-workspace .mark img{display:block;width:100%;height:100%;object-fit:contain}
+.tie-workspace .mark.compact{width:34px;height:34px;transform:none;margin:0}
+.tie-workspace .loading{font:400 17px var(--sans);color:var(--ink)}
+.tie-workspace .loading .mark{animation:none;width:72px;height:72px}
+
+/* Main navigation uses the graphite brand surface; data stays on light paper. */
+.tie-workspace .v2-shell{background:var(--canvas)}
+.tie-workspace .v2-shell .sidebar{background:#232322;border-right:0;color:#f4f4f4;padding-inline:16px}
+.tie-workspace .v2-shell .sidebar-top{height:116px;padding:21px 9px 18px;border-bottom:1px solid #ffffff1f;margin-bottom:13px}
+.tie-workspace .v2-shell .sidebar-top .brand{display:flex;width:100%;padding:0;letter-spacing:0}
+.tie-workspace .v2-shell .sidebar-top .brand .mark{display:none}
+.tie-workspace .v2-shell .sidebar-top .tie-brand-logo{width:148px}
+.tie-workspace .v2-agency-label{margin-top:12px;color:#b9b9b6;font-size:10px;letter-spacing:.035em}
+.tie-workspace .v2-nav-group{border-color:#ffffff1f}
+.tie-workspace .v2-nav-group>small{color:#a9a9a5;font-size:9px;letter-spacing:.14em;padding:0 11px 9px}
+.tie-workspace .v2-shell .sidebar nav button,.tie-workspace .sidebar-bottom button{color:#e0e0dc;font-size:12px;border-radius:5px;min-height:43px;gap:12px}
+.tie-workspace .v2-shell .sidebar nav button .icon{color:inherit}
+.tie-workspace .v2-shell .sidebar nav button:hover,.tie-workspace .sidebar-bottom button:hover{background:#ffffff0d;color:#fff}
+.tie-workspace .v2-shell .sidebar nav button.active{background:var(--tie-accent);color:#fff}
+.tie-workspace .sidebar-bottom{border-color:#ffffff1f}
+.tie-workspace .sidebar-bottom button{width:100%}
+.tie-workspace .v2-space-project>span,.tie-workspace .v2-space-switch>small{color:#b9b9b6}
+.tie-workspace .v2-space-project select{background:#2b2b2b;border-color:#5c5c57;color:#f4f4f4}
+.tie-workspace .v2-mobile-account-summary{border-color:#ffffff1f;color:#f4f4f4}
+.tie-workspace .v2-mobile-account-summary small{color:#b9b9b6}
+.tie-workspace .v2-menu-backdrop{background:var(--tie-overlay)}
+.tie-workspace .v2-menu-count{background:#fff;color:var(--tie-accent)}
+.tie-workspace .mobile-nav-logout{color:#e0e0dc}
+.tie-workspace .v2-topbar{background:var(--surface);border-color:var(--line)}
+.tie-workspace .v2-global-search{font-size:13px}
+.tie-workspace .v2-topbar .avatar{background:var(--tie-ink);color:#fff;font-family:var(--sans);font-weight:400}
+.tie-workspace .v2-profile-button{font-size:12px}
+.tie-workspace .v2-bell b{background:var(--tie-accent)}
+.tie-workspace .v2-search-results{border-radius:6px;border-color:var(--line);box-shadow:0 8px 24px var(--tie-shadow)}
+.tie-workspace .v2-search-results button:hover{background:var(--tie-subtle)}
+.tie-workspace .v2-bottom-nav{background:var(--surface);border-color:var(--line)}
+.tie-workspace .v2-bottom-nav button.active{color:var(--tie-accent)}
+
+/* Display type is reserved for page titles. Money, dates and table cells keep
+   the text family and all their saved inline formatting. */
+.tie-workspace .v2-shell .page-header h1,.tie-workspace .v2-project-header h1{font-family:var(--tie-display);font-weight:400;font-size:40px;line-height:1.14;letter-spacing:.015em;color:var(--ink)}
+.tie-workspace .v2-project-header h1{font-size:36px}
+.tie-workspace .page-header .muted{font-size:13px;line-height:1.65}
+.tie-workspace .v2-project-tabs{border-color:var(--tie-line-strong);gap:22px}
+.tie-workspace .v2-project-tabs button{font-size:12px;font-weight:400}
+.tie-workspace .v2-project-tabs button.active{font-weight:700;border-color:var(--tie-accent);color:var(--tie-accent)}
+.tie-workspace .v2-project-status{background:var(--tie-soft);color:var(--ink);border-radius:4px}
+.tie-workspace .v2-subtabs button.active{font-weight:700;border-color:var(--tie-accent);color:var(--tie-accent)}
+.tie-workspace .segmented button.active{background:var(--tie-ink);color:#fff}
+.tie-workspace .panel,.tie-workspace .v2-metrics article{border-radius:8px;border-color:var(--line);box-shadow:none}
+.tie-workspace .v2-metrics article{border-top:2px solid var(--tie-line-strong)}
+.tie-workspace .v2-metrics strong{font-family:var(--sans);font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.035em}
+@media(min-width:1280px){
+  .tie-workspace .v2-dashboard>.v2-metrics:has(>article:nth-child(5)){grid-template-columns:repeat(5,minmax(0,1fr))}
+  .tie-workspace .v2-dashboard>.v2-metrics>article:nth-child(5) strong{font-size:20px}
+}
+@media(max-width:1279px){
+  .tie-workspace .v2-dashboard>.v2-metrics:has(>article:nth-child(5)){grid-template-columns:repeat(2,minmax(0,1fr))}
+  .tie-workspace .v2-dashboard>.v2-metrics>article:nth-child(5){grid-column:1/-1}
+}
+.tie-workspace .v2-agency-cash-card{border-top-color:var(--tie-accent);border-radius:8px}
+.tie-workspace .v2-application-card{border-radius:8px;background:var(--surface);border-left:3px solid var(--tie-accent)}
+.tie-workspace .v2-calendar-controls{background:var(--surface);border-color:var(--line)}
+.tie-workspace .v2-calendar-weekdays{background:var(--tie-soft)}
+.tie-workspace .v2-calendar-grid>section.is-outside{background:var(--tie-subtle)}
+.tie-workspace .v2-calendar-grid>section.is-today{box-shadow:inset 0 0 0 2px var(--tie-accent)}
+.tie-workspace .v2-calendar-cell-hit:hover{background:#b01a1a08}
+
+/* Shared controls, including components rendered directly in document.body. */
+.tie-workspace .button{border-radius:5px;font-size:13px;font-weight:700;min-height:40px;transition:background .15s,border-color .15s,color .15s}
+.tie-workspace .button:hover{transform:none}
+.tie-workspace .button.quiet{background:var(--surface);border-color:var(--tie-line-strong);color:var(--ink)}
+.tie-workspace .button.quiet:hover{background:var(--tie-soft);border-color:var(--tie-ink)}
+.tie-workspace .button.danger{background:var(--tie-accent-soft);border-color:var(--tie-error);color:var(--tie-error)}
+.tie-workspace .button.danger:hover{background:var(--tie-error);color:#fff}
+.tie-workspace .icon-button{border-radius:5px}
+.tie-workspace .text-button{font-size:13px}
+.tie-workspace .modal-backdrop{background:var(--tie-overlay)}
+.tie-workspace .modal{border-radius:10px;border:1px solid var(--line);box-shadow:0 24px 70px #23232226;background:var(--surface);color:var(--ink)}
+.tie-workspace .modal-header{border-bottom:1px solid var(--line);background:var(--tie-subtle)}
+.tie-workspace .modal-header h2{font-family:var(--sans);font-weight:700;font-size:19px;letter-spacing:-.02em}
+.tie-workspace .form-field :is(input,select,textarea){border-color:var(--tie-line-strong);border-radius:5px;background:var(--surface);color:var(--ink)}
+.tie-workspace .form-field :is(input,select,textarea):focus{border-color:var(--tie-accent)}
+.tie-workspace .notice{background:var(--tie-ink);color:#fff;border-radius:6px;box-shadow:0 6px 20px #23232226;font-family:var(--sans)}
+.tie-workspace .notice.error{background:var(--tie-error)}
+.tie-workspace .notice button{color:inherit}
+.tie-workspace .status-pill{border-radius:4px}
+.tie-workspace .excel-sheet thead th{background:var(--tie-soft);color:var(--ink);border-color:var(--tie-line-strong)}
+.tie-workspace .excel-sheet :is(th,td){border-color:var(--tie-line)}
+.tie-workspace .couple-budget-sheet thead th{white-space:normal;font-size:13px;line-height:1.4;overflow-wrap:anywhere}
+.tie-workspace .couple-budget-sheet .couple-budget-total th{white-space:normal;line-height:1.4;padding-block:9px}
+.tie-workspace .sheet-index{background:var(--tie-subtle);color:var(--muted)}
+.tie-workspace .sheet-inline-actions{background:var(--tie-subtle);border-color:var(--line)}
+.tie-workspace .sheet-new-row td,.tie-workspace .sheet-draft-actions td{background:var(--tie-subtle)}
+.tie-workspace .sheet-resize:focus-visible{outline-color:var(--tie-accent)}
+.tie-workspace .settings-workspace-top{background:var(--surface);border-color:var(--line);border-left:3px solid var(--tie-accent);border-radius:8px}
+.tie-workspace .settings-section-heading h2{font-family:var(--sans);font-size:28px;font-weight:400}
+.tie-workspace .settings-site-note>span{font-family:var(--tie-display);font-size:34px}
+.tie-workspace .vendor-photo{background:var(--tie-soft);color:var(--ink)}
+.tie-workspace .v2-seat-canvas{background-color:var(--surface)}
+.tie-workspace .client-waiting-brand .tie-brand-logo,.tie-workspace .questionnaire-brand .tie-brand-logo{width:130px}
+.tie-workspace .client-waiting-rings{opacity:.07}
+.tie-workspace .client-waiting-rings img{display:block;width:100%;height:100%;object-fit:contain}
+.tie-workspace .client-waiting-message h1,.tie-workspace .questionnaire-intro h1{font-family:var(--tie-display);font-size:44px;font-weight:400;line-height:1.2;letter-spacing:.015em}
+.tie-workspace .questionnaire-header>span{min-width:0;flex:1}
+.tie-workspace .questionnaire-section-head h2{font-family:var(--sans);font-size:26px}
+
+@media(min-width:768px) and (max-width:1279px){
+  .tie-workspace .v2-shell .sidebar{padding-inline:10px}
+  .tie-workspace .v2-shell .sidebar-top{height:96px;padding:19px 0 18px}
+  .tie-workspace .v2-shell .sidebar-top .tie-brand-logo{display:none}
+  .tie-workspace .v2-shell .sidebar-top .brand{justify-content:center}
+  .tie-workspace .v2-shell .sidebar-top .brand .mark{display:flex;order:initial;margin:0;width:38px;height:38px}
+}
+@media(max-width:767px){
+  .tie-workspace .v2-shell .sidebar-top{display:none}
+  .tie-workspace .v2-shell .sidebar{padding-inline:14px}
+  .tie-workspace .v2-shell .page-header h1{font-size:34px}
+  .tie-workspace .v2-project-header h1{font-size:32px}
+  .tie-workspace .v2-project-tabs{gap:19px}
+  .tie-workspace .v2-shell .sidebar nav button{font-size:13px}
+  .tie-workspace .v2-shell :is(input,textarea,select){font-size:16px}
+  .tie-workspace .modal .form-field :is(input,textarea,select){font-size:16px}
+  .tie-workspace .client-waiting-brand .tie-brand-logo,.tie-workspace .questionnaire-brand .tie-brand-logo{width:100px}
+  .tie-workspace .client-waiting-message h1,.tie-workspace .questionnaire-intro h1{font-size:36px}
+}
+@media(prefers-reduced-motion:reduce){
+  .tie-workspace *,.tie-workspace *::before,.tie-workspace *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+}
+@media print{
+  .tie-workspace body{background:#fff}
+  .tie-workspace .v2-shell .sidebar,.tie-workspace .v2-topbar,.tie-workspace .v2-bottom-nav{display:none}
+  .tie-workspace .v2-shell .v2-main-column{margin-left:0}
+}

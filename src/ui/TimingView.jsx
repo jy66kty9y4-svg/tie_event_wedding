@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import {timingFields} from '../timing-fields.js';
 import './timing.css';
 
 const allowsAudience = (row, audience) => !audience || !row?.data?.audience || row.data.audience === 'Общее' || row.data.audience === audience;
@@ -47,12 +48,14 @@ const dayRank = (date, offset) => {
 export function TimingView({ table, rows = [], audience, members = [], canCreate, onAddRow, onEditRow, canEditRow = () => false, onExport }) {
   const data = table?.data || table || {};
   const columns = data.columns || [];
-  const entries = useMemo(() => ordered(rows, data.rowOrder)
+  const entries = useMemo(() => {
+    const fields=timingFields({data});
+    return ordered(rows, data.rowOrder)
     .filter(row => allowsAudience(row, audience))
     .map((row, index) => {
-      const start = fieldValue(row, columns, ['startTime', 'start', 'time'], /начал|время/i);
-      const end = fieldValue(row, columns, ['endTime', 'end'], /оконч|конец/i);
-      const dayOffset = fieldValue(row, columns, ['dayOffset', 'day'], /день/i);
+      const start = fieldValue(row, columns, [fields.startTime, 'startTime', 'start', 'time'], /начал|время/i);
+      const end = fieldValue(row, columns, [fields.endTime, 'endTime', 'end'], /оконч|конец/i);
+      const dayOffset = fieldValue(row, columns, [fields.dayOffset, 'dayOffset', 'day'], /день/i);
       const date = fieldValue(row, columns, ['date', 'eventDate'], /дата/i);
       return {
         row,
@@ -61,12 +64,13 @@ export function TimingView({ table, rows = [], audience, members = [], canCreate
         end,
         day: dayLabel(dayOffset),
         dayRank: dayRank(date, dayOffset),
-        title: fieldValue(row, columns, ['title', 'name', 'event'], /название|событ|этап|пункт/i),
+        title: fieldValue(row, columns, [fields.title, 'title', 'name', 'event'], /название|событ|этап|пункт/i),
         place: fieldValue(row, columns, ['place', 'location', 'venue'], /мест|локац|площад/i),
-        responsible: fieldValue(row, columns, ['responsible', 'assignedUserIds', 'assignee'], /ответствен|участник|исполнитель/i, members),
+        responsible: [...new Set([fieldValue(row, columns, ['responsible', 'assignedUserIds', 'assignee'], /ответствен|участник|исполнитель/i, members),textValue(row.data?.[fields.assignedUserIds],columns.find(c=>c.id===fields.assignedUserIds),members)].filter(Boolean))].join(' · '),
       };
     })
-    .sort((left, right) => left.dayRank.kind - right.dayRank.kind || (left.dayRank.value < right.dayRank.value ? -1 : left.dayRank.value > right.dayRank.value ? 1 : 0) || minutes(left.start) - minutes(right.start) || left.index - right.index), [rows, data.rowOrder, columns, audience, members]);
+    .sort((left, right) => left.dayRank.kind - right.dayRank.kind || (left.dayRank.value < right.dayRank.value ? -1 : left.dayRank.value > right.dayRank.value ? 1 : 0) || minutes(left.start) - minutes(right.start) || left.index - right.index);
+  }, [rows, data, columns, audience, members]);
 
   if (!table) return <section className="timing-view timing-view--empty"><h2>Программа ещё не создана</h2><p>Создайте рабочую таблицу, чтобы собрать события дня в одну линию времени.</p></section>;
 

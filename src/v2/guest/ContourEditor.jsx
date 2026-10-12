@@ -25,7 +25,7 @@ export function ContourEditor({drawing,setDrawing,plan,canvasRef,disabled}) {
  };
  return <>
   <svg className="v2-seat-draw-layer" viewBox={`0 0 ${plan.widthM} ${plan.heightM}`} aria-hidden="true">
-   {drawing.closed?<polygon points={drawing.points.map(p=>`${p.x},${p.y}`).join(' ')} fill="#ad4e6c20" stroke="#ad4e6c" strokeWidth=".025"/>:<polyline points={drawing.points.map(p=>`${p.x},${p.y}`).join(' ')} fill="none" stroke="#ad4e6c" strokeWidth=".025"/>}
+   {drawing.closed?<polygon points={drawing.points.map(p=>`${p.x},${p.y}`).join(' ')} fill="#b01a1a20" stroke="#b01a1a" strokeWidth=".025"/>:<polyline points={drawing.points.map(p=>`${p.x},${p.y}`).join(' ')} fill="none" stroke="#b01a1a" strokeWidth=".025"/>}
   </svg>
   {drawing.points.map((p,index)=><button key={index} type="button" className={`v2-seat-point ${drawing.selected===index?'is-selected':''} ${index===0?'is-first':''}`} style={{left:`${p.x/plan.widthM*100}%`,top:`${p.y/plan.heightM*100}%`}} aria-label={`Точка ${index+1}${index===0&&!drawing.closed&&drawing.points.length>=3?' — замкнуть контур':''}. Стрелки перемещают точку, Shift — шаг 25 см.`} aria-pressed={drawing.selected===index} disabled={disabled}
    onPointerDown={event=>{if(event.button!==0||event.isPrimary===false)return;event.stopPropagation();event.preventDefault();setDrawing(current=>({...current,selected:index}));drag.current={pointer:event.pointerId,index,x:event.clientX,y:event.clientY,moved:false,before:drawing.points};event.currentTarget.setPointerCapture(event.pointerId);}}

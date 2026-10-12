@@ -1,10 +1,10 @@
 .timing-view {
-  --timing-accent: var(--rose, #a84f6a);
-  --timing-ink: #30272b;
-  --timing-muted: var(--muted, #746b70);
-  --timing-line: #e9dce1;
+  --timing-accent: var(--rose, var(--tie-accent));
+  --timing-ink: var(--tie-ink);
+  --timing-muted: var(--muted, var(--tie-muted));
+  --timing-line: var(--tie-line);
   background: var(--surface, #fffdfc);
-  border: 1px solid var(--border, #ece3e6);
+  border: 1px solid var(--border, var(--tie-line));
   border-radius: 20px;
   color: var(--timing-ink);
   padding: clamp(20px, 3vw, 36px);
@@ -97,7 +97,7 @@ button.timing-view__row { cursor: pointer; }
 button.timing-view__row:focus-visible { outline: 2px solid var(--timing-accent); outline-offset: 4px; }
 
 button.timing-view__row:hover .timing-view__card {
-  border-color: #d9a9b8;
+  border-color: var(--tie-line-strong);
   box-shadow: 0 12px 28px rgba(85, 39, 54, .08);
   transform: translateY(-1px);
 }
@@ -146,7 +146,7 @@ button.timing-view__row:hover .timing-view__card {
 }
 
 .timing-view__day {
-  background: #f9edf0;
+  background: var(--tie-subtle);
   border-radius: 20px;
   color: var(--timing-accent);
   flex: 0 0 auto;
@@ -177,7 +177,7 @@ button.timing-view__row:hover .timing-view__card {
 .timing-view__blank {
   align-items: center;
   background: #fffafa;
-  border: 1px dashed #dbc5cc;
+  border: 1px dashed var(--tie-line-strong);
   border-radius: 14px;
   flex-direction: column;
   justify-content: center;

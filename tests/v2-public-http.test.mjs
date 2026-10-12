@@ -24,6 +24,23 @@ async function fixture(t) {
   return { server, jar, request, json, post };
 }
 
+test('root serves the account entry even when an agency landing is published', async t => {
+  const app = await fixture(t);
+  await app.json('/api/public');
+  await app.post('/api/setup', { slug: 'tie', agencyName: 'Tie', name: 'Ada', email: 'ada@example.test', password: 'long-password-123' });
+  const draft = await app.post('/api/command', { id: 'entry-home-draft-001', op: 'publicSite.saveMainDraft', data: { draft: { heroTitle: 'Published landing', heroText: 'Public agency description' } } });
+  assert.equal(draft.response.status, 200);
+  const published = await app.post('/api/command', { id: 'entry-home-publish-001', op: 'publicSite.publishMain', version: draft.body.version });
+  assert.equal(published.response.status, 200);
+  await app.post('/api/logout', {});
+  for (const path of ['/', '/?agency=tie', '/?invite=invitation-token']) {
+    const response = await app.request(path);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), '<!doctype html><title>legacy shell</title>');
+    assert.equal(response.headers.get('cache-control'), 'no-cache');
+  }
+});
+
 test('published wedding HTTP is private-to-draft, no-store, and revokes public asset URLs', async t => {
   const app=await fixture(t); await app.json('/api/public'); const setupFallback=await app.request('/'); assert.equal(setupFallback.status,200); assert.match(await setupFallback.text(),/legacy shell/);
   let result=await app.post('/api/setup',{slug:'tie',agencyName:'Tie',name:'Ada',email:'ada@example.test',password:'long-password-123'}); assert.equal(result.response.status,201);

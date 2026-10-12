@@ -1,5 +1,12 @@
 import { clampPosition, rotatedExtents } from './geometry.mjs';
 
+export function quarterTurn(data,step,plan) {
+ const next={...data,rotationDeg:((Number(data.rotationDeg||0)+step)%360+360)%360},extents=rotatedExtents(next);
+ if(extents.width>Number(plan.widthM)+1e-7||extents.height>Number(plan.heightM)+1e-7)throw new Error('После поворота фигура не помещается в зале. Уменьшите её размеры.');
+ const position=clampPosition(next,plan,Number(data.xM),Number(data.yM));
+ return {...next,xM:position.x,yM:position.y};
+}
+
 export const snakeQuarterPoints=[{x:0,y:1},{x:.38,y:.92},{x:.71,y:.71},{x:.92,y:.38},{x:1,y:0},{x:.65,y:0},{x:.6,y:.25},{x:.46,y:.46},{x:.25,y:.6},{x:0,y:.65}];
 export const tableShapes={round150:'Круглый · 150 см',round:'Круглый · 180 см',rect:'Прямоугольный · 180 × 90 см',snakeQuarter:'Змейка · ¼ круга',custom:'Своя форма'};
 export function tableFromPreset(preset,base={}) {

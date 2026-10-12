@@ -1,6 +1,8 @@
+import {Select} from './Select.jsx';
 import {useState} from 'react';
 import {Modal, FormField} from './Modal.jsx';
 import {money, dateLabel} from '../shared.js';
+import {parseListOptions} from '../sheet.js';
 
 const actions=(close,label='Сохранить')=><div className="dialog-actions"><button type="button" className="button quiet" onClick={close}>Отмена</button><button className="button">{label}</button></div>;
 
@@ -14,28 +16,34 @@ export function SectionEditor({section,onClose,onSave}){
   </form></Modal>;
 }
 
-export function TableEditor({table,sections=[],rowCount=0,onClose,onSave}){
+function InlineTableEditor({children,title}){return <div className="sheet-column-editor"><h3>{title}</h3>{children}</div>}
+
+export function TableEditor({table,sections=[],rowCount=0,onClose,onSave,inline=false,protectedIds=[],simple=false,removedColumns=[],requiredVisibleIds=[]}){
  const [data,set]=useState({name:'',key:`table_${crypto.randomUUID().slice(0,8)}`,sectionId:sections[0]?.id||'',order:0,archived:false,offline:false,columns:[{id:'title',name:'Название',type:'text'}],...table?.data});
+ const [optionDraft,setOptionDraft]=useState({});
+ const Wrapper=inline?InlineTableEditor:Modal;
  const [error,setError]=useState('');const [confirmed,confirm]=useState(false);const [dragging,setDragging]=useState(null);
  const change=(key,value)=>set({...data,[key]:value});
  const column=(index,key,value)=>change('columns',data.columns.map((c,i)=>i===index?{...c,[key]:value}:c));
  const move=(index,step)=>{const next=[...data.columns];if(!next[index+step])return;[next[index],next[index+step]]=[next[index+step],next[index]];change('columns',next)};
  const drop=target=>{if(dragging===null||dragging===target){setDragging(null);return}const next=[...data.columns],[item]=next.splice(dragging,1);next.splice(target,0,item);setDragging(null);change('columns',next)};
  const affected=(table?.data.columns||[]).filter(c=>!data.columns.some(n=>n.id===c.id&&n.type===c.type));
- return <Modal wide title="Таблица и колонки" onClose={onClose}><form className="form-stack" onSubmit={async e=>{e.preventDefault();try{await onSave({...data,confirmStructure:confirmed});onClose()}catch(e){setError(e.message)}}}>
- <div className="form-columns"><FormField label="Название"><input required value={data.name} onChange={e=>change('name',e.target.value)}/></FormField><FormField label="Раздел"><select required value={data.sectionId} onChange={e=>change('sectionId',e.target.value)}><option value="">Выберите раздел</option>{sections.map(s=><option key={s.id} value={s.id}>{s.data.name}</option>)}</select></FormField></div>
- <FormField label="Порядок таблицы"><input type="number" value={data.order} onChange={e=>change('order',Number(e.target.value))}/></FormField>
- <div className="button-group"><label className="check-field"><input type="checkbox" checked={data.offline} onChange={e=>change('offline',e.target.checked)}/>Работа со строками без сети</label><label className="check-field"><input type="checkbox" checked={data.archived} onChange={e=>change('archived',e.target.checked)}/>В архиве</label></div>
+ return <Wrapper wide title="Таблица и колонки" onClose={onClose}><form className="form-stack" onSubmit={async e=>{e.preventDefault();try{await onSave({...data,columns:data.columns.map(c=>c.type==='select'?{...c,options:parseListOptions(optionDraft[c.id]??(c.options||[]).join(', '))}:c),hiddenColumns:(data.hiddenColumns||[]).filter(id=>data.columns.some(c=>c.id===id)),confirmStructure:confirmed});onClose()}catch(e){setError(e.message)}}}>
+ {!simple&&<div className="form-columns"><FormField label="Название"><input required value={data.name} onChange={e=>change('name',e.target.value)}/></FormField><FormField label="Раздел"><Select aria-label="Раздел" required value={data.sectionId} onChange={e=>change('sectionId',e.target.value)}><option value="">Выберите раздел</option>{sections.map(s=><option key={s.id} value={s.id}>{s.data.name}</option>)}</Select></FormField></div>}
+ {!simple&&<FormField label="Порядок таблицы"><input type="number" value={data.order} onChange={e=>change('order',Number(e.target.value))}/></FormField>}
+ {!simple&&<div className="button-group"><label className="check-field"><input type="checkbox" checked={data.offline} onChange={e=>change('offline',e.target.checked)}/>Работа со строками без сети</label><label className="check-field"><input type="checkbox" checked={data.archived} onChange={e=>change('archived',e.target.checked)}/>В архиве</label></div>}
  <fieldset className="column-editor"><legend>Колонки</legend><p className="quiet-copy">Перетащите колонки за маркер ⋮⋮ или используйте стрелки.</p>{data.columns.map((c,i)=><div key={c.id} className={`column-row ${dragging===i?'is-dragging':''}`} onDragOver={e=>{e.preventDefault();e.dataTransfer.dropEffect='move'}} onDrop={e=>{e.preventDefault();drop(i)}}>
  <span className="column-drag-handle" draggable role="button" tabIndex="0" title="Перетащить колонку" aria-label={`Перетащить колонку ${i+1}`} onDragStart={e=>{setDragging(i);e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(i))}} onDragEnd={()=>setDragging(null)}>⋮⋮</span>
- <input aria-label={`Название колонки ${i+1}`} required value={c.name} onChange={e=>column(i,'name',e.target.value)}/><select aria-label={`Тип колонки ${i+1}`} value={c.type} onChange={e=>{column(i,'type',e.target.value);if(e.target.value==='select')change('columns',data.columns.map((x,n)=>n===i?{...x,type:'select',options:x.options||[]}:x))}}>{Object.entries({text:'Текст',number:'Число',money:'Деньги',date:'Дата',time:'Время',boolean:'Флажок',select:'Варианты',url:'Ссылка',file:'Файл',relation:'Связь',formula:'Вычисление'}).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select>
- {c.type==='select'&&<input aria-label="Варианты через запятую" value={(c.options||[]).join(', ')} onChange={e=>column(i,'options',e.target.value.split(',').map(s=>s.trim()).filter(Boolean))}/>}
- {c.type==='formula'&&<input aria-label="Формула" placeholder="{amount} * {count}" value={c.formula||''} onChange={e=>column(i,'formula',e.target.value)}/>}
- <button type="button" className="icon-button" aria-label={`Колонку ${i+1} влево`} onClick={()=>move(i,-1)}>←</button><button type="button" className="icon-button" aria-label={`Колонку ${i+1} вправо`} onClick={()=>move(i,1)}>→</button><button type="button" className="icon-button" aria-label={`Удалить колонку ${i+1}`} onClick={()=>change('columns',data.columns.filter((_,n)=>n!==i))}>×</button>
+ <input aria-label={`Название колонки ${i+1}`} required value={c.name} onChange={e=>column(i,'name',e.target.value)}/><Select aria-label={`Тип колонки ${i+1}`} disabled={protectedIds.includes(c.id)||simple&&table?.data.columns.some(column=>column.id===c.id)} value={c.type} onChange={e=>{column(i,'type',e.target.value);if(e.target.value==='select')change('columns',data.columns.map((x,n)=>n===i?{...x,type:'select',options:x.options||[]}:x))}}>{Object.entries({text:'Текст',number:'Число',money:'Деньги',date:'Дата',time:'Время',boolean:'Флажок',select:'Список',url:'Ссылка',file:'Файл',relation:'Связь',formula:'Вычисление'}).filter(([id])=>!simple||!['file','relation'].includes(id)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</Select>
+ {c.type==='select'&&<input aria-label="Варианты через запятую" disabled={protectedIds.includes(c.id)} value={protectedIds.includes(c.id)?(c.options||[]).map(option=>c.optionLabels?.[option]||option).join(', '):optionDraft[c.id]??(c.options||[]).join(', ')} onChange={e=>setOptionDraft({...optionDraft,[c.id]:e.target.value})}/>}
+ {c.type==='formula'&&<Select aria-label={`Формат результата ${i+1}`} disabled={protectedIds.includes(c.id)} value={c.resultType||'number'} onChange={e=>column(i,'resultType',e.target.value)}><option value="number">Число</option><option value="money">Деньги</option></Select>}
+ {c.type==='formula'&&<input aria-label="Формула" disabled={protectedIds.includes(c.id)} placeholder="{amount} * {count}" value={c.formula||''} onChange={e=>column(i,'formula',e.target.value)}/>}
+ {simple&&<button type="button" disabled={['title','description','name',...requiredVisibleIds].includes(c.id)} onClick={()=>change('hiddenColumns',(data.hiddenColumns||[]).includes(c.id)?data.hiddenColumns.filter(id=>id!==c.id):[...(data.hiddenColumns||[]),c.id])}>{(data.hiddenColumns||[]).includes(c.id)?'Показать':'Скрыть'}</button>}
+ <button type="button" className="icon-button" aria-label={`Колонку ${i+1} влево`} onClick={()=>move(i,-1)}>←</button><button type="button" className="icon-button" aria-label={`Колонку ${i+1} вправо`} onClick={()=>move(i,1)}>→</button><button type="button" className="icon-button" aria-label={`Удалить колонку ${i+1}`} disabled={protectedIds.includes(c.id)} onClick={()=>change('columns',data.columns.filter((_,n)=>n!==i))}>×</button>
  </div>)}<button type="button" className="text-button" onClick={()=>change('columns',[...data.columns,{id:`col_${crypto.randomUUID().slice(0,8)}`,name:'Новая колонка',type:'text'}])}>+ Колонка</button></fieldset>
  {data.columns.some(c=>c.type==='formula')&&<p className="quiet-copy">Ссылки для формул: {data.columns.filter(c=>c.type!=='formula').map(c=>`${c.name}: {${c.id}}`).join('; ')}. Доступны + − * / и скобки. Пустое значение не считается нулём.</p>}
  {!!affected.length&&<div className="form-error"><p>Изменятся колонки: {affected.map(c=>c.name).join(', ')}. В таблице {rowCount} строк. Значения и прежняя структура сохранятся в истории для восстановления.</p><label className="check-field"><input required type="checkbox" checked={confirmed} onChange={e=>confirm(e.target.checked)}/>Подтверждаю изменение структуры</label></div>}
- {error&&<p className="form-error">{error}</p>}{actions(onClose)}</form></Modal>;
+ {!!removedColumns.length&&<details><summary>Удалённые колонки</summary>{removedColumns.filter(column=>!data.columns.some(c=>c.id===column.id)).map(column=><p key={column.id}>{column.name} <button type="button" onClick={()=>change('columns',[...data.columns,column])}>Восстановить</button></p>)}</details>}{error&&<p className="form-error">{error}</p>}{actions(onClose)}</form></Wrapper>;
 }
 
 export function InvitationEditor({state,onClose,onSave,onRevoke}){

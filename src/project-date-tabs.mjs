@@ -16,3 +16,16 @@ export function isPastWedding(project, now=new Date()) {
   const {date,timeZone}=project?.data||project||{};
   return typeof date==='string'&&weddingDatePattern.test(date)&&date<localDate(now,timeZone);
 }
+
+export function sortWeddingsByDate(projects, {past=false}={}) {
+  const dateOf=project=>{
+    const {date}=project?.data||project||{};
+    return typeof date==='string'&&weddingDatePattern.test(date)?date:'';
+  };
+  return [...projects].sort((a,b)=>{
+    const left=dateOf(a),right=dateOf(b);
+    if(!left)return right?1:0;
+    if(!right)return -1;
+    return (past?-1:1)*left.localeCompare(right);
+  });
+}

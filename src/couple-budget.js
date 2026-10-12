@@ -543,10 +543,11 @@ export const coupleBudgetItemRows = new Set(coupleBudgetGroups.flatMap(group => 
 export const coupleBudgetItemCount = coupleBudgetGroups.reduce((count, group) => count + group.items.length, 0);
 export function coupleBudgetViewGroups(data = {}) {
   const extraItems = data.extraItems || {};
+  const deleted=new Set((data.deletedRows||[]).map(String));
   return [
     ...coupleBudgetGroups.map(group => ({...group, items: [...group.items, ...(extraItems[group.row] || [])]})),
     ...(data.extraSections || []).map(section => ({...section, totalLabel: section.totalLabel || 'Итого по разделу', items: section.items || []}))
-  ];
+  ].filter(group=>!deleted.has(String(group.row))).map(group=>({...group,items:group.items.filter(item=>!deleted.has(String(item.row)))}));
 }
 export function coupleBudgetFind(data, row) {
   const key = String(row);
@@ -563,31 +564,45 @@ export const coupleBudgetDefaultName = (row, data = {}) => {
 };
 export const coupleBudgetDefaultNote = (row, data = {}) => coupleBudgetFind(data, row)?.item?.note || '';
 export const coupleBudgetAmountFields = ['estimated', 'actual', 'prepaid'];
+export const coupleBudgetOrganizerGroups = new Set([28, 51, 121]);
 export const coupleBudgetOrganizerRows = [9,10,11,12,15,18,19,20,21,22,23,47,70,122,134];
 export function coupleBudgetOrganizerIncluded(data = {}, row) {
   const found = coupleBudgetFind(data, row);
   if (!found?.item) return false;
-  if ([28, 51].includes(found.group.row)) return true;
+  if (coupleBudgetOrganizerGroups.has(found.group.row)) return true;
   return Object.hasOwn(data.organizerRows || {}, row) ? data.organizerRows[row] : coupleBudgetOrganizerRows.includes(row) || found.item.organizer === true;
 }
 
+export const coupleBudgetRemaining = (data, row) => (data.actual?.[row] ?? 0) - (data.prepaid?.[row] ?? 0);
 const budgetValue = (data, field, row) => {
-  if (field === 'remaining') return budgetValue(data, 'actual', row) - budgetValue(data, 'prepaid', row);
+  if (field === 'remaining') return coupleBudgetRemaining(data, row);
   return data[field]?.[row] || 0;
 };
+export function coupleBudgetAgencyFee(data = {}) {
+  const feeRows = [29, 30];
+  const amountConfigured = feeRows.some(row => data.actual?.[row] != null || data.estimated?.[row] != null);
+  const prepaidConfigured = feeRows.some(row => data.prepaid?.[row] != null);
+  const items = feeRows.filter(row => coupleBudgetFind(data,row)?.item && (data.actual?.[row] != null || data.estimated?.[row] != null || data.prepaid?.[row] != null)).map(row => ({
+    row, title: data.names?.[row] || coupleBudgetDefaultName(row),
+    amount: data.actual?.[row] ?? data.estimated?.[row] ?? 0,
+    prepaid: data.prepaid?.[row] ?? 0
+  }));
+  return {amountConfigured, prepaidConfigured, feeExpected: items.reduce((sum,item)=>sum+item.amount,0), feePrepaid: items.reduce((sum,item)=>sum+item.prepaid,0), items};
+}
+
+export const coupleBudgetBaseColumns=[{id:'name',name:'Статья',type:'text'},{id:'estimated',name:'Предполагаемые',type:'money'},{id:'actual',name:'Фактические',type:'money'},{id:'prepaid',name:'Предоплата',type:'money'},{id:'remaining',name:'Осталось',type:'formula',formula:'{actual} - {prepaid}'},{id:'note',name:'Примечание',type:'text'}];
+export function coupleBudgetColumns(data={},includeHidden=false){
+  const order=new Map((data.columnOrder||[]).map((id,i)=>[id,i]));
+  return [...coupleBudgetBaseColumns,...(data.extraColumns||[])].map(column=>({...column,name:data.columnLabels?.[column.id]||column.name})).filter(column=>includeHidden||!(data.hiddenColumns||[]).includes(column.id)).sort((a,b)=>(order.get(a.id)??1e9)-(order.get(b.id)??1e9));
+}
 export function coupleBudgetTotals(data = {}) {
   const groups = coupleBudgetViewGroups(data);
   const fields = [...coupleBudgetAmountFields, 'remaining'];
   const groupTotals = Object.fromEntries(groups.map(group => [group.row, Object.fromEntries(fields.map(field => [field, group.items.reduce((sum, item) => sum + budgetValue(data, field, item.row), 0)]))]));
   const overall = Object.fromEntries(fields.map(field => [field, groups.reduce((sum, group) => sum + groupTotals[group.row][field], 0)]));
-  const subtotalGroups = new Set([28, 51]);
-  const directRows = new Set(coupleBudgetOrganizerRows.filter(row => ![47, 70].includes(row)).map(String));
   const organizer = Object.fromEntries(fields.map(field => [field, groups.reduce((sum, group) => {
-    if (subtotalGroups.has(group.row)) return sum + groupTotals[group.row][field];
-    return sum + group.items.reduce((subtotal, item) => {
-      const selected = Object.hasOwn(data.organizerRows || {}, item.row) ? data.organizerRows[item.row] : directRows.has(String(item.row)) || item.organizer === true;
-      return subtotal + (selected ? budgetValue(data, field, item.row) : 0);
-    }, 0);
+    if (coupleBudgetOrganizerGroups.has(group.row)) return sum + groupTotals[group.row][field];
+    return sum + group.items.reduce((subtotal, item) => subtotal + (coupleBudgetOrganizerIncluded(data,item.row) ? budgetValue(data, field, item.row) : 0), 0);
   }, 0)]));
   return {groups, groupTotals, overall, organizer};
 }

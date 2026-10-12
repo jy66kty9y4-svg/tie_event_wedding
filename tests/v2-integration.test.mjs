@@ -1,18 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync,backup} from 'node:sqlite';
-import {existsSync,mkdtempSync,readdirSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join,dirname} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {join} from 'node:path';
 import {openDatabase,decode,entities,entity,uid} from '../server/db.mjs';
-import {bootstrap,execute,register} from '../server/service.mjs';
+import {bootstrap,execute} from '../server/service.mjs';
+import { registerTestUser as register } from './fixtures/account.mjs';
 import {financials} from '../server/model.mjs';
 import {grant} from '../server/auth.mjs';
 import {listTasks,previewReschedule} from '../server/v2/workflow/index.mjs';
 import {getPublishedMicrosite} from '../server/v2/publishing/index.mjs';
+import {writeLegacyV1} from './fixtures/legacy-v1.mjs';
 
-const root=dirname(dirname(fileURLToPath(import.meta.url)));let sequence=0;
+let sequence=0;
 const command=(db,user,op,body={})=>execute(db,user,{id:`integration_${++sequence}_${uid()}`,op,...body});
 const rejects=(fn,status)=>assert.throws(fn,error=>error?.status===status);
 const stable=value=>JSON.stringify(value,(_,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
@@ -27,11 +28,12 @@ function assertOriginalPreserved(before,after){
  const audits=new Map(after.audit.map(row=>[row.id,row]));for(const old of before.audit)assert.deepEqual(audits.get(old.id),old,`Изменена история ${old.id}`);assert.equal(stable(after.ledger),stable(before.ledger),'Миграция изменила финансовые итоги');
 }
 
-test('V1 backup copies migrate without lost IDs, ledger or history and repeated open is stable',async t=>{
- const backupRoot=join(root,'data','backups'),folder=existsSync(backupRoot)?readdirSync(backupRoot).filter(name=>name.startsWith('v1-')).sort().at(-1):null;if(!folder)return t.skip('В репозитории нет локальной V1 backup-копии');
- const sources=['tie.sqlite','demo.sqlite'].map(name=>join(backupRoot,folder,name)).filter(existsSync);assert.equal(sources.length,2);const temp=mkdtempSync(join(tmpdir(),'tie-v2-migration-'));t.after(()=>rmSync(temp,{recursive:true,force:true}));
+test('fictional V1 databases migrate without lost IDs, ledger or history and repeated open is stable',async t=>{
+ const temp=mkdtempSync(join(tmpdir(),'tie-v2-migration-'));t.after(()=>rmSync(temp,{recursive:true,force:true}));
+ const sources=['tie.sqlite','demo.sqlite'].map(name=>join(temp,'source-'+name));
+ for(const [index,path] of sources.entries())writeLegacyV1(path,{slug:'legacy-'+index,empty:index===1});
  for(const sourcePath of sources){const source=new DatabaseSync(sourcePath,{readOnly:true}),before=snapshot(source);assert.deepEqual(before.migrations,[1,2,3]);const copyPath=join(temp,sourcePath.endsWith('demo.sqlite')?'demo.sqlite':'tie.sqlite');await backup(source,copyPath);source.close();
-  let copy=openDatabase(copyPath),after=snapshot(copy);assertOriginalPreserved(before,after);const originalIds=new Set(before.entities.map(row=>row.id)),added=after.entities.filter(row=>!originalIds.has(row.id)),addedAudit=after.audit.filter(entry=>!before.audit.some(old=>old.id===entry.id)),createAudit=addedAudit.filter(entry=>entry.action==='create');assert.equal(createAudit.length,added.length);assert(added.every(row=>createAudit.some(entry=>entry.entity_id===row.id)));assert.deepEqual(after.migrations,[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]);const coupleRoles=copy.prepare("SELECT permissions FROM roles WHERE key='couple'").all();assert(coupleRoles.every(role=>!JSON.parse(role.permissions).includes('history')));const studentRoles=copy.prepare("SELECT permissions FROM roles WHERE key='student'").all(),agencyCount=copy.prepare('SELECT count(*) count FROM agencies').get().count;assert.equal(studentRoles.length,agencyCount);assert(studentRoles.every(role=>JSON.parse(role.permissions).includes('projects')));const first=stable(after);copy.close();copy=openDatabase(copyPath);assert.equal(stable(snapshot(copy)),first,'Повторное открытие повторило миграцию или импорт');copy.close();
+  let copy=openDatabase(copyPath),after=snapshot(copy);assertOriginalPreserved(before,after);const originalIds=new Set(before.entities.map(row=>row.id)),added=after.entities.filter(row=>!originalIds.has(row.id)),addedAudit=after.audit.filter(entry=>!before.audit.some(old=>old.id===entry.id)),createAudit=addedAudit.filter(entry=>entry.action==='create');assert.equal(createAudit.length,added.length);assert(added.every(row=>createAudit.some(entry=>entry.entity_id===row.id)));assert.deepEqual(after.migrations,[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]);const coupleRoles=copy.prepare("SELECT permissions FROM roles WHERE key='couple'").all();assert(coupleRoles.every(role=>!JSON.parse(role.permissions).includes('history')));const studentRoles=copy.prepare("SELECT permissions FROM roles WHERE key='student'").all(),agencyCount=copy.prepare('SELECT count(*) count FROM agencies').get().count;assert.equal(studentRoles.length,agencyCount);assert(studentRoles.every(role=>JSON.parse(role.permissions).includes('projects')));const first=stable(after);copy.close();copy=openDatabase(copyPath);assert.equal(stable(snapshot(copy)),first,'Повторное открытие повторило миграцию или импорт');copy.close();
   const original=new DatabaseSync(sourcePath,{readOnly:true});assert.equal(stable(snapshot(original)),stable(before),'Исходная backup-копия была изменена');original.close();
  }
 });
@@ -58,7 +60,7 @@ test('field-restricted task list never exposes ungranted task fields',()=>{
 
 test('central guest command returns a one-time raw token but persists only the redacted result',()=>{
  const {db,admin,project}=fixture(),guestTable=entities(db,admin.agency_id,project.id,'table').find(row=>row.data.key==='guests'),mapped=command(db,admin,'guestMapping.save',{projectId:project.id,guestTableId:guestTable.id,schemaVersion:guestTable.version,data:{semanticMap:{guestName:'name',rsvpStatus:'status'}},confirm:true}),guest=command(db,admin,'entity.create',{projectId:project.id,kind:'row',parentId:mapped.id,schemaVersion:mapped.version,data:{name:'Семья Ивановых',status:'Не отправлено'}});
- let site=command(db,admin,'microsite.saveDraft',{projectId:project.id,data:{draft:{coupleNames:'Анна и Иван',dateLabel:'12 июня 2027'},rsvpDeadline:'2027-06-01'}});site=command(db,admin,'microsite.publish',{projectId:project.id,version:site.version});const id=`guest_token_${uid()}`,invitation=execute(db,admin,{id,op:'guestInvite.create',projectId:project.id,guestTableId:mapped.id,schemaVersion:mapped.version,guestRowIds:[guest.id]});assert.equal(typeof invitation.token,'string');assert(invitation.token.length>=32);
+ let site=command(db,admin,'microsite.saveDraft',{projectId:project.id,data:{draft:{coupleNames:'Анна и Иван',dateLabel:'12 июня 2027'},rsvpDeadline:'2027-06-01'}});site=command(db,admin,'microsite.publish',{projectId:project.id,version:site.version});command(db,admin,'guestInvitations.settings',{projectId:project.id,version:entity(db,project.id).version,enabled:true});const id=`guest_token_${uid()}`,invitation=execute(db,admin,{id,op:'guestInvite.create',projectId:project.id,guestTableId:mapped.id,schemaVersion:mapped.version,guestRowIds:[guest.id]});assert.equal(typeof invitation.token,'string');assert(invitation.token.length>=32);
  const persisted=db.prepare('SELECT result FROM commands WHERE id=? AND user_id=?').get(id,admin.id);assert(persisted);assert.equal(JSON.parse(persisted.result).token,undefined);assert.equal(db.prepare('SELECT count(*) count FROM commands WHERE result LIKE ?').get(`%${invitation.token}%`).count,0);
 });
 

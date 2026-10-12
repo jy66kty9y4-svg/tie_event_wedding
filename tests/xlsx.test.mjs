@@ -35,10 +35,10 @@ test('budget workbook hides agency commission from the couple export',()=>{
   const state={project:{data:{name:'Проект'}},canViewAgencyCommission:false,entities:[{id:'o1',kind:'obligation',data:{title:'Фотограф',priceKind:'amount',agreed:10000000,agencyCommission:1500000}}],financials:{paid:{o1:2000000}}};
   const couple=budgetWorkbook(state);
   assert.equal(couple.sheets.length,2);
-  assert.ok(!couple.sheets[0].columns.some(column=>column.key==='commission'));
-  assert.equal(couple.sheets[0].rows[0].due,8000000);
+  assert.ok(!couple.sheets[0].columns.some(column=>column.key==='agencyCommission'));
+  assert.equal(couple.sheets[0].rows[0].due.value,8000000);
   const organizer=budgetWorkbook({...state,canViewAgencyCommission:true});
-  assert.ok(organizer.sheets[0].columns.some(column=>column.key==='commission'));
+  assert.ok(organizer.sheets[0].columns.some(column=>column.key==='agencyCommission'));
 });
 
 test('seating workbook includes guests and table occupancy',()=>{
@@ -63,4 +63,16 @@ test('representative export is formed within five seconds',()=>{
   const elapsedMs=performance.now()-startedAt;
   assert.ok(bytes.length>0);
   assert.ok(elapsedMs<=5000,`Экспорт сформирован за ${elapsedMs.toFixed(1)} мс вместо максимум 5000 мс`);
+});
+
+test('Excel lists use hidden named ranges and times remain numeric',()=>{
+  const options=Array.from({length:30},(_,i)=>`Вариант ${i+1} с кириллицей`);
+  const bytes=buildXlsx({sheets:[{name:'Список',columns:[{key:'status',label:'Статус',type:'select',options},{key:'time',label:'Время',type:'time'}],rows:[{status:options[0],time:'15:30'}]}]});
+  const files=archiveEntries(bytes);
+  assert.match(files.get('xl/workbook.xml'),/state="hidden"/);
+  assert.match(files.get('xl/workbook.xml'),/name="_tie_list_1"/);
+  assert.match(files.get('xl/worksheets/sheet1.xml'),/<dataValidation type="list".*sqref="A3:A3"><formula1>_tie_list_1<\/formula1>/);
+  assert.match(files.get('xl/worksheets/sheet2.xml'),/Вариант 30 с кириллицей/);
+  assert.match(files.get('xl/worksheets/sheet1.xml'),/<v>0.6458333333333334<\/v>/);
+  assert.match(files.get('xl/styles.xml'),/formatCode="hh:mm"/);
 });

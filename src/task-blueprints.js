@@ -1,5 +1,5 @@
 const task = (key,title,phaseKey,offsetDays,description) => ({
-  key,title,phaseKey,offsetDays,description,priority:'normal',assigneeRole:null,dependencyKeys:[]
+  key,title,phaseKey,offsetDays:0,dueMode:'none',description,priority:'normal',assigneeRole:null,dependencyKeys:[]
 });
 
 export const DEFAULT_TASK_BLUEPRINTS = [

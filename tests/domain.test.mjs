@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase, entity, entities, pruneAuditHistory, uid } from '../server/db.mjs';
 import { defaults, grant, passwordHash, checkPassword, createSession, userSession } from '../server/auth.mjs';
-import { bootstrap, register, snapshot, execute, upload, download } from '../server/service.mjs';
+import { bootstrap, snapshot, execute, upload, download } from '../server/service.mjs';
+import { registerTestUser as register } from './fixtures/account.mjs';
 import { validateColumns } from '../server/model.mjs';
 import { PROJECT_FILE_MAX_BYTES, compute, studentRolePermissions } from '../src/shared.js';
 import { questionnaireQuestions } from '../src/questionnaire.js';
@@ -62,7 +63,7 @@ test('new weddings start with the shared normal-priority task plan',()=>{
   assert.equal(wedding.data.location,'');
   assert.deepEqual(guests.data.columns.map(column=>column.name),['ФИО','Чей гость','Кем приходится','Пищевые аллергии','Алкоголь','Контакт','Приглашение']);
   assert.equal(guests.data.semanticMap.allergies,'allergies');assert(vendorCategories.some(category=>category.data.name==='Фотограф'));assert(vendorCategories.some(category=>category.data.name==='Видеограф'));
-  assert.equal(tasks.length,25);assert(tasks.every(row=>row.data.priority==='normal'));assert(invites);assert.equal(invites.data.title,'Поиск пригласительных');assert.equal(invites.data.offsetDays,-180);assert.equal(invites.data.dueDate,'2026-12-14');
+  assert.equal(tasks.length,25);assert(tasks.every(row=>row.data.priority==='normal'));assert(invites);assert.equal(invites.data.title,'Поиск пригласительных');assert.equal(invites.data.offsetDays,null);assert.equal(invites.data.dueDate,'');assert(tasks.every(row=>row.data.dueMode==='none'&&row.data.offsetDays===null&&row.data.fixedDate===''&&row.data.startDate===''&&row.data.endDate===''));
   for(const title of ['Поиск площадки','Поиск ведущего','Поиск фотографа','Поиск видеографа','Поиск свадебного торта','Подобрать техническое оборудование','Поиск декоратора','Поиск стилиста','Подготовить раздаточные материалы','Подготовить welcome-зону']) assert(tasks.some(row=>row.data.title===title),title);
 });
 

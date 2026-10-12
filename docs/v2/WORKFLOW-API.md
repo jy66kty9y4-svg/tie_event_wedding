@@ -17,7 +17,7 @@ The root dispatcher calls `migrate(db)` during its migration transaction and for
   versions, old/new dates, validated IANA time zones and a SHA-256 digest. It also includes each `meeting` whose
   `data.dateAnchor === 'wedding'`, recalculating `startAt/endAt` from `localStartTime`,
   `durationMinutes`, `offsetDays`, and its IANA time zone with explicit DST-gap/fold validation. `unchanged`
-  lists fixed/completed task dates and readable obligation/deposit dates that will stay untouched.
+  lists fixed/period/undated/completed tasks and readable obligation/deposit dates that will stay untouched.
   `project.reschedule.apply` accepts `projectVersion`, `sourceVersions`, `previewDigest`; a stale plan
   returns 409 with a fresh preview. It marks an active wedding-site draft dirty in the same transaction.
 - Approvals: `approval.saveDraft`, `approval.publish`, `approval.startRevision`, `approval.withdraw`, `approval.vote`,
@@ -27,6 +27,39 @@ The root dispatcher calls `migrate(db)` during its migration transaction and for
   `approval.delete` accepts only a never-published draft.
 - Comments: `comment.create`, `comment.edit`, `comment.delete` attach to a task or approval. Editing is
   limited to the author; deletion permits the author or a user with parent-section delete rights.
+
+## Task schedules (2026-10-11)
+
+Task creation and editing accept four `data.dueMode` values:
+
+- `none` (default for a new manual task): no date is required. `dueDate`, `fixedDate`,
+  `startDate`, `endDate` are cleared to empty strings and `offsetDays` to null.
+- `fixed`: `fixedDate` is a required valid calendar date; `dueDate` matches it.
+- `range`: required `startDate` and `endDate` are inclusive valid calendar dates,
+  `endDate >= startDate`. `dueDate = endDate` is the completion deadline and drives
+  overdue detection and deadline reminders. A one-day period is allowed.
+- `relative`: existing integer `offsetDays` rule relative to the wedding date remains available.
+
+Changing modes clears inactive fields. Partial edits preserve the existing schedule, including
+legacy tasks having only `dueDate`. Wedding-relative template tasks retain their dates; they can
+be individually switched to any mode. No records are backfilled or migrated.
+
+Undated tasks remain in the plan, board, grouped schedule and an organizer's focused task list;
+explicit `from`/`to` filters exclude them. Date filtering includes periods overlapping the window.
+Undated tasks produce no overdue state or date reminders, and existing queued reminders are
+cancelled when the deadline is removed. Wedding rescheduling moves only active relative tasks;
+unchanged preview reasons include `undated_task` and `range_task`. Version, dependency, status
+and field-permission checks remain enforced.
+
+Calendar task events use inclusive `start`/`end` and `dateRange: true` for a visible range;
+point dates have `dateRange: false`. Restricted readers lacking the range fields see only an
+allowed due date. The calendar UI displays a range on each included day. Tasks without a date
+have no calendar event. External calendars use their exclusive all-day end convention;
+removing a date deletes the previously linked event during the existing sync flow.
+
+Covered by `tests/task-schedule.test.mjs`: six scenarios verify modes/legacy persistence,
+atomic validation and permissions, window overlap, rescheduling, reminder cancellation,
+and a mocked Google all-day round trip/deletion. Real provider accounts are not changed in QA.
 
 ## Pure reads
 
@@ -64,3 +97,34 @@ it while it owns template creation. Budget application only changes existing sel
 in its command transaction and records `approval_budget_links`; it creates no movement or payment. The root
 HTTP dispatcher must mount `getTask` and `previewBudgetApplication` from `integrationHooks` in addition to the
 previous task/approval/template/reschedule reads.
+
+
+### Open wedding dates (2026-10-11)
+
+Projects and application briefs accept an omitted or empty `date`, persisted as `''`.
+They remain current weddings; calendar/readiness do not invent a wedding event/date.
+Seeded and manually edited relative tasks retain `dueMode:'relative'` and offsets,
+but have empty `dueDate` until a wedding date is selected. Template preview/application
+also accept an open wedding date without marking these tasks overdue.
+
+Reschedule preview/apply accept explicit `newDate:''` to reopen a wedding date; clients
+must preserve the empty query parameter. Selecting the first exact date or clearing it
+updates only active relative tasks. Fixed, period, undated and completed tasks remain
+unchanged. Clearing a date with wedding-anchored meetings returns409 with
+`code:'anchored_meeting_requires_date'`; detach those meetings first. Existing versions,
+permissions, digest checks and transaction rules apply.
+
+`application.questionnaire` accepts optional `date` alongside answers; omission keeps
+its existing date. `account.questionnaire` accepts optional `weddingDate` plus required
+`projectVersion` when that field is present. The same approved account may leave an open
+date or assign the first date. An already agreed wedding date cannot be overwritten
+through the brief. Stale project versions return409 and retain the questionnaire draft.
+Completion, first-date assignment and relative task changes are atomic, using the normal
+permission-checked reschedule engine after unlocking the existing approved grant. Failure
+rolls completion back. Existing clients omitting these fields keep their previous flow.
+The submitted date is recorded in onboarding metadata, visible to authorized reviewers.
+The existing external-calendar sync queue includes questionnaire submission.
+
+### История задач (12 октября 2026)
+
+`task.restore` принимает актуальные `projectId`, `entityId`, `version` и необязательный `auditId`. Без auditId требуется удалённая задача; с ним выбирается состояние before_json соответствующей записи истории (after_json для создания). Обязательны текущие read/edit/history для соответствующих полей/строки в одной допустимой области. Snapshot связывается с agency/entity/kind/project, версии и ссылки проверяются, циклы и незавершённые зависимости блокируют восстановление done. Относительные сроки считаются от текущей даты свадьбы. Статус завершения/фокус нормализуются; изменение фокуса остаётся доступным только сотрудникам с projects. Команда транзакционна/идемпотентна и вызывает обычную внешнюю календарную синхронизацию.

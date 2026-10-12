@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {openDatabase,entities,entity,insert,uid} from '../server/db.mjs';
-import {bootstrap,execute as serviceExecute,register} from '../server/service.mjs';
+import {bootstrap,execute as serviceExecute} from '../server/service.mjs';
+import { registerTestUser as register } from './fixtures/account.mjs';
 import {grant} from '../server/auth.mjs';
 import {executeModule} from '../server/v2/common.mjs';
 import {operations,validateTimingSchemaMutation} from '../server/v2/timing.mjs';

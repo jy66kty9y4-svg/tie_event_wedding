@@ -11,6 +11,9 @@
     "start": "node server/http.mjs",
     "dev": "node server/http.mjs",
     "test": "node --test tests/*.test.mjs",
+    "test:unit": "node --test tests/shared-validation.test.mjs tests/calendar-boundaries.test.mjs tests/auth-invariants.test.mjs tests/db-command-invariants.test.mjs tests/client-transport.test.mjs tests/clean-reset-boundaries.test.mjs tests/*unit.test.mjs",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=93 --test-coverage-branches=86 --test-coverage-functions=90 --test-coverage-exclude='tests/**' --test-coverage-exclude='node_modules/**' tests/*.test.mjs",
+    "test:mutations": "node scripts/unit-mutation-test.mjs",
     "test:browser": "node scripts/browser-test.mjs",
     "demo": "node scripts/demo.mjs",
     "test:ui": "node scripts/ui-test.mjs",
@@ -20,7 +23,8 @@
     "test:v2-entry": "node scripts/v2-entry-test.mjs",
     "test:workspaces": "node scripts/workspace-switch-test.mjs",
     "test:client-waiting": "node scripts/client-waiting-test.mjs",
-    "test:users": "node scripts/user-management-test.mjs"
+    "test:users": "node scripts/user-management-test.mjs",
+    "test:auth": "node scripts/auth-entry-test.mjs"
   },
   "dependencies": {
     "react": "19.2.6",

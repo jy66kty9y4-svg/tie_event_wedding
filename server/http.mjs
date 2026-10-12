@@ -1,3 +1,5 @@
+import {buildXlsx} from '../src/xlsx.js';
+import {tableWorkbook,budgetWorkbook,seatingWorkbook,financeSheetWorkbook} from '../src/export-workbooks.js';
 import { createServer } from 'node:http';
 import { createReadStream, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
@@ -5,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 import { openDatabase, Fault, assert } from './db.mjs';
 import { can, requireAccess, digest, token, userSession, rateLimit } from './auth.mjs';
-import { bootstrap, authenticate, register, publicInfo, snapshot, execute, upload, download } from './service.mjs';
+import { bootstrap, authenticate, register, publicInfo, snapshot, execute, upload, download, backfillVenueCatalog } from './service.mjs';
 import { activeIpBan, clientIp, handleOrbitControl, privateControlHost } from './orbitpanel-control.mjs';
 
 import { calendar, notifications, preferences, previewMeeting, processOutbox } from './v2/calendar/index.mjs';
@@ -15,6 +17,7 @@ import {context as guestContext, exchange as guestExchange, guestList,guestInvit
 import { members, scoped } from './v2/common.mjs';
 import { configuredDomain, createPublicAsset, getMicrosite, getPrivateAsset, getPublicAsset, getPublicHome, getPublishedContent, getPublishedHome, getPublishedMicrosite, listContent, listPublishedContent, previewMicrosite, renderAgencyHtml, renderWeddingHtml, sitemapXml } from './v2/publishing/index.mjs';
 import { integrationHooks as workflow } from './v2/workflow/index.mjs';
+import {uploadVendorPhoto,getVendorPhoto} from './vendor-profile.mjs';
 
 const SESSION_COOKIE = 'tie_session';
 const CSRF_COOKIE = 'tie_csrf';
@@ -24,7 +27,7 @@ const MAX_BODY = 12 * 1024 * 1024;
 const MIME = {
   '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8', '.map': 'application/json; charset=utf-8', '.svg': 'image/svg+xml',
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.woff': 'font/woff', '.woff2': 'font/woff2',
 };
 
 function cookies(req) {
@@ -39,7 +42,7 @@ function cookies(req) {
 
 function cookie(name, value, req, { httpOnly = false, clear = false, maxAge = 7 * 86400 } = {}) {
   const secure = req.socket.encrypted || req.headers['x-forwarded-proto'] === 'https';
-  return `${name}=${encodeURIComponent(value)}; Path=/; SameSite=Strict; ${httpOnly ? 'HttpOnly; ' : ''}${secure ? 'Secure; ' : ''}Max-Age=${clear ? 0 : maxAge}`;
+  return `${name}=${encodeURIComponent(value)}; Path=/; SameSite=Strict; ${httpOnly ? 'HttpOnly; ' : ''}${secure ? 'Secure; ' : ''}${clear ? 'Max-Age=0' : maxAge === null ? '' : `Max-Age=${maxAge}`}`;
 }
 
 function securityHeaders(extra = {}) {
@@ -190,13 +193,15 @@ async function serveStatic(req, res, distDir, pathname) {
   if (!actual.startsWith(base + sep)) throw new Fault('Файл не найден', 404);
   const stat = statSync(actual);
   const isShell = actual === join(base, 'index.html');
-  const cache = isShell || actual.endsWith(`${sep}sw.js`) ? 'no-cache' : /\.[a-f0-9]{8,}\./i.test(actual) ? 'public, max-age=31536000, immutable' : 'public, max-age=3600';
+  const hashedAsset = actual.startsWith(join(base, 'assets') + sep) && /-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$/i.test(actual);
+  const cache = isShell || actual.endsWith(`${sep}sw.js`) ? 'no-cache' : hashedAsset ? 'public, max-age=31536000, immutable' : 'public, max-age=3600';
   res.writeHead(200, securityHeaders({ 'Content-Type': MIME[extname(actual).toLowerCase()] || 'application/octet-stream', 'Content-Length': stat.size, 'Cache-Control': cache }));
   if (req.method === 'HEAD') res.end(); else createReadStream(actual).pipe(res);
 }
 
 export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie.sqlite', distDir = process.env.TIE_DIST_DIR || 'dist' } = {}) {
   const db = openDatabase(dbPath);
+  backfillVenueCatalog(db);
   const root = resolve(distDir);
   const server = createServer(async (req, res) => {
     try {
@@ -276,8 +281,9 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
           return sendJson(res, 201, { user: result.user }, { 'Set-Cookie': [cookie(SESSION_COOKIE, result.token, req, { httpOnly: true }), cookie(CSRF_COOKIE, cookies(req)[CSRF_COOKIE] || token(), req)] });
         }
         if (url.pathname === '/api/login' && req.method === 'POST') {
-          const result = authenticate(db, await readJson(req), clientIp(req) || 'local', { clientIp: clientIp(req), userAgent: req.headers['user-agent'] });
-          return sendJson(res, 200, { user: result.user }, { 'Set-Cookie': [cookie(SESSION_COOKIE, result.token, req, { httpOnly: true }), cookie(CSRF_COOKIE, cookies(req)[CSRF_COOKIE] || token(), req)] });
+          const body = await readJson(req);
+          const result = authenticate(db, body, clientIp(req) || 'local', { clientIp: clientIp(req), userAgent: req.headers['user-agent'] });
+          return sendJson(res, 200, { user: result.user }, { 'Set-Cookie': [cookie(SESSION_COOKIE, result.token, req, { httpOnly: true, maxAge: body.rememberSession === false ? null : 7 * 86400 }), cookie(CSRF_COOKIE, cookies(req)[CSRF_COOKIE] || token(), req)] });
         }
         if (url.pathname === '/api/logout' && req.method === 'POST') {
           const raw = cookies(req)[SESSION_COOKIE];
@@ -325,6 +331,28 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
           if(req.method==='POST'&&path==='/api/v2/calendar/external/sync')return sendJson(res,200,await syncExternalCalendar(db,u,await readJson(req)));
           if(req.method==='POST'&&path==='/api/v2/calendar/external/disconnect')return sendJson(res,200,await disconnectExternalCalendar(db,u,await readJson(req)));
         }
+        if(url.pathname==='/api/export.xlsx'&&req.method==='GET'){
+          const user=requireUser(db,req),projectId=url.searchParams.get('project')||null,kind=url.searchParams.get('kind');assert(projectId||kind==='agencyFinance','Укажите свадьбу');
+          const state=snapshot(db,user,projectId),all=(state.entities||[]).filter(item=>!item.deleted),project=state.project?.data.name||state.agency.name;
+          let workbook,title;
+          if(kind==='agencyFinance'||kind==='financeSheet'){requireAccess(db,user,kind==='agencyFinance'?['read','agencyFinance']:['read','finance'],projectId||null,kind==='agencyFinance'?'agencyFinance':'budget');title='Операции';workbook=financeSheetWorkbook(state,kind==='agencyFinance');}
+          else if(kind==='table'){
+            const table=all.find(item=>item.kind==='table'&&item.id===url.searchParams.get('table'));assert(table,'Таблица недоступна',404);
+            const audience=url.searchParams.get('audience')||undefined;assert(!audience||['Пара','Команда'].includes(audience),'Неизвестный вид таблицы');
+            title=table.data.name;workbook=tableWorkbook({project,table,rows:all.filter(item=>item.kind==='row'&&item.parent_id===table.id),relationRows:all.filter(item=>['row','seatingTable'].includes(item.kind)),files:all.filter(item=>item.kind==='file'),members:state.assignableMembers||state.members||[],audience});
+          }else if(kind==='budget'){requireAccess(db,user,['read','finance'],projectId,'budget');title='Бюджет';workbook=budgetWorkbook(state);}
+          else if(kind==='seating'){requireAccess(db,user,'read',projectId,'seating');title='Рассадка';workbook=seatingWorkbook(state);}
+          else assert(false,'Неизвестный экспорт');
+          const content=buildXlsx(workbook),fileName=`${project} — ${title}.xlsx`.replace(/[\\/:*?"<>|]+/g,'-');
+          res.writeHead(200,securityHeaders({'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','Content-Length':content.length,'Content-Disposition':`attachment; filename="tie-export.xlsx"; filename*=UTF-8''${encodeURIComponent(fileName)}`,'Cache-Control':'no-store, private'}));return res.end(content);
+        }
+        if(url.pathname==='/api/vendor-photos'&&req.method==='POST'){
+          const body=await readJson(req);return sendJson(res,201,await uploadVendorPhoto(db,requireUser(db,req),{projectId:body.projectId||null,entityId:body.entityId||null,field:body.field||'photoId',content:base64(body.content)}));
+        }
+        if(url.pathname.startsWith('/api/vendor-photos/')&&req.method==='GET'){
+          const id=url.pathname.slice('/api/vendor-photos/'.length);assert(id&&!id.includes('/'),'Фото не найдено',404);
+          return sendAsset(res,getVendorPhoto(db,requireUser(db,req),id,url.searchParams.get('entityId')),{'Cache-Control':'no-store, private'});
+        }
         if (url.pathname === '/api/state' && req.method === 'GET') return sendJson(res, 200, snapshot(db, requireUser(db, req), url.searchParams.get('project') || null));
         if (url.pathname === '/api/offline' && req.method === 'GET') {
           const project = url.searchParams.get('project'); assert(project, 'Укажите проект');
@@ -357,14 +385,15 @@ export function createHttpServer({ dbPath = process.env.TIE_DB_PATH || 'data/tie
         const xml=sitemapXml(db,publicAgency(db,url).id); assert(xml,'Карта сайта пока недоступна',404);
         const data=Buffer.from(xml); res.writeHead(200,securityHeaders({'Content-Type':'application/xml; charset=utf-8','Content-Length':data.length,'Cache-Control':'no-store'})); return res.end(data);
       }
-      if (['/','/stories','/services','/faq'].includes(url.pathname) || /^\/stories\/[^/]+$/.test(url.pathname)) {
-        if (url.pathname==='/' && publicInfo(db,url.searchParams.get('agency')||'tie').notFound) { assert(existsSync(root), 'Сначала соберите интерфейс: npm run build', 503); return await serveStatic(req,res,root,url.pathname); }
+      if (url.pathname === '/') {
+        assert(existsSync(root), 'Сначала соберите интерфейс: npm run build', 503);
+        return await serveStatic(req, res, root, url.pathname);
+      }
+      if (['/stories','/services','/faq'].includes(url.pathname) || /^\/stories\/[^/]+$/.test(url.pathname)) {
         const agency=publicAgency(db,url), home=getPublishedHome(db,agency.id);
-        // Until the first published main snapshot, preserve the legacy home shell.
-        if (url.pathname==='/' && !home) { assert(existsSync(root), 'Сначала соберите интерфейс: npm run build', 503); return await serveStatic(req,res,root,url.pathname); }
         const content=['case','package','faq'].flatMap(kind=>listPublishedContent(db,agency.id,kind));
         const story=url.pathname.startsWith('/stories/') ? getPublishedContent(db,agency.id,'case',decodeURIComponent(url.pathname.slice('/stories/'.length))) : null;
-        const page=story?'story':url.pathname==='/'?'home':url.pathname.slice(1);
+        const page=story?'story':url.pathname.slice(1);
         return sendHtml(res,200,renderAgencyHtml({agencyName:agency.name,page,content,domain:configuredDomain(db,agency.id),item:story,home}),{'Cache-Control':'no-store'});
       }
 

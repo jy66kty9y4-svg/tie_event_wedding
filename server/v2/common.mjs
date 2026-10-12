@@ -17,8 +17,9 @@ export function executeModule(db,user,cmd,operations) {
   operation.authorize(db,u,cmd);
   const hash=digest(JSON.stringify(cmd)); const prior=db.prepare('SELECT * FROM commands WHERE id=? AND user_id=?').get(cmd.id,u.id);
   if(prior){assert(prior.digest===hash,'ID команды уже использован',409);return safeCommandResult(db,u,JSON.parse(prior.result));}
-  const result=safeCommandResult(db,u,operation.run(db,u,cmd));
-  assert(result!==undefined&&!result?.then,'Команда должна вернуть синхронный результат');
+  const rawResult=operation.run(db,u,cmd);
+  assert(rawResult!==undefined&&!rawResult?.then,'Команда должна вернуть синхронный результат');
+  const result=safeCommandResult(db,u,rawResult);
   const saved=operation.redactResult?operation.redactResult(result):result;
   db.prepare('INSERT INTO commands VALUES(?,?,?,?)').run(cmd.id,u.id,hash,JSON.stringify(saved));return result;
  });}catch(error){if(error.details)error.details=safeCommandResult(db,user,error.details);throw error}
@@ -29,6 +30,19 @@ export function projectAccess(db,u,id,action='read',section, row,fields) {
  if(section) requireAccess(db,u,action,id,section,row,fields);return p;
 }
 export function scoped(db,u,id,project,kind,{deleted=false}={}) {const r=getScoped(db,u,id,project,kind);assert(deleted||!r.deleted,'Запись удалена',409);return r;}
+
+export function historicalRecord(db,u,c,row) {
+ assert(row.deleted||c.auditId,'Выберите удалённую запись или версию',409);
+ if(!c.auditId)return row;
+ const audit=db.prepare('SELECT * FROM audit WHERE id=? AND entity_id=? AND agency_id=?').get(c.auditId,row.id,u.agency_id);
+ assert(audit&&audit.kind===row.kind,'Версия не найдена',404);
+ const record=JSON.parse(audit.before_json||audit.after_json||'null');
+ assert(record?.id===row.id&&record.kind===row.kind&&record.project_id===row.project_id&&record.data,'Версия не соответствует записи',409);
+ return record;
+}
+export function changedFields(before,after) {
+ return [...new Set([...Object.keys(before||{}),...Object.keys(after||{})])].filter(key=>JSON.stringify(before?.[key])!==JSON.stringify(after?.[key]));
+}
 export function members(db,u,project) {
  project=typeof project==='object'?project.id:project;
  projectAccess(db,u,project);

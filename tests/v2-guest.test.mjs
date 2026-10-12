@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase, entity, insert } from '../server/db.mjs';
-import { bootstrap, execute, register } from '../server/service.mjs';
+import { bootstrap, execute, snapshot } from '../server/service.mjs';
+import { registerTestUser as register } from './fixtures/account.mjs';
 import { entities } from '../server/db.mjs';
 import { configureGuestHooks, context, exchange, execute as executeGuest, guestInvites, guestList, migrate, redactGuestCommandResult, respond, seatingSnapshot, validateGuestRowMutation, validateGuestSchemaMutation } from '../server/v2/guest/index.mjs';
 import { clampPosition, rotatedExtents, seatPositions, tableOutline } from '../src/v2/guest/geometry.mjs';
+import {countGuestsWithFoodRestrictions,hasFoodRestriction,personalInvitationsEnabled} from '../src/guest-blueprint.js';
 
 let n=0;
 const id=()=>`guestcmd_${++n}`;
@@ -19,15 +21,84 @@ function publishedSite(db,user,project,{shareId='z'.repeat(24),rsvpDeadline='209
   return entity(db,site.id);
 }
 
-function fixture() {
+function fixture({enabled=true}={}) {
   const db=openDatabase(':memory:'); const {user}=bootstrap(db,{slug:'guest-test',agencyName:'Тест',email:'owner@example.test',name:'Владелец',password:'strong-pass-1'}); migrate(db);
-  const project=v1(db,user,'project.create',{data:{name:'Ира и Макс',date:'2027-08-14',location:'Москва'}});
+  let project=v1(db,user,'project.create',{data:{name:'Ира и Макс',date:'2027-08-14',location:'Москва'}});
+  if(enabled){v2(db,user,'guestInvitations.settings',{projectId:project.id,version:project.version,enabled:true});project=entity(db,project.id);}
   let table=entities(db,user.agency_id,project.id,'table').find(item=>item.data.key==='guests');
   table=v1(db,user,'entity.edit',{projectId:project.id,entityId:table.id,version:table.version,data:{...table.data,columns:[...table.data.columns,{id:'meal',name:'Пожелания по питанию',type:'text'},{id:'seat_table',name:'Стол (ID)',type:'relation',targetKind:'seatingTable'},{id:'seat_index',name:'Место',type:'number'}]}});
   const row=v1(db,user,'entity.create',{projectId:project.id,kind:'row',parentId:table.id,schemaVersion:table.version,data:{name:'Ира',status:'Приглашён',meal:'',contact:'',seat_table:'',seat_index:''}});
   table=v2(db,user,'guestMapping.save',{projectId:project.id,guestTableId:table.id,schemaVersion:table.version,data:{semanticMap:{guestName:'name',rsvpStatus:'status',diet:'meal',contact:'contact',seatingTable:'seat_table',seatIndex:'seat_index',rsvpValues:{unanswered:'Не отправлено',confirmed:'Подтвердил',declined:'Отказ',tentative:'Приглашён'}}},confirm:true});
   return {db,user,project,table,row};
 }
+
+test('personal invitations default off and require administrator approval per wedding',()=>{
+  const {db,user,project,table,row}=fixture({enabled:false});publishedSite(db,user,project);
+  assert.equal(personalInvitationsEnabled(project),false);
+  assert.equal(personalInvitationsEnabled({data:{}}),false);
+  assert.equal(snapshot(db,user,project.id).guestInvites,undefined);
+  assert.equal(snapshot(db,user,project.id).canManageGuestInvitations,true);
+  const couple=register(db,{slug:'guest-test',email:'couple-settings@example.test',name:'Пара',password:'strong-pass-5'}).user;
+  const role=v1(db,user,'role.save',{name:'Пара с реестром',permissions:['read','create','edit','delete','structure','manageGuestInvites']});
+  v1(db,user,'grants.save',{userId:couple.id,version:couple.version,grants:[{roleId:role.id,projectId:project.id,restrictions:{}}]});
+  assert.equal(snapshot(db,couple,project.id).canManageGuestInvitations,false);
+  const create={projectId:project.id,guestTableId:table.id,schemaVersion:table.version,guestRowIds:[row.id]};
+  failure(()=>v1(db,couple,'guestInvitations.settings',{projectId:project.id,version:project.version,enabled:true}),403);
+  failure(()=>v1(db,couple,'entity.edit',{projectId:project.id,entityId:project.id,version:project.version,data:{personalInvitationsEnabled:true}}),409);
+  failure(()=>v1(db,user,'entity.edit',{projectId:project.id,entityId:project.id,version:project.version,data:{personalInvitationsEnabled:true}}),409);
+  failure(()=>v1(db,couple,'guestInvite.create',create),403);
+  failure(()=>guestInvites(db,couple,project.id,table.id),403);
+  failure(()=>v1(db,user,'guestInvitations.settings',{projectId:project.id,version:project.version,enabled:'true'}),400);
+  v1(db,user,'guestInvitations.settings',{projectId:project.id,version:project.version,enabled:true});
+  assert.equal(snapshot(db,couple,project.id).project.data.personalInvitationsEnabled,true);
+  assert.deepEqual(snapshot(db,couple,project.id).guestInvites,[]);
+  const second=v1(db,user,'project.create',{data:{name:'Другая пара',date:'2027-08-15',personalInvitationsEnabled:true}});
+  assert.equal(personalInvitationsEnabled(second),false);
+  const invitation=v1(db,couple,'guestInvite.create',create),session=exchange(db,{shareId:'z'.repeat(24),token:invitation.token});
+  const disabled=v1(db,user,'guestInvitations.settings',{projectId:project.id,version:entity(db,project.id).version,enabled:false});
+  assert.equal(db.prepare('SELECT count(*) n FROM guest_sessions').get().n,0);
+  failure(()=>exchange(db,{shareId:'z'.repeat(24),token:invitation.token}),404);
+  failure(()=>context(db,{shareId:'z'.repeat(24),sessionToken:session.sessionToken,csrfToken:session.csrfToken}),403);
+  failure(()=>v1(db,couple,'guestInvite.rotate',{projectId:project.id,inviteId:invitation.inviteId,version:1,schemaVersion:table.version}),403);
+  failure(()=>v1(db,user,'guestInvitations.settings',{projectId:project.id,version:project.version,enabled:true}),409);
+  v1(db,user,'guestInvitations.settings',{projectId:project.id,version:disabled.version,enabled:true});
+  assert.equal(typeof exchange(db,{shareId:'z'.repeat(24),token:invitation.token}).sessionToken,'string');
+  db.close();
+});
+
+test('food restriction statistics count readable people once and ignore negative answers',()=>{
+  const map={allergies:'allergy',diet:'meal'},rows=[
+    {data:{allergy:'Орехи, молоко',meal:'Без глютена'}},
+    {data:{allergy:' нет. ',meal:'Вегетарианское меню'}},
+    {data:{allergy:'Нет аллергий',meal:'Обычное питание'}},
+    {data:{allergy:'—',meal:''}},
+    {data:{allergy:'Рыба'},deleted:true},
+    {data:{allergy:'Молоко'},id:'private'}
+  ];
+  assert.equal(countGuestsWithFoodRestrictions(rows,map),3);
+  assert.equal(countGuestsWithFoodRestrictions(rows,map,row=>row.id!=='private'),2);
+  assert.equal(countGuestsWithFoodRestrictions(rows,map,()=>false),0);
+  assert.equal(hasFoodRestriction('Без лактозы'),true);
+  assert.equal(hasFoodRestriction('Нет ограничений!'),false);
+  assert.equal(hasFoodRestriction(['нет','Орехи']),true);
+});
+
+test('inline guest deletion updates people counts, frees seat and restoration keeps it free',()=>{
+  const {db,user,project,table,row}=fixture({enabled:false});
+  let guest=v1(db,user,'entity.edit',{projectId:project.id,entityId:row.id,version:row.version,schemaVersion:table.version,data:{allergies:'Орехи, молоко'}});
+  const plan=v2(db,user,'seatingPlan.save',{projectId:project.id,data:{name:'Зал',widthM:8,heightM:6,guestTableId:table.id}});
+  const seat=v2(db,user,'seatingTable.create',{projectId:project.id,planId:plan.id,planVersion:plan.version,data:{label:'Стол 1',shape:'round',xM:1,yM:1,capacity:2}});
+  guest=v2(db,user,'seating.assign',{projectId:project.id,guestTableId:table.id,schemaVersion:table.version,guestRowId:guest.id,rowVersion:guest.version,tableId:seat.id,tableVersion:seat.version,seatIndex:1,confirmNonConfirmed:true});
+  assert.equal(countGuestsWithFoodRestrictions([guest],table.data.semanticMap),1);
+  v1(db,user,'entity.delete',{projectId:project.id,entityId:guest.id,version:guest.version,schemaVersion:table.version,confirm:true});
+  assert.equal(guestList(db,user,project.id,table.id).total,0);
+  assert.equal(countGuestsWithFoodRestrictions([entity(db,guest.id)],table.data.semanticMap),0);
+  assert.equal(entity(db,guest.id).data.seat_table,'');
+  const restored=v1(db,user,'entity.restore',{projectId:project.id,entityId:guest.id,version:entity(db,guest.id).version,schemaVersion:table.version});
+  assert.equal(restored.data.seat_table,'');assert.equal(restored.data.seat_index,'');
+  assert.equal(countGuestsWithFoodRestrictions([restored],table.data.semanticMap),1);
+  db.close();
+});
 
 test('guest mapping preserves V1 columns and generic mapped mutations are blocked',()=>{
   const {table,row}=fixture();

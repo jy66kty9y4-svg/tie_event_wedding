@@ -1,0 +1,62 @@
+.modal-header-actions{display:flex;align-items:center;gap:4px;flex:none}
+.tie-workspace .workspace .collection-projects:has(.wedding-status-card){grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+.collection-projects .wedding-status-card{padding:22px 24px;border-radius:16px;min-height:0;min-width:0}
+.collection-projects .wedding-status-card.has-stage-popover{position:relative;z-index:35;transform:none}
+.wedding-status-card .project-card-top{margin-bottom:17px;align-items:center;gap:10px;flex-wrap:nowrap;min-width:0}
+.wedding-status-card .project-card-top>.status-badge{flex:none;white-space:nowrap}
+.wedding-status-card .wedding-properties{width:28px;height:28px;min-height:28px;padding:4px;color:var(--muted)}
+.wedding-status-card .wedding-properties{flex:none;margin-left:auto}
+.wedding-properties .icon{width:16px;height:16px;stroke-width:3}
+.collection-projects .wedding-card-identity h2{margin-bottom:12px;font-family:var(--sans);font-size:25px}
+.wedding-card-control{margin-top:21px}
+.wedding-progress-heading{display:flex;justify-content:flex-end;margin-bottom:8px}
+.wedding-progress-heading strong{color:var(--ink);font-size:13px;font-weight:600}
+.wedding-progress{height:5px;border-radius:3px;background:var(--tie-soft);overflow:hidden}
+.wedding-progress>span{display:block;height:100%;border-radius:inherit;background:var(--tie-success);transition:width .2s ease}
+.wedding-stickers{position:relative;display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:3px 4px;min-width:0;width:100%;margin:-5px 0 17px}
+.wedding-sticker{display:inline-flex;align-items:center;justify-content:center;width:100%;height:28px;min-width:0;min-height:0;padding:0;border:0;border-radius:0;background:none;box-shadow:none;cursor:pointer}
+.wedding-sticker-art{display:block;font-size:18px;line-height:1;filter:grayscale(1) brightness(.8);opacity:.8;transition:filter .15s,opacity .15s,transform .12s}
+.wedding-sticker.is-done .wedding-sticker-art{filter:none;opacity:1}
+.wedding-sticker.is-problem .wedding-sticker-art{filter:grayscale(1) sepia(1) saturate(6) hue-rotate(320deg);opacity:1}
+.wedding-sticker.is-optional .wedding-sticker-art{opacity:.65}
+.wedding-sticker:hover .wedding-sticker-art{transform:translateY(-1px)}
+.wedding-sticker:focus-visible{outline:2px solid var(--rose);outline-offset:-2px;border-radius:4px}
+.wedding-status-card .wedding-card-open{width:100%;background:none;border:0;border-top:1px solid var(--border);text-align:left;margin-top:20px;padding:16px 0 0}
+.wedding-stage-popover{position:absolute;z-index:1;width:min(300px,calc(100vw - 16px));overflow:auto;overscroll-behavior:contain;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 28px #23232220;text-align:left}
+.wedding-popover-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border)}
+.wedding-popover-header h3{margin:0;font:600 14px/1.35 var(--sans);color:var(--ink)}
+.wedding-popover-header>div{display:flex;align-items:center;gap:2px;flex:none}
+.wedding-popover-header .icon-button{width:26px;height:26px;min-height:26px;padding:5px}
+.wedding-popover-header .icon{width:15px;height:15px}
+.wedding-stage-popover .wedding-stage-form{padding:12px;gap:12px}
+.wedding-stage-popover .wedding-note-view{padding:12px}
+.wedding-stage-popover .wedding-note-project{font-size:11px;margin:0 0 10px}
+.wedding-stage-popover .wedding-note-text{font-size:12px;line-height:1.55;margin:12px 0}
+.wedding-stage-popover .quiet-copy{font-size:10px}
+.wedding-stage-popover .form-field>span,.wedding-stage-popover .wedding-stage-optional{font-size:11px}
+.wedding-stage-popover .form-field textarea{font-size:13px;min-height:76px;resize:vertical}
+.wedding-stage-popover .wedding-stage-statuses{gap:4px}
+.wedding-stage-popover .wedding-stage-statuses legend{font-size:11px;margin-bottom:6px}
+.wedding-stage-popover .wedding-status-choice{font-size:11px;padding:5px 6px}
+.wedding-stage-popover .dialog-actions{margin:0;gap:6px}
+.wedding-stage-popover .button{font-size:11px;min-height:30px;padding:6px 10px}
+.wedding-stage-statuses{padding:0;border:0;display:flex;flex-wrap:wrap;gap:8px;margin:0}
+.wedding-stage-statuses legend{margin-bottom:10px;font-size:12px;color:var(--muted)}
+.wedding-status-choice{display:flex;align-items:center;gap:6px;padding:8px 10px;border:1px solid var(--tie-line);border-radius:6px;font-size:12px;cursor:pointer}
+.wedding-status-choice input{margin:0;width:13px;height:13px;accent-color:var(--muted)}
+.wedding-status-choice.is-open.is-selected{background:#f0f1f0;border-color:#a8adaa}
+.wedding-status-choice.is-done.is-selected{background:#deefe3;border-color:#78ab89;color:var(--tie-success)}
+.wedding-status-choice.is-done input{accent-color:var(--tie-success)}
+.wedding-status-choice.is-problem.is-selected{background:#f9dddd;border-color:#c27370;color:var(--tie-error)}
+.wedding-stage-optional{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.wedding-stage-optional input{width:15px;height:15px;margin:0}
+.wedding-note-project{margin:0 0 15px;font-size:12px;color:var(--muted)}
+.wedding-note-status{display:inline-flex;padding:5px 9px;border-radius:5px;background:#f0f1f0;font-size:12px;color:var(--muted)}
+.wedding-note-status.is-done{background:#deefe3;color:var(--tie-success)}
+.wedding-note-status.is-problem{background:#f9dddd;color:var(--tie-error)}
+.wedding-note-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;line-height:1.65;margin:18px 0}
+.wedding-note-edit .icon{width:16px;height:16px}
+@media(min-width:1700px){.tie-workspace .workspace .collection-projects:has(.wedding-status-card){grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:1000px){.tie-workspace .workspace .collection-projects:has(.wedding-status-card){grid-template-columns:minmax(0,1fr)}}
+@media(max-width:767px){.collection-projects .wedding-status-card{padding:20px 18px}.wedding-status-card .project-card-top{gap:7px}.wedding-stage-popover .form-field textarea{font-size:16px}}
+@media(prefers-reduced-motion:reduce){.wedding-progress>span,.wedding-sticker-art{transition:none}}

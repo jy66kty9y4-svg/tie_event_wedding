@@ -1,0 +1,26 @@
+{
+  "background": "#7B1F35",
+  "foreground": "#FFFFFF",
+  "variants": [
+    {
+      "id": "01-signature",
+      "label": "Фирменная подпись"
+    },
+    {
+      "id": "02-script-t",
+      "label": "Рукописная T"
+    },
+    {
+      "id": "03-ardeco-tie",
+      "label": "TIE · Ardeco"
+    },
+    {
+      "id": "04-ardeco-t",
+      "label": "T · Ardeco"
+    },
+    {
+      "id": "05-evolventa-tie",
+      "label": "TIE · Evolventa"
+    }
+  ]
+}

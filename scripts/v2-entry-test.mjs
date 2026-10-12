@@ -1,3 +1,4 @@
+import {markLegacyAccount} from '../tests/fixtures/account.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -38,10 +39,10 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 const adminApi = new ApiClient(origin);
 let browser;
 
-async function login(page, email, password, openedByCta = false) {
-  const dialog = page.getByRole('dialog', { name: 'Войти в tie' });
-  if (!openedByCta) await page.locator('#root').getByRole('button', { name: 'Войти', exact: true }).click();
+async function login(page, email, password) {
+  const dialog = page.getByRole('region', { name: 'Войти в tie' });
   await dialog.waitFor();
+  await dialog.getByRole('button', { name: 'Почта', exact: true }).click();
   await dialog.getByLabel('Почта', { exact: true }).fill(email);
   await dialog.getByLabel('Пароль', { exact: true }).fill(password);
   await dialog.getByRole('button', { name: 'Войти', exact: true }).click();
@@ -55,42 +56,37 @@ try {
   let service = await adminApi.command('publicContent.saveDraft', { data: { kind: 'package', draft: { title: 'Координация дня', slug: 'day-coordination', summary: 'Опубликованный пакет для проверки источника' } } });
   service = await adminApi.command('publicContent.publish', { entityId: service.id, version: service.version, data: { kind: 'package' } });
   const visitorApi = new ApiClient(origin);
-  await visitorApi.post('/api/register', { slug: 'tie', name: 'Источник CTA', email: 'entry-visitor@example.test', password: 'entry-visitor-password' });
+  await visitorApi.post('/api/register', { slug: 'tie', name: 'Источник CTA', email: 'entry-visitor@example.test', phone: '+79990000001', password: 'entry-visitor-password' });
 
   browser = await chromium.launch({ executablePath: chromePath, headless: true });
   // AC34: both published CTA links carry their immutable owner IDs into the login flow.
+  markLegacyAccount(server.db,server.db.prepare('SELECT id FROM users WHERE email=?').get('entry-visitor@example.test').id);
   const packageVisitor = await browser.newContext({ viewport: { width: 1200, height: 900 } });
   const packagePage = await packageVisitor.newPage();
   await packagePage.goto(`${origin}/services?agency=tie`);
-  await packagePage.getByRole('link', { name: 'Обсудить этот формат', exact: true }).click();
-  await packagePage.waitForURL(new RegExp(`/app\\?sourcePackageId=${service.id}$`));
-  await packagePage.getByRole('dialog', { name: 'Войти в tie' }).waitFor();
+  await packagePage.getByRole('link', { name: 'Обсудить формат', exact: true }).click();
+  await packagePage.waitForURL(url => url.pathname === '/app' && url.searchParams.get('sourcePackageId') === service.id);
+  await packagePage.getByRole('region', { name: 'Войти в tie' }).waitFor();
   await packageVisitor.close();
   const visitor = await browser.newContext({ viewport: { width: 1200, height: 900 } });
   const page = await visitor.newPage();
   await page.goto(`${origin}/stories/lake-wedding?agency=tie`);
   await page.getByRole('link', { name: 'Обсудить похожую свадьбу', exact: true }).click();
-  await page.waitForURL(new RegExp(`/app\\?sourceCaseId=${story.id}$`));
-  await login(page, 'entry-visitor@example.test', 'entry-visitor-password', true);
-  let application = page.getByRole('dialog', { name: 'Заявка на свадьбу' });
-  await application.getByLabel('Как к вам обращаться', { exact: true }).fill('Источник CTA');
-  await application.getByLabel('Дата свадьбы', { exact: true }).fill('2027-10-10');
-  await application.getByLabel('Почта или телефон', { exact: true }).fill('source@example.test');
-  await application.getByLabel('Что для вас важно', { exact: true }).fill('Сохранить этот текст заявки');
-  assert.deepEqual(await page.evaluate(() => JSON.parse(sessionStorage.getItem('tie:application-draft'))), {
-    name: 'Источник CTA', date: '2027-10-10', contact: 'source@example.test', message: 'Сохранить этот текст заявки', sourceCaseId: story.id,
-  });
-  page.once('dialog', dialog => dialog.accept());
-  await application.getByRole('button', { name: 'Отмена', exact: true }).click();
-  await application.waitFor({ state: 'detached' });
-  await page.getByRole('button', { name: 'Оставить заявку', exact: true }).click();
-  application = page.getByRole('dialog', { name: 'Заявка на свадьбу' });
-  await application.waitFor();
-  assert.match(await application.textContent(), /Расскажите самое важное/, 'application draft did not reopen as an editable form');
-  assert.equal(await application.locator('textarea').inputValue(), 'Сохранить этот текст заявки');
-  assert.equal(await application.locator('input[type="date"]').inputValue(), '2027-10-10');
-  await application.getByRole('button', { name: 'Отправить заявку', exact: true }).click();
-  await application.getByText('Заявка отправлена', { exact: false }).waitFor();
+  await page.waitForURL(url => url.pathname === '/app' && url.searchParams.get('sourceCaseId') === story.id);
+  await login(page, 'entry-visitor@example.test', 'entry-visitor-password');
+  await page.getByRole('heading', { name: 'Расскажите нам о вашей свадьбе.' }).waitFor();
+  assert.deepEqual(await page.evaluate(() => JSON.parse(sessionStorage.getItem('tie:application-draft'))), { sourceCaseId: story.id });
+  await page.getByRole('button', { name: 'Заполнить анкету' }).click();
+  const fields = await page.locator('.questionnaire-field input[required],.questionnaire-field textarea[required]').all();
+  for (let index = 0; index < fields.length; index++) await fields[index].fill(index === 0 ? '2027-10-10' : index === 1 ? 'source@example.test' : index === 2 ? 'Источник CTA' : `Сохранить этот текст заявки ${index}`);
+  await page.getByRole('checkbox', { name: 'закат/рассвет' }).check();
+  await page.getByRole('button', { name: 'Вернуться', exact: true }).click();
+  await page.getByRole('button', { name: 'Заполнить анкету' }).click();
+  assert.equal(await page.locator('.questionnaire-field textarea').first().inputValue(), 'Сохранить этот текст заявки 3');
+  assert.equal(await page.locator('input[type="date"]').inputValue(), '2027-10-10');
+  await page.getByRole('button', { name: 'Отправить анкету и заявку' }).click();
+  await page.getByRole('heading', { name: 'Спасибо, мы получили вашу заявку.' }).waitFor();
+  let application;
 
   const submitted = await adminApi.get('/api/state');
   const sourceApplication = submitted.applications.find(item => item.data?.contact === 'source@example.test');
@@ -114,11 +110,11 @@ try {
   await staffPage.locator('.project-card').filter({ hasText: 'Источник CTA' }).waitFor();
   assert.equal(await staffPage.locator('.project-card').count(), 1, 'one approved application must create exactly one project');
   await staffPage.getByRole('button', { name: 'Финансы агентства', exact: true }).click();
-  await staffPage.getByRole('heading', { name: 'Собственный бюджет', exact: true }).waitFor();
+  await staffPage.getByRole('heading', { name: 'Касса агентства', exact: true }).waitFor();
   await staffPage.getByRole('button', { name: 'Свадьбы', exact: true }).click();
   const projectCard = staffPage.locator('.project-card').filter({ hasText: 'Источник CTA' });
   await projectCard.getByRole('button').filter({ hasText: 'Источник CTA' }).click();
-  await staffPage.waitForURL(/\/app\/projects\/[^/]+\/overview/);
+  await staffPage.waitForURL(/\/app\/projects\/[^/]+\/finance\/estimate/);
   await staffPage.getByRole('heading', { name: 'Источник CTA', exact: true }).waitFor();
   assert.equal(await staffPage.getByRole('button', { name: 'Финансы агентства', exact: true }).count(), 1, 'agency sidebar must remain available inside a project');
 

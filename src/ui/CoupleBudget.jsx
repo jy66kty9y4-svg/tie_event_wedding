@@ -1,112 +1,48 @@
-import React, {useEffect, useState} from 'react';
-import {coupleBudgetTotals, coupleBudgetOrganizerIncluded} from '../couple-budget.js';
+import {Icon} from './Mark.jsx';
+import {SheetDraftRow} from './SheetDraftRow.jsx';
+import {ConfirmDialog} from './Modal.jsx';
+import {BudgetColumnsEditor} from './BudgetColumnsEditor.jsx';
+import {SheetCell} from './SheetCell.jsx';
+import {ResizeHandle} from './SheetLayout.jsx';
+import {useBudgetDevice,useBudgetView} from './useBudgetView.js';
+import {SheetZoom} from './SheetZoom.jsx';
+import React, {useState} from 'react';
+import {coupleBudgetTotals, coupleBudgetColumns, coupleBudgetBaseColumns, coupleBudgetOrganizerIncluded, coupleBudgetOrganizerGroups, coupleBudgetRemaining} from '../couple-budget.js';
 import './couple-budget.css';
+import {BudgetCell} from './BudgetCell.jsx';
+import {displayBudgetAmount} from '../budget-format.js';
 
-const number = new Intl.NumberFormat('ru-RU', {maximumFractionDigits:2});
-const display = cents => number.format(cents / 100);
-const editValue = cents => cents == null ? '' : String(cents / 100);
+const display=displayBudgetAmount;
 
-function EditableCell({row, field, value, label, onSave, name = false, note = false, group = false}) {
-  const isText=name||note;
-  const [draft, setDraft] = useState(isText ? value : editValue(value));
-  const [active, setActive] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  useEffect(() => { if (!active && !saving) setDraft(isText ? value : editValue(value)); }, [value, active, saving, isText]);
-  const save = async () => {
-    setActive(false);
-    const next = draft.trim();
-    if (name && !next) { setError('Укажите название'); return; }
-    if (isText && next === value) return;
-    if (!isText && next === editValue(value)) return;
-    if (!isText && next && !/^(?:\d+)(?:[.,]\d{1,2})?$/.test(next)) { setError('Сумма: не более двух знаков после запятой'); return; }
-    const normalized = isText ? next : next === '' ? null : Math.round(Number(next.replace(',', '.')) * 100);
-    if (!isText && normalized === value) return;
-    setSaving(true);
-    try { await onSave(row, field, normalized); }
-    catch { setDraft(isText ? value : editValue(value)); }
-    finally { setSaving(false); }
-  };
-  return <><input
-    className={`couple-budget-input${name?' is-name':''}${note?' is-note':''}${group?' is-group':''}`}
-    aria-label={label}
-    title={isText?'Нажмите, чтобы изменить текст':label}
-    inputMode={isText?undefined:'decimal'}
-    type="text"
-    maxLength={name?200:note?500:undefined}
-    value={draft}
-    aria-invalid={!!error}
-    disabled={saving}
-    onFocus={() => setActive(true)}
-    onChange={event => {setDraft(event.target.value);setError('');}}
-    onBlur={save}
-    onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); if (event.key === 'Escape') { setDraft(isText ? value : editValue(value)); setError(''); event.currentTarget.blur(); } }}
-  />{error&&<small className="couple-budget-error" role="alert">{error}</small>}</>;
+export function CoupleBudget(props) {
+  const device=useBudgetDevice(),{state}=props,scope=`${state.agency.id}:${state.user.id}:${state.project.id}`;
+  return <BudgetWorkspace key={`${scope}:${device}`} {...props} device={device} viewScope={scope}/>;
 }
 
-function InlineAdd({kind, group, onSave, onCancel}) {
-  const [name,setName]=useState(''),[note,setNote]=useState(''),[organizer,setOrganizer]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
-  const wholeOrganizer=[28,51].includes(group?.row);
-  return <form className="couple-budget-add-form" onSubmit={async event=>{
-    event.preventDefault();
-    if(!name.trim()){setError('Укажите название');return;}
-    setBusy(true);setError('');
-    try{await onSave(kind,kind==='section'?{name:name.trim()}:{sectionId:group.row,name:name.trim(),note:note.trim(),organizer:wholeOrganizer||organizer});onCancel();}
-    catch(reason){setError(reason.message||'Не удалось сохранить');setBusy(false);}
-  }}>
-    <label>{kind==='section'?'Новый раздел':'Новая статья'}<input autoFocus maxLength="200" value={name} onChange={event=>setName(event.target.value)} placeholder={kind==='section'?'Название раздела':'Название статьи'}/></label>
-    {kind==='item'&&<><label>Примечание<input maxLength="500" value={note} onChange={event=>setNote(event.target.value)} placeholder="Необязательно"/></label>{!wholeOrganizer&&<label className="couple-budget-check"><input type="checkbox" checked={organizer} onChange={event=>setOrganizer(event.target.checked)}/> Включить в бюджет организатора</label>}</>}
-    <div className="couple-budget-add-actions"><button type="submit" disabled={busy}>Добавить</button><button type="button" onClick={onCancel} disabled={busy}>Отмена</button></div>
-    {error&&<small role="alert">{error}</small>}
-  </form>;
-}
-
-export function CoupleBudget({state, onSave, onStructure, onDocuments}) {
-  const [query,setQuery]=useState(''),[adding,setAdding]=useState(null);
-  const sheet = (state.entities || []).find(item => item.kind === 'coupleBudget' && !item.deleted)?.data || {};
+function BudgetWorkspace({state,onSave,onStructure,onDocuments,onLayout,onExport,device,viewScope}) {
+  const [query,setQuery]=useState(''),[adding,setAdding]=useState(null),[columnsOpen,setColumnsOpen]=useState(false),[error,setError]=useState(''),[deleting,setDeleting]=useState(null);
+  const sheet=(state.entities||[]).find(item=>item.kind==='coupleBudget'&&!item.deleted)?.data||{};
   const {groups,groupTotals,overall,organizer}=coupleBudgetTotals(sheet);
-  const fieldValue = (field, row) => sheet[field]?.[row] ?? null;
-  const rowValue = row => (fieldValue('actual', row) || 0) - (fieldValue('prepaid', row) || 0);
-  const title = (row, fallback) => sheet.names?.[row] || fallback;
-  const note = item => sheet.notes?.[item.row] ?? item.note ?? '';
-  const columns = [['estimated','Предполагаемые'],['actual','Фактические'],['prepaid','Предоплата'],['remaining','Осталось']];
-  const totalCells = totals => columns.map(([field]) => <td key={field} className={field==='remaining'?'couple-budget-remaining':''}>{display(totals[field])}</td>);
+  const columns=coupleBudgetColumns(sheet),count=columns.length+1;
+  const canEdit=field=>!!state.user?.protected||(state.grants||[]).some(grant=>(grant.project_id==null||grant.project_id===state.project?.id)&&['edit','finance'].every(action=>grant.permissions?.includes(action))&&(!grant.restrictions?.sections?.length||grant.restrictions.sections.includes('budget'))&&(!grant.restrictions?.fields?.length||grant.restrictions.fields.includes(field)));
+  const canStructure=!!state.user?.protected||(state.grants||[]).some(grant=>(grant.project_id==null||grant.project_id===state.project?.id)&&['edit','structure','finance'].every(action=>grant.permissions?.includes(action))&&!grant.restrictions?.fields?.length&&(!grant.restrictions?.sections?.length||grant.restrictions.sections.includes('budget')));
+  const canCreate=field=>!!state.user?.protected||(state.grants||[]).some(grant=>(grant.project_id==null||grant.project_id===state.project?.id)&&['create','finance'].every(action=>grant.permissions?.includes(action))&&(!grant.restrictions?.sections?.length||grant.restrictions.sections.includes('budget'))&&(!grant.restrictions?.fields?.length||grant.restrictions.fields.includes(field)));
+  const canDelete=!!state.user?.protected||(state.grants||[]).some(grant=>(grant.project_id==null||grant.project_id===state.project?.id)&&['delete','finance'].every(action=>grant.permissions?.includes(action))&&!grant.restrictions?.fields?.length&&(!grant.restrictions?.sections?.length||grant.restrictions.sections.includes('budget')));
+  const canRestore=!!state.user?.protected||(state.grants||[]).some(grant=>['history','edit','finance'].every(action=>grant.permissions?.includes(action))&&(grant.project_id==null||grant.project_id===state.project?.id)&&!grant.restrictions?.fields?.length&&!grant.restrictions?.rows?.length);
+  const deleted=(sheet.deletedRows||[]).length?coupleBudgetTotals({...sheet,deletedRows:[]}).groups.flatMap(group=>[group,...group.items]).filter(item=>sheet.deletedRows.includes(String(item.row))):[];
+  const {table,layout,resize,scaleKey,initialScale,defaultFit}=useBudgetView({scope:viewScope,device,columns,sheet,onLayout:async(axis,key,value)=>{try{await onLayout(axis,key,value);setError('')}catch(reason){setError(reason.message);throw reason}}});
+  const widths=columns.map(column=>layout.columnWidths?.[column.id]||({name:280,note:300}[column.id]||170));
+  const title=(row,fallback)=>sheet.names?.[row]||fallback,note=item=>sheet.notes?.[item.row]??item.note??'';
   const search=query.trim().toLocaleLowerCase('ru');
-  const visibleGroups=groups.map(group=>{
-    const match=title(group.row,group.name).toLocaleLowerCase('ru').includes(search);
-    const items=!search||match?group.items:group.items.filter(item=>`${title(item.row,item.name)} ${note(item)}`.toLocaleLowerCase('ru').includes(search));
-    return {...group,visibleItems:items,match};
-  }).filter(group=>!search||group.match||group.visibleItems.length);
-  const visibleCount=visibleGroups.reduce((total,group)=>total+group.visibleItems.length,0);
-  const totalCount=groups.reduce((total,group)=>total+group.items.length,0);
-  const focusName=event=>event.currentTarget.closest('.couple-budget-name')?.querySelector('input')?.focus();
-  return <section className="couple-budget-workspace" aria-label="Смета пары">
-    <div className="couple-budget-intro"><p>Смета пары</p><span>Названия и суммы меняются в таблице. «Осталось» = фактические расходы − предоплата.</span></div>
-    <div className="couple-budget-toolbar"><label><span className="sr-only">Поиск по смете</span><input type="search" aria-label="Поиск по смете" placeholder="Найти раздел или статью" value={query} onChange={event=>setQuery(event.target.value)}/></label><span>{search?`Найдено статей: ${visibleCount}`:`Статей: ${totalCount}`}</span>{search&&<button type="button" onClick={()=>setQuery('')}>Сбросить поиск</button>}</div>
-    <div className="couple-budget-scroll"><table className="couple-budget-sheet">
-      <colgroup><col className="couple-budget-col-name"/><col className="couple-budget-col-estimated"/><col className="couple-budget-col-actual"/><col className="couple-budget-col-prepaid"/><col className="couple-budget-col-remaining"/><col className="couple-budget-col-note"/></colgroup>
-      <thead><tr className="couple-budget-title"><th>СМЕТА</th><th/><th/><th/><th><button type="button" onClick={onDocuments}>Ваши документы</button></th><th/></tr></thead>
-      <tbody>
-        <tr className="couple-budget-summary-head"><th/><th>Предполагаемые</th><th>Фактические</th><th>Всего предоплачено</th><th>Осталось оплатить</th><th/></tr>
-        <tr className="couple-budget-summary"><th>Общий бюджет</th>{totalCells(overall)}<td/></tr>
-        <tr className="couple-budget-summary"><th>Общий бюджет для организатора</th>{totalCells(organizer)}<td/></tr>
-        {search&&<tr className="couple-budget-search-note"><td colSpan="6">Поиск не меняет суммы: итоги рассчитаны по всей смете.</td></tr>}
-        {visibleGroups.map(group => <React.Fragment key={group.row}>
-          <tr className="couple-budget-spacer"><td colSpan="6"/></tr>
-          <tr className="couple-budget-section-head"><th/><th>Предполагаемые</th><th>Фактические</th><th>Предоплата</th><th>Осталось</th><th/></tr>
-          <tr className="couple-budget-group"><th><div className="couple-budget-name"><EditableCell row={group.row} field="name" value={title(group.row,group.name)} label={`Название раздела ${title(group.row,group.name)}`} onSave={onSave} name group/><button type="button" onClick={focusName} aria-label={`Изменить раздел ${title(group.row,group.name)}`}>✎</button></div></th><td colSpan="5"><button className="couple-budget-insert" type="button" onClick={()=>setAdding(group.row)}>+ Добавить статью</button></td></tr>
-          {adding===group.row&&<tr className="couple-budget-add-row"><td colSpan="6"><InlineAdd kind="item" group={group} onSave={onStructure} onCancel={()=>setAdding(null)}/></td></tr>}
-          {group.visibleItems.map(item => <tr className="couple-budget-item" key={item.row}>
-            <th><div className="couple-budget-name"><EditableCell row={item.row} field="name" value={title(item.row,item.name)} label={`Название статьи ${title(item.row,item.name)}`} onSave={onSave} name/><button type="button" onClick={focusName} aria-label={`Изменить статью ${title(item.row,item.name)}`}>✎</button></div></th>
-            {columns.slice(0,3).map(([field,label]) => <td key={field} className="couple-budget-editable"><EditableCell row={item.row} field={field} value={fieldValue(field,item.row)} label={`${label}: ${title(item.row,item.name)}`} onSave={onSave}/></td>)}
-            <td className="couple-budget-remaining">{display(rowValue(item.row))}</td>
-            <td className="couple-budget-note"><EditableCell row={item.row} field="note" value={note(item)} label={`Примечание: ${title(item.row,item.name)}`} onSave={onSave} note/>{String(item.row).startsWith('item_')&&![28,51].includes(group.row)&&<label className="couple-budget-organizer"><input type="checkbox" checked={coupleBudgetOrganizerIncluded(sheet,item.row)} onChange={event=>onSave(item.row,'organizer',event.target.checked)}/>Для организатора</label>}</td>
-          </tr>)}
-          <tr className="couple-budget-total"><th>{group.totalLabel}</th>{totalCells(groupTotals[group.row])}<td/></tr>
-        </React.Fragment>)}
-        {search&&!visibleGroups.length&&<tr className="couple-budget-no-results"><td colSpan="6">По вашему запросу ничего не найдено.</td></tr>}
-        {!search&&<tr className="couple-budget-add-section"><td colSpan="6">{adding==='section'?<InlineAdd kind="section" onSave={onStructure} onCancel={()=>setAdding(null)}/>:<button type="button" onClick={()=>setAdding('section')}>+ Добавить раздел</button>}</td></tr>}
-      </tbody>
-    </table></div>
-  </section>;
+  const visible=groups.map(group=>({...group,visibleItems:!search||title(group.row,group.name).toLocaleLowerCase('ru').includes(search)?group.items:group.items.filter(item=>`${title(item.row,item.name)} ${note(item)}`.toLocaleLowerCase('ru').includes(search))})).filter(group=>!search||group.visibleItems.length||title(group.row,group.name).toLocaleLowerCase('ru').includes(search));
+  const deleteRow=(row,label)=>setDeleting({row,label});
+  const addRow=(kind,group)=> <SheetDraftRow key={`${kind}-${group?.row||''}`} columns={kind==='section'?columns.map(c=>({...c,computed:c.id!=='name'})):columns.map(c=>({...c,computed:c.id==='remaining',...(c.id==='remaining'?{resultType:'money'}:{})}))} requiredIds={['name']} canEdit={c=>canCreate(c.id)} onSave={(values,formats)=>onStructure(kind,{sectionId:group?.row,name:values.name,note:values.note||'',organizer:true,values,formats})} onCancel={()=>setAdding(null)} label={kind==='section'?'Новый раздел':'Новая статья'} saveLabel="Добавить"/>;
+  const totals=(label,values)=><tr className="couple-budget-total"><th className="sheet-index"/>{columns.map(c=>c.id==='name'?<th key={c.id}>{label}</th>:<td key={c.id} data-budget-column={c.id}>{['estimated','actual','prepaid','remaining'].includes(c.id)?display(values[c.id]):''}</td>)}</tr>;
+  const cell=(item,c)=>{
+    const value=c.id==='name'?title(item.row,item.name):c.id==='note'?note(item):c.id==='remaining'?coupleBudgetRemaining(sheet,item.row):['estimated','actual','prepaid'].includes(c.id)?sheet[c.id]?.[item.row]??null:sheet.extraValues?.[c.id]?.[item.row]??null;
+    if(coupleBudgetBaseColumns.some(base=>base.id===c.id))return <BudgetCell row={item.row} field={c.id} value={value} label={`${c.name}: ${title(item.row,item.name)}`} format={sheet.cellFormats?.[c.id]?.[item.row]} onSave={onSave} canEdit={canEdit(c.id)} name={c.id==='name'} note={c.id==='note'} computed={c.id==='remaining'}/>;
+    const row={id:item.row,data:{name:title(item.row,item.name),estimated:sheet.estimated?.[item.row],actual:sheet.actual?.[item.row],prepaid:sheet.prepaid?.[item.row],...Object.fromEntries((sheet.extraColumns||[]).map(column=>[column.id,sheet.extraValues?.[column.id]?.[item.row]])),cellFormats:Object.fromEntries((sheet.extraColumns||[]).map(column=>[column.id,sheet.cellFormats?.[column.id]?.[item.row]]))}};
+    return <SheetCell row={row} column={c} label={`${c.name}: ${title(item.row,item.name)}`} editable={canEdit(c.id)} onSave={(value,format,formatOnly)=>onSave(item.row,c.id,value,format,formatOnly)}/>;
+  };
+  return <section className="couple-budget-workspace" data-budget-device={device} aria-label="Смета пары"><div className="couple-budget-toolbar"><label><input type="search" aria-label="Поиск по смете" placeholder="Найти раздел или статью" value={query} onChange={e=>setQuery(e.target.value)}/></label><span>Статей: {groups.reduce((sum,g)=>sum+g.items.length,0)}</span>{onExport&&<button type="button" onClick={onExport}>Скачать Excel</button>}{canStructure&&<button type="button" onClick={()=>setColumnsOpen(!columnsOpen)}>Колонки</button>}<button type="button" onClick={onDocuments}>Ваши документы</button></div>{error&&<p role="alert" className="form-error">{error}</p>}{columnsOpen&&<BudgetColumnsEditor sheet={sheet} onSave={onStructure} onClose={()=>setColumnsOpen(false)}/>}<p className="sheet-help">Потяните границы колонок и строк, чтобы изменить размер.</p><SheetZoom storageKey={scaleKey} initialScale={initialScale} defaultFit={defaultFit} className="couple-budget-scroll"><table ref={table} className="couple-budget-sheet excel-sheet" style={{width:46+widths.reduce((sum,w)=>sum+w,0)}}><colgroup><col style={{width:46}}/>{columns.map((c,i)=><col key={c.id} style={{width:widths[i]}}/>)}</colgroup><thead><tr><th className="sheet-index">№</th>{columns.map((c,i)=><th key={c.id}>{c.name}{canStructure&&onLayout&&<ResizeHandle axis="columnWidths" id={c.id} label={c.name} value={widths[i]} onResize={resize}/>}</th>)}</tr></thead><tbody>{totals('Общий бюджет',overall)}{totals('Общий бюджет для организатора',organizer)}{search&&<tr><td colSpan={count}>Поиск не меняет суммы: итоги рассчитаны по всей смете.</td></tr>}{visible.map(group=><React.Fragment key={group.row}><tr className="couple-budget-spacer"><td colSpan={count}/></tr><tr className="couple-budget-group"><th className="sheet-index"/><th colSpan={columns.length}><div className="couple-budget-name"><BudgetCell row={group.row} field="name" value={title(group.row,group.name)} label={`Название раздела ${title(group.row,group.name)}`} format={sheet.cellFormats?.name?.[group.row]} onSave={onSave} canEdit={canEdit('name')} name group/><button type="button" className="couple-budget-insert" disabled={!onStructure||!canCreate('extraItems')} onClick={()=>setAdding(group.row)}>+ Статья</button>{canDelete&&<button type="button" className="couple-budget-delete-group" aria-label={`Удалить раздел ${title(group.row,group.name)}`} title="Удалить раздел" onClick={()=>deleteRow(group.row,title(group.row,group.name))}><Icon name="trash"/></button>}</div></th></tr>{adding===group.row&&addRow('item',group)}{group.visibleItems.map((item,i)=><tr className="couple-budget-item" key={item.row} style={{height:layout.rowHeights?.[item.row]||44}}><td className="sheet-index">{i+1}{canDelete&&<button type="button" className="text-button" aria-label={`Удалить статью ${title(item.row,item.name)}`} onClick={()=>deleteRow(item.row,title(item.row,item.name))}>×</button>}{canStructure&&onLayout&&<ResizeHandle axis="rowHeights" id={String(item.row)} label={title(item.row,item.name)} value={layout.rowHeights?.[item.row]||44} onResize={resize}/>}</td>{columns.map(c=><td key={c.id} data-budget-column={c.id} className={c.type==='money'||c.id==='remaining'?'sheet-money':undefined}>{cell(item,c)}{c.id==='note'&&String(item.row).startsWith('item_')&&!coupleBudgetOrganizerGroups.has(group.row)&&<label className="couple-budget-organizer"><input type="checkbox" checked={coupleBudgetOrganizerIncluded(sheet,item.row)} disabled={!canEdit('organizer')} onChange={e=>onSave(item.row,'organizer',e.target.checked)}/>Для организатора</label>}</td>)}</tr>)}{totals(group.totalLabel,groupTotals[group.row])}</React.Fragment>)}{!!deleted.length&&canRestore&&<tr><td colSpan={count}><details><summary>Удалённые строки · {deleted.length}</summary>{deleted.map(item=><p key={item.row}>{title(item.row,item.name)} <button type="button" className="text-button" onClick={async()=>{try{await onStructure('restore',{row:item.row})}catch(reason){setError(reason.message)}}}>Восстановить</button></p>)}</details></td></tr>}{!search&&(adding==='section'?addRow('section'):<tr className="couple-budget-add-section"><td colSpan={count}><button type="button" disabled={!canCreate('extraSections')} onClick={()=>setAdding('section')}>+ Добавить раздел</button></td></tr>)}</tbody></table></SheetZoom>{deleting&&<ConfirmDialog title="Удалить строку сметы" confirm="Удалить" danger onClose={()=>setDeleting(null)} onConfirm={async()=>{await onStructure('delete',{row:deleting.row});setDeleting(null)}}><p>Удалить «{deleting.label}»? Суммы исключатся из итогов. Запись можно восстановить.</p></ConfirmDialog>}</section>;
 }

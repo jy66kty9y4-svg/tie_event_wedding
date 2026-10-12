@@ -1,19 +1,27 @@
 import {DEFAULT_TASK_BLUEPRINTS,DEFAULT_TASK_PHASES} from '../src/task-blueprints.js';
 import {DEFAULT_GUEST_COLUMNS,DEFAULT_GUEST_SEMANTIC_MAP} from '../src/guest-blueprint.js';
+import {withTimingStaff} from '../src/timing-fields.js';
 import { assert, entity, entities, insert, seedProjectTasks, uid } from './db.mjs';
-import { can, requireAccess } from './auth.mjs';
+import { can, requireAccess, accountPending } from './auth.mjs';
 import { compute, fieldTypes } from '../src/shared.js';
+import {applyTemplateSettings,templateSettings,templateTableSettings} from './wedding-template.mjs';
 
 export function text(v, label='Название', min=1, max=240) { assert(typeof v==='string' && v.trim().length>=min && v.length<=max, `${label}: от ${min} до ${max} символов`); return v.trim(); }
 export function amount(v, nullable=false) { if (nullable && v === null) return null; assert(Number.isSafeInteger(v) && v>=0 && v<=1e12,'Сумма должна быть в целых копейках, от 0 до 10 млрд ₽'); return v; }
-export function date(v, optional=true) { if (optional && !v) return ''; assert(typeof v==='string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(v+'T12:00:00Z').toISOString().slice(0,10)===v,'Проверьте дату'); return v; }
+export function date(v, optional=true) {
+  if (optional && !v) return '';
+  const instant=typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)?Date.parse(v+'T12:00:00Z'):NaN;
+  assert(Number.isFinite(instant)&&new Date(instant).toISOString().slice(0,10)===v,'Проверьте дату');
+  return v;
+}
 export function safeUrl(v) { assert(!v || /^https?:\/\//.test(v),'Ссылка должна начинаться с https:// или http://'); return v || ''; }
 export function getScoped(db,u,id,p=undefined,kind=undefined) {
   const row=entity(db,id); assert(row && row.agency_id===u.agency_id && (p===undefined || row.project_id===p) && (!kind || row.kind===kind),'Запись не найдена',404); return row;
 }
-export function sectionOf(row) { return ({obligation:'budget',movement:'budget',coupleBudget:'budget',selection:'vendors',file:'files',task:'tasks',approval:'approvals',approvalRevision:'approvals',meeting:'calendar',seatingPlan:'seating',seatingTable:'seating',microsite:'microsite',micrositeRevision:'microsite'})[row.kind] || (row.kind==='row'?row.parent_id:row.kind==='table'?row.id:row.kind==='section'?'structure':row.kind); }
+export function sectionOf(row) { return ({obligation:'budget',movement:'budget',coupleBudget:'budget',financeSheet:'budget',selection:'vendors',file:'files',task:'tasks',approval:'approvals',approvalRevision:'approvals',meeting:'calendar',seatingPlan:'seating',seatingTable:'seating',microsite:'microsite',micrositeRevision:'microsite'})[row.kind] || (row.kind==='row'?row.parent_id:row.kind==='table'?row.id:row.kind==='section'?'structure':row.kind); }
 export function accessRowId(row) { return row.kind==='movement' && row.data.obligationId ? row.data.obligationId : row.id; }
 export function projectVisible(db,u,id) {
+  if (!u.protected && accountPending(db,u)) return false;
   const p=entity(db,id); if (!p || p.agency_id!==u.agency_id || p.deleted) return false;
   if (u.protected || can(db,u,'read',id)) return true;
   return db.prepare('SELECT g.*,r.permissions FROM grants g JOIN roles r ON g.role_id=r.id WHERE g.agency_id=? AND r.agency_id=? AND g.user_id=? AND (g.project_id=? OR g.project_id IS NULL)').all(u.agency_id,u.agency_id,u.id,id).some(g=>JSON.parse(g.permissions).includes('read'));
@@ -30,27 +38,31 @@ export function createProject(db,u,data,template=null) {
   const tpl=template?.data || entities(db,u.agency_id,null,'template')[0]?.data || initialTemplate();
   const templateOffline=Array.isArray(tpl.offline)?tpl.offline:[];
   const nativeOffline=templateOffline.filter(key=>['payouts','budget','vendors','files'].includes(key));
-  const p=insert(db,u,'project',{name:text(data.name),date:date(data.date,false),location:'',status:'planning',timeZone:'Europe/Moscow',readinessPolicy:{},limit:amount(data.limit??null,true),offline:nativeOffline,notes:data.notes?text(data.notes,'Заметка',1,8000):''});
+  const settings=templateSettings(tpl).projectSettings||{};
+  const p=insert(db,u,'project',{name:text(data.name),date:date(data.date),location:'',status:'planning',timeZone:settings.timeZone||'Europe/Moscow',readinessPolicy:settings.readinessPolicy||{},personalInvitationsEnabled:settings.personalInvitationsEnabled===true&&can(db,u,'settings',null),taskPhases:structuredClone(tpl.taskPhases||DEFAULT_TASK_PHASES),limit:amount(data.limit??null,true),offline:nativeOffline,notes:data.notes?text(data.notes,'Заметка',1,8000):''});
   const sections={}; for(const s of tpl.sections) sections[s.key]=insert(db,u,'section',{name:s.name,order:s.order,archived:false},p.id).id;
-  for(const t of tpl.tables) insert(db,u,'table',{name:t.name,key:t.key,sectionId:sections[t.section]||Object.values(sections)[0],order:tpl.tables.indexOf(t),archived:false,offline:!!t.offline||templateOffline.includes(t.key),columns:structuredClone(t.columns),...(t.semanticMap?{semanticMap:structuredClone(t.semanticMap)}:{}),rowOrder:[]},p.id);
+  for(const t of tpl.tables) insert(db,u,'table',withTimingStaff({name:t.name,key:t.key,sectionId:sections[t.section]||Object.values(sections)[0],order:tpl.tables.indexOf(t),archived:false,offline:!!t.offline||templateOffline.includes(t.key),columns:structuredClone(t.columns),...(t.semanticMap?{semanticMap:structuredClone(t.semanticMap)}:{}),...templateTableSettings(t),rowOrder:[]}),p.id);
   for(const name of tpl.categories||[]) insert(db,u,'category',{name,scope:'wedding',archived:false},p.id);
-  seedProjectTasks(db,u,p);
+  seedProjectTasks(db,u,p,tpl.taskBlueprints??DEFAULT_TASK_BLUEPRINTS,{undated:true});
+  applyTemplateSettings(db,u,p,templateSettings(tpl));
   // Every wedding starts with the shared task plan. No source rows, files, guests or paid movements are cloned.
   return p;
 }
 export function validateColumns(columns) {
   assert(Array.isArray(columns) && columns.length<=80,'Не более 80 колонок'); const ids=new Set();
   for(const c of columns) {
-    assert(/^[a-zA-Z0-9_-]{1,80}$/.test(c.id) && !['__proto__','constructor','prototype'].includes(c.id) && !ids.has(c.id),'У каждой колонки должен быть уникальный ID'); ids.add(c.id); text(c.name); assert(fieldTypes[c.type],'Неизвестный тип поля');
+    assert(c&&typeof c==='object'&&!Array.isArray(c),'Проверьте колонку');
+    assert(typeof c.id==='string'&&/^[a-zA-Z0-9_-]{1,80}$/.test(c.id) && !['__proto__','constructor','prototype','cellFormats'].includes(c.id) && !ids.has(c.id),'У каждой колонки должен быть уникальный ID'); ids.add(c.id); text(c.name); assert(typeof c.type==='string'&&Object.hasOwn(fieldTypes,c.type),'Неизвестный тип поля');
     if(c.type==='select') assert(Array.isArray(c.options) && c.options.length<=100 && c.options.every(x=>typeof x==='string'&&x.length<=120),'Проверьте варианты выбора');
     if(c.type==='relation') assert(!c.targetKind||['row','seatingTable'].includes(c.targetKind),'Недопустимый тип связи');
-    if(c.type==='formula') { text(c.formula,'Формула',1,500); compute(c.formula,{}); }
+    if(c.type==='formula') { assert(!c.resultType||['number','money'].includes(c.resultType),'Проверьте формат вычисления'); text(c.formula,'Формула',1,500); try{compute(c.formula,{})}catch(error){assert(false,error.message)} }
   }
   for(const c of columns.filter(c=>c.type==='formula')) for(const ref of c.formula.matchAll(/\{([^}]+)\}/g)) assert(ids.has(ref[1]) && columns.find(x=>x.id===ref[1]).type!=='formula','Формула ссылается на отсутствующую или вычисляемую колонку');
   return columns;
 }
-export function validateRow(db,u,table,values,changedKeys=Object.keys(values)) {
+export function validateRow(db,u,table,values,changedKeys) {
   assert(values && typeof values==='object' && !Array.isArray(values),'Проверьте значения');
+  changedKeys??=Object.keys(values);
   for(const k of changedKeys) {
     const c=table.data.columns.find(c=>c.id===k); assert(c,'Колонка удалена или изменилась. Обновите структуру.',409,{table});
     const v=values[k]; if(v===null || v==='') continue;

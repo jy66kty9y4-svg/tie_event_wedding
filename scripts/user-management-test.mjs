@@ -1,3 +1,4 @@
+import {registerTestUser as register} from '../tests/fixtures/account.mjs';
 import assert from 'node:assert/strict';
 import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -5,7 +6,7 @@ import {join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {createHttpServer} from '../server/http.mjs';
-import {bootstrap,register,execute} from '../server/service.mjs';
+import {bootstrap,execute} from '../server/service.mjs';
 import {checkPassword} from '../server/auth.mjs';
 
 const playwrightPath=process.env.PLAYWRIGHT_MODULE_PATH||'/Users/cabinpxrn/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs';
@@ -17,10 +18,10 @@ let browser;
 
 async function login(page,origin,email,password){
  await page.goto(origin);
- await page.getByRole('button',{name:'Войти',exact:true}).click();
- const dialog=page.getByRole('dialog',{name:'Войти в tie'});
- await dialog.getByLabel('Почта').fill(email);
- await dialog.getByLabel('Пароль').fill(password);
+ const dialog=page.getByRole('region', { name: 'Войти в tie'});
+ await dialog.getByRole('button',{name:'Почта',exact:true}).click();
+ await dialog.getByLabel('Почта',{exact:true}).fill(email);
+ await dialog.getByLabel('Пароль',{exact:true}).fill(password);
  await dialog.getByRole('button',{name:'Войти',exact:true}).click();
  await dialog.waitFor({state:'detached'});
 }
@@ -28,7 +29,7 @@ async function login(page,origin,email,password){
 try{
  const {user:admin}=bootstrap(server.db,{slug:'tie',agencyName:'Команда тест',name:'Владелец',email:'admin-users@example.test',password:'admin-users-password'});
  const wedding=execute(server.db,admin,{id:randomUUID(),op:'project.create',data:{name:'Анна и Илья',date:'2027-08-08'}});
- const organizer=register(server.db,{slug:'tie',name:'Организатор',email:'organizer-users@example.test',password:'organizer-users-password'}).user;
+ const organizer=register(server.db,{slug:'tie',name:'Организатор',email:'organizer-users@example.test',phone:'+79990000001',password:'organizer-users-password'}).user;
  const role=server.db.prepare("SELECT id FROM roles WHERE agency_id=? AND key='organizer'").get(admin.agency_id);
  execute(server.db,admin,{id:randomUUID(),op:'grants.save',userId:organizer.id,version:organizer.version,disabled:false,grants:[{roleId:role.id,projectId:null,restrictions:{}}]});
  await new Promise(done=>server.listen(0,'127.0.0.1',done));

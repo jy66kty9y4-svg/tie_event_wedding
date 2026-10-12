@@ -90,7 +90,7 @@ function validateBlocks(value) {
   return items.map(item => ({ id: item.id, visible: item.id === 'cover' || item.id === 'rsvp' ? true : item.visible }));
 }
 
-function micrositeDraft(value = {}) {
+export function micrositeDraft(value = {}) {
   assert(value && typeof value === 'object' && !Array.isArray(value), 'Проверьте черновик сайта');
   const template = value.template || 'light';
   assert(MICROSITE_TEMPLATES.has(template), 'Выберите шаблон сайта');
@@ -116,6 +116,10 @@ function micrositeDraft(value = {}) {
     gallery,
     blocks: validateBlocks(value.blocks),
   };
+}
+
+export function createTemplateMicrosite(db,u,project,settings){
+  return insert(db,u,'microsite',{shareId:siteShareId(),draft:micrositeDraft(settings),publishedRevisionId:null,status:'draft',rsvpDeadline:'',closesAt:'',dirty:false},project.id);
 }
 
 function publishedMicrositeDraft(value) {
@@ -340,7 +344,7 @@ export function listPublishedContent(db, agencyId, kind) {
 }
 export function configuredDomain(db, agencyId) { return db.prepare('SELECT configured_domain FROM publication_settings WHERE agency_id=?').get(agencyId)?.configured_domain || null; }
 
-export async function sanitizeRaster(input) {
+export async function sanitizeRaster(input, {maxDimension=null}={}) {
   assert(Buffer.isBuffer(input) && input.length > 0 && input.length <= MAX_ASSET_BYTES, 'Изображение должно быть не больше 12 МБ', 413);
   const signature = input.subarray(0, 16);
   const jpeg = signature[0] === 0xff && signature[1] === 0xd8 && signature[2] === 0xff;
@@ -350,9 +354,11 @@ export async function sanitizeRaster(input) {
   assert(jpeg || png || webp || avif, 'Разрешены только растровые JPEG, PNG, WebP или AVIF');
   let sharp; try { ({ default: sharp } = await import('sharp')); } catch { throw new Error('Для обработки изображений установите sharp@0.35.4'); }
   const source = sharp(input, { limitInputPixels: MAX_ASSET_PIXELS, failOn: 'warning' });
-  const meta = await source.metadata(); assert(['jpeg','png','webp','avif'].includes(meta.format), 'Разрешены только JPEG, PNG, WebP или AVIF');
+  const meta = await source.metadata(); assert(['jpeg','png','webp','avif'].includes(meta.format)||(avif&&meta.format==='heif'&&meta.compression==='av1'), 'Разрешены только JPEG, PNG, WebP или AVIF');
   assert(meta.width && meta.height && meta.width * meta.height <= MAX_ASSET_PIXELS, 'Изображение не должно превышать 40 мегапикселей', 413);
-  const result = await source.rotate().webp({ quality: 86 }).toBuffer({ resolveWithObject: true });
+  const oriented=source.rotate();
+  if(maxDimension)oriented.resize({width:maxDimension,height:maxDimension,fit:'inside',withoutEnlargement:true});
+  const result = await oriented.webp({ quality: 86 }).toBuffer({ resolveWithObject: true });
   return { mime: 'image/webp', width: result.info.width, height: result.info.height, content: result.data };
 }
 export async function createPublicAsset(db, u, { projectId = null, ownerId, content, privateFileId = null }) {

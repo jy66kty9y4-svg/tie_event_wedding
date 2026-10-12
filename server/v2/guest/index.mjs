@@ -5,6 +5,7 @@ import { validateRow } from '../../model.mjs';
 import { addDays, currentUser, executeModule, projectAccess, scoped, zonedInstant } from '../common.mjs';
 import { rotatedExtents, tableOutline } from '../../../src/v2/guest/geometry.mjs';
 import { snakeQuarterPoints } from '../../../src/v2/guest/interaction.mjs';
+import { personalInvitationsEnabled } from '../../../src/guest-blueprint.js';
 
 const RSVP = new Set(['unanswered','confirmed','declined','tentative']);
 const SEMANTIC_KEYS = ['guestName','rsvpStatus','diet','allergies','transfer','accommodation','contact','comment','invitationStatus','seatingTable','seatIndex'];
@@ -112,6 +113,7 @@ function activeInvite(db, invite, shareId) {
   assert(invite&&!invite.revoked_at&&invite.expires_at>Date.now(),'Ссылка недействительна',404);
   assert(typeof shareId==='string'&&shareId.length>=16,'Ссылка недействительна',404);
   const project=entity(db,invite.project_id);assert(project&&!project.deleted,'Ссылка недействительна',404);
+  assert(personalInvitationsEnabled(project),'Ссылка недействительна',404);
   const site=microsite(db,invite.agency_id,invite.project_id,shareId);
   assert(!site.data.closesAt || ms(site.data.closesAt)>Date.now(),'Страница сейчас недоступна',404);
   return site;
@@ -135,7 +137,7 @@ function canRespond(site,invite,session,zone='Europe/Moscow') {
 function ensurePlan(db,u,project,planId) { const p=scoped(db,u,planId,project,'seatingPlan'); assert(!p.deleted,'План удалён'); return p; }
 function seatingTables(db,u,project,plan) { return entities(db,u.agency_id,project,'seatingTable').filter(x=>x.parent_id===plan.id); }
 function checkBounds(plan,d) { const {width:w,height:h}=rotatedExtents(d),cx=d.xM+d.widthM/2,cy=d.yM+d.heightM/2;assert(cx-w/2>=-1e-9&&cy-h/2>=-1e-9&&cx+w/2<=plan.data.widthM+1e-9&&cy+h/2<=plan.data.heightM+1e-9,'Стол выходит за границы зала',409); }
-function tableData(d,plan) {
+export function tableData(d,plan) {
   const shape=d.shape??'round'; assert(['round','round150','rect','oval','square','custom','snakeQuarter'].includes(shape),'Выберите форму стола'); const capacity=integer(d.capacity,'Вместимость',0,30);
   const round=['round','round150','oval'].includes(shape),preset={round150:[1.5,1.5],round:[1.8,1.8],rect:[1.8,.9],snakeQuarter:[2.4,2.4]}[shape]; const out={label:text(d.label,'Название',120,false),shape,xM:finite(d.xM,'X',0,1000),yM:finite(d.yM,'Y',0,1000),widthM:finite(preset?.[0]??d.widthM??(round?1.8:2),'Ширина',.4,20),heightM:finite(preset?.[1]??d.heightM??(round?1.8:1.2),'Высота',.4,20),rotationDeg:finite(d.rotationDeg??0,'Поворот',-360,360),capacity};
   if(['custom','snakeQuarter'].includes(shape)) { const points=tableOutline({...out,points:shape==='snakeQuarter'?snakeQuarterPoints:d.points}); assert(points,'Контур стола: 3–64 точки в пределах 0…1 без пересечений и нулевой площади'); out.points=points; }
@@ -208,7 +210,22 @@ function selectedInviteRows(db,u,t,c) {
   const plus=new Set(c.plusOneRowIds||[]); assert([...plus].every(id=>ids.includes(id)),'Дополнительный гость должен быть в составе приглашения');
   return {ids,available};
 }
-function authorizeInvite(db,u,c) { const t=table(db,u,c.guestTableId,c.projectId); version(t,c.schemaVersion); requireAccess(db,u,'manageGuestInvites',c.projectId,t.id); selectedInviteRows(db,u,t,c); }
+function requireInvitationsEnabled(db,u,projectId) {
+  const project=projectAccess(db,u,projectId);
+  assert(personalInvitationsEnabled(project),'Персональные приглашения выключены администратором',403,{code:'personalInvitationsDisabled'});
+}
+function authorizeInvitationSettings(db,u,c) {
+  requireAccess(db,u,'settings');
+  projectAccess(db,u,c.projectId,'edit','project',c.projectId,'personalInvitationsEnabled');
+}
+function saveInvitationSettings(db,u,c) {
+  const project=projectAccess(db,u,c.projectId); version(project,c.version);
+  assert(typeof c.enabled==='boolean','Выберите ВКЛ или ВЫКЛ');
+  if(!c.enabled) db.prepare('DELETE FROM guest_sessions WHERE invite_id IN (SELECT id FROM guest_invites WHERE agency_id=? AND project_id=?)').run(u.agency_id,c.projectId);
+  const saved=change(db,u,project,{...project.data,personalInvitationsEnabled:c.enabled},false,'guest_invitations_settings');
+  return {enabled:c.enabled,version:saved.version};
+}
+function authorizeInvite(db,u,c) { requireInvitationsEnabled(db,u,c.projectId); const t=table(db,u,c.guestTableId,c.projectId); version(t,c.schemaVersion); requireAccess(db,u,'manageGuestInvites',c.projectId,t.id); selectedInviteRows(db,u,t,c); }
 function storedInvite(db,u,c) {
   const invite=db.prepare('SELECT * FROM guest_invites WHERE id=? AND agency_id=? AND project_id=?').get(c.entityId||c.inviteId,u.agency_id,c.projectId);
   assert(invite,'Приглашение не найдено',404);
@@ -217,7 +234,7 @@ function storedInvite(db,u,c) {
   selectedInviteRows(db,u,t,{...c,guestRowIds:ids.map(row=>row.guest_row_id),plusOneRowIds:ids.filter(row=>row.is_plus_one).map(row=>row.guest_row_id)});
   return {invite,t,ids};
 }
-function authorizeStoredInvite(db,u,c) { storedInvite(db,u,c); }
+function authorizeStoredInvite(db,u,c) { requireInvitationsEnabled(db,u,c.projectId); storedInvite(db,u,c); }
 function createInvite(db,u,c,rotateFrom=null) {
   const t=table(db,u,c.guestTableId,c.projectId); version(t,c.schemaVersion);
   const {ids,available}=selectedInviteRows(db,u,t,c);
@@ -252,7 +269,7 @@ function seatAssignmentState(db,u,c,{nextData}={}) {
 }
 function authorizeSeatMutation(db,u,c) {authorizePlan(db,u,c);const t=table(db,u,c.guestTableId,c.projectId),row=scoped(db,u,c.guestRowId,c.projectId,'row'),m=mapping(t);assert(row.parent_id===t.id,'Гость не из этого реестра',404);requireEditableGuest(db,u,t,row,[m.seatingTable,m.seatIndex]);if(c.tableId){const target=scoped(db,u,c.tableId,c.projectId,'seatingTable');requireAccess(db,u,'read',c.projectId,'seating',target.id,null);}}
 function authorizeRsvp(db,u,c) { const t=table(db,u,c.guestTableId,c.projectId),row=scoped(db,u,c.guestRowId,c.projectId,'row'),map=mapping(t),values=c.data?.values||c.values||{};assert(row.parent_id===t.id,'Гость не из этого реестра',404);const semantic={rsvp:'rsvpStatus',diet:'diet',allergies:'allergies',transfer:'transfer',accommodation:'accommodation',contact:'contact',comment:'comment'};const fields=Object.keys(values).map(key=>mappingValue(map,semantic[key])).filter(Boolean);requireEditableGuest(db,u,t,row,fields); }
-function planData(data) {
+export function planData(data) {
  const result={name:text(data.name||'План рассадки','Название',120,false),widthM:finite(data.widthM,'Ширина зала',2,100),heightM:finite(data.heightM,'Высота зала',2,100),scale:finite(data.scale??1,'Масштаб',.1,10),guestTableId:data.guestTableId||null};
  assert(!data.zones||Array.isArray(data.zones)&&data.zones.length<=50,'Не более 50 зон');
  result.zones=(data.zones||[]).map(z=>{assert(z&&typeof z==='object','Проверьте зону');const zone={id:z.id?text(z.id,'Зона',100,false):uid(),label:text(z.label||'Зона','Название зоны',120,false),xM:finite(z.xM??0,'X зоны',0,100),yM:finite(z.yM??0,'Y зоны',0,100),widthM:finite(z.widthM??1,'Ширина зоны',.1,100),heightM:finite(z.heightM??1,'Высота зоны',.1,100),rotationDeg:finite(z.rotationDeg??0,'Поворот зоны',-360,360)};zone.shape=z.shape||'rect';assert(['rect','oval','custom'].includes(zone.shape),'Выберите форму зоны');if(zone.shape==='custom'){const points=tableOutline({...zone,points:z.points});assert(points,'Контур зоны: 3–64 точки без пересечений и нулевой площади');zone.points=points;}checkBounds({data:result},zone);return zone;});
@@ -319,6 +336,7 @@ function authorizeLegacyImport(db,u,c) { authorizePlan(db,u,c); legacyImportStat
 function importLegacy(db,u,c) { const {plan,preview,seatTable,seatIndex,listed}=legacyImportState(db,u,c);const added=[];for(let i=0;i<preview.groups.length;i++){const group=preview.groups[i],spec=listed.get(group.sourceValue),capacity=integer(spec.capacity,'Вместимость',1,30);assert(capacity>=group.rowIds.length,'Вместимость меньше числа импортируемых гостей',409,{sourceValue:group.sourceValue});const d=tableData({label:text(spec.label||group.sourceValue,'Название',120,false),shape:spec.shape||'round',capacity,xM:spec.xM??.4+(i%4)*2,yM:spec.yM??.4+Math.floor(i/4)*2,widthM:spec.widthM??1.6,heightM:spec.heightM??1.6,rotationDeg:0},plan);added.push({group,table:insert(db,u,'seatingTable',d,c.projectId,plan.id)});}for(const item of added)for(const [index,rowId] of item.group.rowIds.entries()){const row=scoped(db,u,rowId,c.projectId,'row');change(db,u,row,{...row.data,[seatTable]:item.table.id,[seatIndex]:index+1},false,'seating_legacy_import');}return change(db,u,plan,{...plan.data,legacyImport:{columnId:c.columnId,importedAt:now(),originalValues:preview.groups.flatMap(x=>x.originalValues)}},false,'seating_legacy_import'); }
 
 export const operations={
+  'guestInvitations.settings':{authorize:authorizeInvitationSettings,run:saveInvitationSettings},
   'guestMapping.save':{authorize:authorizeMapping,run:runMapping},
   'guestInvite.create':{authorize:authorizeInvite,run:(db,u,c)=>createInvite(db,u,c)},
   'guestInvite.revoke':{authorize:authorizeStoredInvite,run:revokeInvite},
@@ -337,7 +355,7 @@ export const operations={
 export const execute=(db,user,command)=>executeModule(db,user,command,operations);
 
 export function guestList(db,user,projectId,guestTableId,query={}) { const u=currentUser(db,user),t=table(db,u,guestTableId,projectId),map=mapping(t);projectAccess(db,u,projectId,'read',t.id);const canInvitation=readableGuest(db,u,t,{id:undefined},mappingValue(map,'invitationStatus'));const invites=canInvitation?new Set(db.prepare('SELECT guest_row_id FROM guest_invite_rows ir JOIN guest_invites i ON i.id=ir.invite_id WHERE i.agency_id=? AND i.project_id=? AND i.revoked_at IS NULL AND i.expires_at>?').all(u.agency_id,projectId,Date.now()).map(x=>x.guest_row_id)):new Set();let items=rows(db,u.agency_id,projectId,t.id).filter(row=>can(db,u,'read',projectId,t.id,row.id)).map(row=>({...safeGuestDto(db,u,t,map,row),...(canInvitation?{invited:invites.has(row.id)}:{})}));if(query.rsvp) items=items.filter(item=>item.rsvp===query.rsvp);if(query.invited!==undefined){assert(canInvitation,'Нет доступа к статусу приглашения',403);items=items.filter(item=>item.invited===Boolean(query.invited));}const offset=integer(query.offset??0,'Смещение',0,100000),limit=integer(query.limit??50,'Размер страницы',1,200);return {items:items.slice(offset,offset+limit),total:items.length,offset,limit,nextOffset:offset+limit<items.length?offset+limit:null}; }
-export function guestInvites(db,user,projectId,guestTableId) { const u=currentUser(db,user),t=table(db,u,guestTableId,projectId),map=mapping(t),fields=publicMappedFields(map),nameField=mappingValue(map,'guestName');requireAccess(db,u,'manageGuestInvites',projectId,t.id);return db.prepare('SELECT id,expires_at,revoked_at,version,created_at FROM guest_invites WHERE agency_id=? AND project_id=? AND guest_table_id=? ORDER BY created_at DESC').all(u.agency_id,projectId,t.id).map(invite=>{const links=db.prepare('SELECT guest_row_id FROM guest_invite_rows WHERE invite_id=?').all(invite.id),linked=links.map(link=>entity(db,link.guest_row_id)).filter(Boolean);if(!linked.length||!linked.every(row=>can(db,u,'manageGuestInvites',projectId,t.id,row.id,fields)))return null;const recipientNames=linked.map(row=>nameField&&can(db,u,'read',projectId,t.id,row.id,nameField)?String(row.data[nameField]||'Без имени'):'Имя недоступно');return {id:invite.id,version:invite.version,expiresAt:new Date(invite.expires_at).toISOString(),createdAt:new Date(invite.created_at).toISOString(),recipientNames,guestCount:linked.length,status:invite.revoked_at?'revoked':invite.expires_at<=Date.now()?'expired':'issued'};}).filter(Boolean); }
+export function guestInvites(db,user,projectId,guestTableId) { const u=currentUser(db,user),t=table(db,u,guestTableId,projectId),map=mapping(t),fields=publicMappedFields(map),nameField=mappingValue(map,'guestName');requireAccess(db,u,'manageGuestInvites',projectId,t.id);requireInvitationsEnabled(db,u,projectId);return db.prepare('SELECT id,expires_at,revoked_at,version,created_at FROM guest_invites WHERE agency_id=? AND project_id=? AND guest_table_id=? ORDER BY created_at DESC').all(u.agency_id,projectId,t.id).map(invite=>{const links=db.prepare('SELECT guest_row_id FROM guest_invite_rows WHERE invite_id=?').all(invite.id),linked=links.map(link=>entity(db,link.guest_row_id)).filter(Boolean);if(!linked.length||!linked.every(row=>can(db,u,'manageGuestInvites',projectId,t.id,row.id,fields)))return null;const recipientNames=linked.map(row=>nameField&&can(db,u,'read',projectId,t.id,row.id,nameField)?String(row.data[nameField]||'Без имени'):'Имя недоступно');return {id:invite.id,version:invite.version,expiresAt:new Date(invite.expires_at).toISOString(),createdAt:new Date(invite.created_at).toISOString(),recipientNames,guestCount:linked.length,status:invite.revoked_at?'revoked':invite.expires_at<=Date.now()?'expired':'issued'};}).filter(Boolean); }
 export function seatingSnapshot(db,user,projectId,planId,query={}) { const u=currentUser(db,user),plan=ensurePlan(db,u,projectId,planId);projectAccess(db,u,projectId,'read','seating');const guest=table(db,u,plan.data.guestTableId,projectId),map=mapping(guest),nameField=mappingValue(map,'guestName'),rsvpField=mappingValue(map,'rsvpStatus'),seatField=mappingValue(map,'seatingTable'),readable=rows(db,u.agency_id,projectId,guest.id).filter(r=>can(db,u,'read',projectId,guest.id,r.id)),seatReadable=readable.filter(row=>readableGuest(db,u,guest,row,nameField)&&readableGuest(db,u,guest,row,seatField)),assigned=new Set(assignments(db,u.agency_id,projectId,guest,map).filter(x=>seatReadable.some(r=>r.id===x.row.id)).map(x=>x.row.id));const mayName=seatReadable.length>0;const unseated=seatReadable.filter(r=>!assigned.has(r.id)&&(!readableGuest(db,u,guest,r,rsvpField)||semanticValue(map,'rsvpStatus',r)!=='declined')).map(r=>({id:r.id,name:semanticValue(map,'guestName',r),...(readableGuest(db,u,guest,r,rsvpField)?{rsvp:semanticValue(map,'rsvpStatus',r)}:{}),version:r.version}));return {plan,tables:seatingTables(db,u,projectId,plan),unseated,guestNamesVisible:mayName,query}; }
 
 export function exchange(db,{shareId,token,ip='local',userAgent=''}) { assert(typeof token==='string'&&token.length>=32,'Ссылка недействительна',404);const invite=db.prepare('SELECT * FROM guest_invites WHERE digest=?').get(sha(token));const site=activeInvite(db,invite,shareId);const raw=rawToken(),csrf=rawToken(),expires=Math.min(Date.now()+86400000,invite.expires_at),at=now(),d=sha(raw);db.prepare('INSERT INTO guest_sessions(digest,invite_id,expires_at,invite_version,csrf_digest,created_at) VALUES(?,?,?,?,?,?)').run(d,invite.id,expires,invite.version,sha(csrf),at);db.prepare('INSERT INTO orbit_guest_session_registry VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(uid(),d,invite.id,at,expires,ip||null,String(userAgent||'').slice(0,500),at,at,null,at);return {sessionToken:raw,csrfToken:csrf,expiresAt:new Date(expires).toISOString(),shareId:site.data.shareId}; }

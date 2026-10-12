@@ -19,6 +19,7 @@
 
 ## Авторизованные команды
 
+- `guestInvitations.settings`: `{projectId,version,enabled:boolean}`. Требует права `settings` агентства и `edit` поля `project.personalInvitationsEnabled` в доступной свадьбе. По умолчанию выключено, включая прежние свадьбы без флага. Изменять флаг через generic edit/restore нельзя. При выключении guest sessions удаляются, выданные ссылки приостанавливаются; при повторном включении неистёкшие и неотозванные ссылки можно открыть заново.
 - `guestInvite.create`: `{ guestTableId, schemaVersion, guestRowIds, plusOneRowIds?, expiresAt }`; raw token бывает только в результате создания.
 - `guestInvite.revoke`: `{ inviteId, version }`; удаляет все guest sessions.
 - `guestInvite.rotate`: тот же scope/версии, отзывает старый token и создаёт новый с теми же строками.
@@ -29,6 +30,10 @@
 - `seating.legacyImport`: принимает явный preview старой текстовой колонки, подтверждённую вместимость каждого стола и актуальные версии строк. Создаёт tables/assignments атомарно и сохраняет первоначальные значения в `plan.data.legacyImport`; вместимость никогда не выводится молча из числа старых строк.
 
 `guestList(db,user,projectId,guestTableId,{offset,limit,rsvp,invited})`, `guestInvites(db,user,projectId,guestTableId)`, `legacySeatingPreview(db,user,projectId,guestTableId,columnId)` и `seatingSnapshot(db,user,projectId,planId)` — чистые GET helpers. Каждый сначала перечитывает current user, затем применяет project/row/field checks; скрытые поля не попадают ни в `data`, ни в RSVP/seat/invite aggregates. Корень отдаёт их как `GET /api/v2/guests`, `/invites`, `/legacy-preview` и `/seating`.
+
+При выключенной функции команды выдачи/перевыпуска/отзыва приглашений и GET `/invites` возвращают 403 `personalInvitationsDisabled`; snapshot не содержит `guestInvites`. `canManageGuestInvitations` открывает административный переключатель в «Настройки свадьбы» и реестре. У пары нет переключателя; весь блок ссылок и выбор получателей появляются только при включённом флаге и прежних правах `manageGuestInvites`. Public exchange/context/respond повторно проверяют флаг; выключенные ссылки не раскрывают данные гостей. Публикация обычной страницы свадьбы и ручное ведение RSVP/рассадки не зависят от флага.
+
+Список гостей использует встроенную строку добавления и редактирование ячеек, включая пользовательские колонки. Удаление — обычный `entity.delete` со schema/row version и подтверждением в окне сайта. Оно скрывает человека из статистики и освобождает назначенное место атомарно; восстановление через историю не возвращает место. Показатель пищевых ограничений считает каждую доступную живую строку один раз по semanticMap `allergies`/`diet`, независимо от числа перечисленных ограничений. Пустые значения и явные отрицательные ответы («Нет», «Нет аллергий», «Без ограничений», «Обычное питание») не учитываются. Скрытые поля не входят в счётчик.
 
 ## Публичный RSVP
 

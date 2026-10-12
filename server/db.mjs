@@ -221,6 +221,37 @@ export function openDatabase(path) {
     ]) if(!connectionColumns.has(name)) db.exec(`ALTER TABLE calendar_connections ADD COLUMN ${name} ${type}`);
     db.prepare("INSERT INTO migrations VALUES(15,datetime('now'))").run();
   });
+  if(!db.prepare('SELECT version FROM migrations WHERE version=16').get()) {
+    // Rebuild without renaming the old table so references keep pointing to users.
+    // Foreign-key enforcement must be toggled outside the migration transaction.
+    db.exec('PRAGMA foreign_keys=OFF');
+    try {
+      transaction(db,()=>{
+        db.exec(`
+          CREATE TABLE users_v16(
+            id TEXT PRIMARY KEY,
+            agency_id TEXT NOT NULL REFERENCES agencies(id),
+            email TEXT COLLATE NOCASE,
+            phone TEXT,
+            name TEXT NOT NULL,
+            password TEXT NOT NULL,
+            protected INTEGER NOT NULL DEFAULT 0,
+            disabled INTEGER NOT NULL DEFAULT 0,
+            version INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(agency_id,email),
+            UNIQUE(agency_id,phone),
+            CHECK(email IS NOT NULL OR phone IS NOT NULL)
+          );
+          INSERT INTO users_v16(id,agency_id,email,name,password,protected,disabled,version)
+            SELECT id,agency_id,email,name,password,protected,disabled,version FROM users;
+          DROP TABLE users;
+          ALTER TABLE users_v16 RENAME TO users;
+        `);
+        assert(!db.prepare('PRAGMA foreign_key_check').get(),'Не удалось сохранить связи аккаунтов',500);
+        db.prepare("INSERT INTO migrations VALUES(16,datetime('now'))").run();
+      });
+    } finally { db.exec('PRAGMA foreign_keys=ON'); }
+  }
   pruneAuditHistory(db);
   return db;
 }
@@ -242,13 +273,13 @@ export function insert(db, user, kind, data, project = null, parent = null, id =
 }
 function shiftedDate(value,offsetDays) { const result=new Date(`${value}T12:00:00Z`);result.setUTCDate(result.getUTCDate()+offsetDays);return result.toISOString().slice(0,10); }
 function taskTitleKey(value) { return String(value||'').trim().toLocaleLowerCase('ru').replace(/[«»"'.,:;()]/g,'').replace(/\s+/g,' '); }
-export function seedProjectTasks(db,user,project,blueprints=DEFAULT_TASK_BLUEPRINTS) {
+export function seedProjectTasks(db,user,project,blueprints=DEFAULT_TASK_BLUEPRINTS,{undated=false}={}) {
   const existing=entities(db,user.agency_id,project.id,'task',true),byKey=new Map(existing.filter(row=>row.data.sourceTemplateKey).map(row=>[row.data.sourceTemplateKey,row.id])),byTitle=new Map(existing.map(row=>[taskTitleKey(row.data.title),row.id])),idsByKey=new Map();
   for(const blueprint of blueprints) idsByKey.set(blueprint.key,byKey.get(blueprint.key)||byTitle.get(taskTitleKey(blueprint.title))||uid());
   const created=[];
   for(const blueprint of blueprints) {
     if(byKey.has(blueprint.key)||byTitle.has(taskTitleKey(blueprint.title))) continue;
-    const offsetDays=Number(blueprint.offsetDays||0),data={title:blueprint.title,description:blueprint.description||'',phaseKey:blueprint.phaseKey||'general',status:'todo',assigneeUserId:null,participantUserIds:[],dueMode:'relative',fixedDate:'',offsetDays,dueDate:shiftedDate(project.data.date,offsetDays),dependencyIds:(blueprint.dependencyKeys||[]).map(key=>idsByKey.get(key)).filter(Boolean),priority:'normal',approvalId:null,selectionId:null,fileIds:[],sourceTemplateId:null,sourceTemplateVersion:null,sourceTemplateKey:blueprint.key,skipReason:'',order:Number(blueprint.order||0),completedAt:null,completedBy:null,organizerFocus:false,organizerFocusedAt:null,organizerFocusedBy:null};
+    const dueMode=undated||blueprint.dueMode==='none'?'none':'relative',offsetDays=dueMode==='none'?null:Number(blueprint.offsetDays||0),data={title:blueprint.title,description:blueprint.description||'',phaseKey:blueprint.phaseKey||'general',status:'todo',assigneeUserId:null,participantUserIds:[],dueMode,fixedDate:'',startDate:'',endDate:'',offsetDays,dueDate:dueMode==='relative'&&project.data.date?shiftedDate(project.data.date,offsetDays):'',dependencyIds:(blueprint.dependencyKeys||[]).map(key=>idsByKey.get(key)).filter(Boolean),priority:blueprint.priority||'normal',approvalId:null,selectionId:null,fileIds:[],sourceTemplateId:null,sourceTemplateVersion:null,sourceTemplateKey:blueprint.key,skipReason:'',order:Number(blueprint.order||0),completedAt:null,completedBy:null,organizerFocus:false,organizerFocusedAt:null,organizerFocusedBy:null};
     created.push(insert(db,user,'task',data,project.id,null,idsByKey.get(blueprint.key)));
   }
   return created;

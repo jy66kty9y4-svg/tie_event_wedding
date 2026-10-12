@@ -1,7 +1,7 @@
 import { assert, audit, change, entities, entity, insert, now, uid, version } from '../../db.mjs';
 import { can, digest, grants, requireAccess } from '../../auth.mjs';
 import { amount, date, getScoped, projectVisible, safeUrl, text } from '../../model.mjs';
-import { addDays, listPage, projectAccess, scoped, timeZone, zonedInstant } from '../common.mjs';
+import { addDays, listPage, projectAccess, scoped, timeZone, zonedInstant, historicalRecord, changedFields } from '../common.mjs';
 
 const TASK_STATUSES = new Set(['todo', 'doing', 'done', 'skipped']);
 const APPROVAL_POLICIES = new Set(['any', 'all']);
@@ -45,17 +45,24 @@ function requireTaskAccess(db,u,c,action,row=null,fields=null) { projectAccess(d
 function requireApprovalAccess(db,u,c,action,row=null,fields=null) { projectAccess(db,u,c.projectId,action,'approvals',row?.id??null,fields); if(row) requireAccess(db,u,'read',c.projectId,taskSection(row),row.id,null); }
 function requireTask(db,u,project,id,{deleted=false}={}) { return scoped(db,u,id,project,'task',{deleted}); }
 function requireApproval(db,u,project,id,{deleted=false}={}) { return scoped(db,u,id,project,'approval',{deleted}); }
-function projectDate(project) { return date(project.data.date,false); }
+function projectDate(project) { return date(project.data.date); }
+function relativeDue(project,offsetDays) { const day=projectDate(project);return day?addDays(day,offsetDays):''; }
 function normalizedDue(project, source, existing={}) {
-  const dueMode = source.dueMode ?? existing.dueMode ?? 'relative';
-  assert(dueMode === 'fixed' || dueMode === 'relative','Проверьте правило срока');
+  const dueMode = source.dueMode ?? existing.dueMode ?? (existing.dueDate?'fixed':'none');
+  assert(['none','fixed','range','relative'].includes(dueMode),'Проверьте правило срока');
+  if(dueMode==='none') return {dueMode,fixedDate:'',startDate:'',endDate:'',offsetDays:null,dueDate:''};
+  if(dueMode==='range') {
+    const startDate=date(source.startDate??existing.startDate,false),endDate=date(source.endDate??existing.endDate,false);
+    assert(endDate>=startDate,'Окончание периода не может быть раньше начала');
+    return {dueMode,fixedDate:'',startDate,endDate,offsetDays:null,dueDate:endDate};
+  }
   if (dueMode === 'fixed') {
-    const fixedDate = date(source.fixedDate ?? existing.fixedDate,false);
-    return {dueMode, fixedDate, offsetDays:null, dueDate:fixedDate};
+    const fixedDate = date(source.fixedDate ?? (existing.fixedDate || existing.dueDate),false);
+    return {dueMode, fixedDate, startDate:'',endDate:'',offsetDays:null, dueDate:fixedDate};
   }
   const offsetDays = Number(source.offsetDays ?? existing.offsetDays ?? 0);
   assert(Number.isInteger(offsetDays) && Math.abs(offsetDays) <= MAX_OFFSET,`Смещение срока: от −${MAX_OFFSET} до ${MAX_OFFSET} дней`);
-  return {dueMode, fixedDate:'', offsetDays, dueDate:addDays(projectDate(project),offsetDays)};
+  return {dueMode, fixedDate:'', startDate:'',endDate:'',offsetDays, dueDate:relativeDue(project,offsetDays)};
 }
 function validateDependencies(db,u,project,taskId,dependencyIds) {
   ids(dependencyIds,'Проверьте зависимости'); assert(!dependencyIds.includes(taskId),'Задача не может зависеть от себя');
@@ -115,6 +122,21 @@ function setTaskStatus(db,u,c) {
   const finished=['done','skipped'].includes(status);
   const next={...row.data,status,skipReason:status==='skipped'?skipReason:'',completedAt:finished?now():null,completedBy:finished?u.id:null,...finished?{organizerFocus:false,organizerFocusedAt:null,organizerFocusedBy:null}:{}};
   return change(db,u,row,next,false,'setStatus');
+}
+function taskRestoreData(db,u,c,row) {
+  const old=historicalRecord(db,u,c,row),project=projectAccess(db,u,c.projectId,'read','tasks');
+  const data=taskData(db,u,project,old.data,{...old.data,id:row.id});
+  if(data.status==='done') {
+    const blocked=(data.dependencyIds||[]).map(id=>entity(db,id)).filter(dep=>dep&&!dep.deleted&&!['done','skipped'].includes(dep.data.status));
+    assert(!blocked.length,'Нельзя восстановить завершённую задачу: не завершены зависимости',409,{code:'task_blocked',dependencies:blocked.map(x=>({id:x.id,title:x.data.title,status:x.data.status,version:x.version}))});
+  }
+  const finished=['done','skipped'].includes(data.status);
+  return {...data,completedAt:finished?old.data.completedAt||now():null,completedBy:finished?old.data.completedBy||u.id:null,...finished?{organizerFocus:false,organizerFocusedAt:null,organizerFocusedBy:null}:{}};
+}
+function authorizeTaskRestore(db,u,c) {
+  const row=requireTask(db,u,c.projectId,c.entityId,{deleted:true}),data=taskRestoreData(db,u,c,row),fields=changedFields(row.data,data);
+  requireTaskAccess(db,u,c,['edit','history'],row,fields.length?fields:null);
+  if(fields.some(key=>key.startsWith('organizerFocus')))requireAccess(db,u,'projects',null);
 }
 function setOrganizerFocus(db,u,c) {
   const row=requireTask(db,u,c.projectId,c.entityId); version(row,c.version);
@@ -267,7 +289,7 @@ export function listTasks(db,u,{projectId,from,to,assignee,status,phaseKey,query
   projectAccess(db,u,projectId,'read','tasks'); if(from) date(from,false); if(to) date(to,false);
   if(includeDeleted===true||includeDeleted==='true') requireAccess(db,u,'history',projectId,'tasks');
   const rows=taskRows(db,u,projectId,{includeDeleted:includeDeleted===true||includeDeleted==='true'}).filter(row=>can(db,u,'read',projectId,'tasks',row.id)).map(row=>taskDto(db,u,row)).filter(row=>
-    (!from||row.data.dueDate>=from)&&(!to||row.data.dueDate<=to)&&(!assignee||row.data.assigneeUserId===assignee)&&(!(mine===true||mine==='true')||(row.data.assigneeUserId===u.id||(row.data.participantUserIds||[]).includes(u.id)))&&(!(focus===true||focus==='true')||row.data.organizerFocus===true)&&(!status||(status==='active'?['todo','doing'].includes(row.data.status):row.data.status===status))&&(!phaseKey||row.data.phaseKey===phaseKey)&&(!searchTerms.length||searchTerms.every(term=>`${row.data.title||''} ${row.data.description||''}`.toLocaleLowerCase('ru').includes(term)))
+    (!(from||to)||!!row.data.dueDate)&&(!from||row.data.dueDate>=from)&&(!to||(row.data.startDate||row.data.dueDate)<=to)&&(!assignee||row.data.assigneeUserId===assignee)&&(!(mine===true||mine==='true')||(row.data.assigneeUserId===u.id||(row.data.participantUserIds||[]).includes(u.id)))&&(!(focus===true||focus==='true')||row.data.organizerFocus===true)&&(!status||(status==='active'?['todo','doing'].includes(row.data.status):row.data.status===status))&&(!phaseKey||row.data.phaseKey===phaseKey)&&(!searchTerms.length||searchTerms.every(term=>`${row.data.title||''} ${row.data.description||''}`.toLocaleLowerCase('ru').includes(term)))
   ).sort((a,b)=>taskOrder(a,b));
   return listPage(rows,{offset,limit});
 }
@@ -306,7 +328,7 @@ export function previewTemplateApplication(db,u,{projectId,templateId,templateVe
   const project=projectAccess(db,u,projectId,'read','tasks'); const template=scoped(db,u,templateId,null,'template'); requireAccess(db,u,['read','templates'],null,'template',template.id,null); assert(template.version===Number(templateVersion),'Шаблон уже изменился',409,{currentVersion:template.version});
   const blueprints=Array.isArray(template.data.taskBlueprints)?template.data.taskBlueprints:DEFAULT_TASK_BLUEPRINTS;
   const existing=new Set(taskRows(db,u,projectId).map(row=>row.data.sourceTemplateKey).filter(Boolean));
-  return {projectVersion:project.version,templateId,templateVersion,adds:blueprints.filter(item=>!existing.has(item.key)).map(item=>({key:item.key,title:item.title,assigneeUserId:assignedForRole(db,u,project,item.assigneeRole),assigneeName:workflowMembers(db,u,projectId).find(person=>person.id===assignedForRole(db,u,project,item.assigneeRole))?.name||'Не назначен',dueDate:addDays(projectDate(project),Number(item.offsetDays||0)),overdue:addDays(projectDate(project),Number(item.offsetDays||0))<new Intl.DateTimeFormat('sv-SE',{timeZone:project.data.timeZone||'Europe/Moscow'}).format(new Date())})),skipped:blueprints.filter(item=>existing.has(item.key)).map(item=>item.key)};
+  return {projectVersion:project.version,templateId,templateVersion,adds:blueprints.filter(item=>!existing.has(item.key)).map(item=>({key:item.key,title:item.title,assigneeUserId:assignedForRole(db,u,project,item.assigneeRole),assigneeName:workflowMembers(db,u,projectId).find(person=>person.id===assignedForRole(db,u,project,item.assigneeRole))?.name||'Не назначен',dueDate:item.dueMode==='none'?'':relativeDue(project,Number(item.offsetDays||0)),overdue:item.dueMode!=='none'&&!!projectDate(project)&&relativeDue(project,Number(item.offsetDays||0))<new Intl.DateTimeFormat('sv-SE',{timeZone:project.data.timeZone||'Europe/Moscow'}).format(new Date())})),skipped:blueprints.filter(item=>existing.has(item.key)).map(item=>item.key)};
 }
 function assignedForRole(db,u,project,role) {
   if(!role) return null; if(role==='leadOrganizer') return project.data.leadOrganizerUserId||null;
@@ -318,7 +340,7 @@ function applyTemplate(db,u,c) {
   const preview=previewTemplateApplication(db,u,{projectId:project.id,templateId:template.id,templateVersion:template.version}); const created=[]; const keys=new Map(taskRows(db,u,project.id).filter(row=>row.data.sourceTemplateKey).map(row=>[row.data.sourceTemplateKey,row.id]));
   for(const blueprint of (template.data.taskBlueprints??DEFAULT_TASK_BLUEPRINTS)) {
     if(preview.skipped.includes(blueprint.key)) continue;
-    const data=taskData(db,u,project,{title:blueprint.title,description:blueprint.description||'',phaseKey:blueprint.phaseKey||'general',dueMode:'relative',offsetDays:Number(blueprint.offsetDays||0),assigneeUserId:assignedForRole(db,u,project,blueprint.assigneeRole),participantUserIds:[],dependencyIds:[],priority:blueprint.priority||'normal',order:Number(blueprint.order||0),sourceTemplateId:template.id,sourceTemplateVersion:template.version,sourceTemplateKey:blueprint.key});
+    const data=taskData(db,u,project,{title:blueprint.title,description:blueprint.description||'',phaseKey:blueprint.phaseKey||'general',dueMode:blueprint.dueMode==='none'?'none':'relative',offsetDays:blueprint.dueMode==='none'?null:Number(blueprint.offsetDays||0),assigneeUserId:assignedForRole(db,u,project,blueprint.assigneeRole),participantUserIds:[],dependencyIds:[],priority:blueprint.priority||'normal',order:Number(blueprint.order||0),sourceTemplateId:template.id,sourceTemplateVersion:template.version,sourceTemplateKey:blueprint.key});
     const createdRow=insert(db,u,'task',data,project.id); created.push(createdRow);keys.set(blueprint.key,createdRow.id);
   }
   for(const blueprint of (template.data.taskBlueprints??DEFAULT_TASK_BLUEPRINTS)) { const rowId=keys.get(blueprint.key); if(!rowId||!created.some(item=>item.id===rowId)) continue; const row=entity(db,rowId),dependencyIds=(blueprint.dependencyKeys||[]).map(key=>keys.get(key)).filter(Boolean); if(dependencyIds.length) change(db,u,row,{...row.data,dependencyIds},false,'templateDependencies'); }
@@ -326,10 +348,11 @@ function applyTemplate(db,u,c) {
   return {created,preview};
 }
 export function previewReschedule(db,u,{projectId,newDate,newTimeZone}) {
-  const project=projectAccess(db,u,projectId,'read','tasks',null,null); requireAccess(db,u,['edit','structure'],projectId,'project',projectId,['date','timeZone']); requireAccess(db,u,'read',projectId,'calendar',null,null); const oldTimeZone=timeZone(project.data.timeZone||'Europe/Moscow'); newDate=date(newDate||project.data.date,false); newTimeZone=timeZone(newTimeZone||oldTimeZone);
-  const allTasks=taskRows(db,u,projectId), affected=allTasks.filter(row=>!['done','skipped'].includes(row.data.status)&&row.data.dueMode==='relative').map(row=>({id:row.id,kind:'task',version:row.version,oldDate:row.data.dueDate,newDate:addDays(newDate,row.data.offsetDays),reason:'relative_task'})).filter(item=>item.oldDate!==item.newDate);
-  const unchanged=allTasks.filter(row=>row.data.dueMode==='fixed'||['done','skipped'].includes(row.data.status)).map(row=>({id:row.id,kind:'task',version:row.version,title:row.data.title,oldDate:row.data.dueDate,newDate:row.data.dueDate,reason:row.data.dueMode==='fixed'?'fixed_task':'completed_task'}));
+  const project=projectAccess(db,u,projectId,'read','tasks',null,null); requireAccess(db,u,['edit','structure'],projectId,'project',projectId,['date','timeZone']); requireAccess(db,u,'read',projectId,'calendar',null,null); const oldTimeZone=timeZone(project.data.timeZone||'Europe/Moscow'); newDate=date(newDate??project.data.date); newTimeZone=timeZone(newTimeZone||oldTimeZone);
+  const allTasks=taskRows(db,u,projectId), affected=allTasks.filter(row=>!['done','skipped'].includes(row.data.status)&&row.data.dueMode==='relative').map(row=>({id:row.id,kind:'task',version:row.version,oldDate:row.data.dueDate,newDate:newDate?addDays(newDate,row.data.offsetDays):'',reason:'relative_task'})).filter(item=>item.oldDate!==item.newDate);
+  const unchanged=allTasks.filter(row=>row.data.dueMode!=='relative'||['done','skipped'].includes(row.data.status)).map(row=>({id:row.id,kind:'task',version:row.version,title:row.data.title,oldDate:row.data.dueDate,newDate:row.data.dueDate,reason:['done','skipped'].includes(row.data.status)?'completed_task':row.data.dueMode==='none'?'undated_task':row.data.dueMode==='range'?'range_task':'fixed_task'}));
   const meetings=entities(db,u.agency_id,projectId,'meeting').filter(row=>row.data.dateAnchor==='wedding').map(row=>{
+    assert(newDate,'Сначала отвяжите встречи от даты свадьбы, затем можно оставить дату открытой.',409,{code:'anchored_meeting_requires_date',meetingId:row.id});
     assert(typeof row.data.localStartTime==='string'&&Number.isInteger(row.data.durationMinutes)&&row.data.durationMinutes>0,'Привязанная встреча содержит неполные данные времени',409,{code:'anchored_meeting_invalid',meetingId:row.id});
     const inheritedZone=!row.data.timeZone||row.data.timeZone===oldTimeZone, meetingZone=inheritedZone?newTimeZone:timeZone(row.data.timeZone), meetingDate=addDays(newDate,Number(row.data.offsetDays||0));
     const startAt=zonedInstant(meetingDate,row.data.localStartTime,meetingZone,row.data.dstChoice);
@@ -370,7 +393,7 @@ export const operations = {
   'task.setStatus': {authorize(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId);requireTaskAccess(db,u,c,'edit',row);},run:setTaskStatus},
   'task.setOrganizerFocus': {authorize(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId);requireAccess(db,u,'projects',null);requireTaskAccess(db,u,c,'edit',row,['organizerFocus']);},run:setOrganizerFocus},
   'task.delete': {authorize(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId);requireTaskAccess(db,u,c,'delete',row);},run(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId);version(row,c.version);const dependents=taskRows(db,u,c.projectId).filter(item=>(item.data.dependencyIds||[]).includes(row.id));assert(!dependents.length,'Сначала уберите эту задачу из зависимостей связанных задач',409,{code:'task_has_dependents',dependents:dependents.map(item=>({id:item.id,title:item.data.title,version:item.version}))});return change(db,u,row,{...row.data,organizerFocus:false,organizerFocusedAt:null,organizerFocusedBy:null},true,'delete');}},
-  'task.restore': {authorize(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId,{deleted:true});requireTaskAccess(db,u,c,'history',row);},run(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId,{deleted:true});version(row,c.version);validateDependencies(db,u,c.projectId,row.id,row.data.dependencyIds||[]);return change(db,u,row,row.data,false,'restore');}},
+  'task.restore': {authorize:authorizeTaskRestore,run(db,u,c){const row=requireTask(db,u,c.projectId,c.entityId,{deleted:true});version(row,c.version);return change(db,u,row,taskRestoreData(db,u,c,row),false,'restore');}},
   'taskTemplate.apply': {authorize(db,u,c){requireTaskAccess(db,u,c,'create');},run:applyTemplate},
   'project.reschedule.apply': {authorize(db,u,c){requireTaskAccess(db,u,c,'edit');},run:applyReschedule},
   'approval.saveDraft': {authorize(db,u,c){if(c.entityId){const row=requireApproval(db,u,c.projectId,c.entityId);requireApprovalAccess(db,u,c,'edit',row,Object.keys(c.data||{}));}else requireApprovalAccess(db,u,c,'create');},run(db,u,c){const project=projectAccess(db,u,c.projectId,'read','approvals');if(!c.entityId){const data=approvalDraftData(db,u,project,c.data||{});return insert(db,u,'approval',data,c.projectId);}const row=requireApproval(db,u,c.projectId,c.entityId);version(row,c.version);assert(['draft','changes','withdrawn'].includes(row.data.state),'Изменение отправленной ревизии требует новой темы или отзыва',409);return change(db,u,row,approvalDraftData(db,u,project,c.data||{},row.data),false,'saveDraft');}},

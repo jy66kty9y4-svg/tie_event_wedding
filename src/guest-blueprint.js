@@ -16,6 +16,22 @@ export const DEFAULT_GUEST_SEMANTIC_MAP = {
   rsvpValues:{unanswered:'Не отправлено',tentative:'Приглашён',confirmed:'Подтвердил',declined:'Отказ'}
 };
 
+export const personalInvitationsEnabled = project => project?.data?.personalInvitationsEnabled === true;
+
+// Count people, not individual restrictions. Explicit negative answers are not restrictions.
+export function hasFoodRestriction(value) {
+  if (Array.isArray(value)) return value.some(hasFoodRestriction);
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return false;
+  const answer = value.trim().toLocaleLowerCase('ru').replace(/[.!]+$/u, '').trim();
+  return Boolean(answer) && !/^(?:[-—–]|нет|нет аллергий|аллергий нет|нет ограничений|ограничений нет|нет аллергий и ограничений|без ограничений|без аллергий|не имеется|отсутствуют|нет особенностей|обычное питание|обычное меню|всё ем|все ем|no|none|n\/a)$/u.test(answer);
+}
+
+export function countGuestsWithFoodRestrictions(rows, semanticMap, readable = () => true) {
+  const fields = [...new Set([semanticMap?.allergies, semanticMap?.diet].filter(Boolean))];
+  return rows.filter(row => !row.deleted && fields.some(field => readable(row, field) && hasFoodRestriction(row.data?.[field]))).length;
+}
+
 const guestColumnBlueprints = [
   {key:'guestName', fallback:'name', name:'ФИО'},
   {fallback:'side', name:'Чей гость'},
